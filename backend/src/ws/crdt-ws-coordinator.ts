@@ -21,7 +21,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import * as Y from "yjs";
 import { resolveWriterWithExpiry } from "../auth/context.js";
 import { checkDocPermission } from "../auth/acl.js";
-import { CommitPermissionError } from "../storage/commit-pipeline.js";
+import { raiseImpairmentForLeftoverProposal, clearImpairment } from "../runtime/impairment-registry.js";
 import {
   acquireDocSession,
   lookupDocSession,
@@ -615,6 +615,7 @@ async function emitTopologyOnlyLiveSectionsUpdateFrame(session: DocSession): Pro
 export interface PublishAttemptOutcome {
   outcome: "committed" | "noop" | "aborted" | "failed";
   message?: string;
+  proposalId?: ProposalId;
   
 
 
@@ -668,25 +669,13 @@ const publishChains = new Map<string, Promise<PublishAttemptOutcome>>();
  * user's edits did NOT reach canonical, must NEVER be silently discarded
  * (CLAUDE.md error policy: an error is never allowed to be hidden).
  */
-function surfacePublishOutcome(docPath: DocPath, outcome: PublishAttemptOutcome): void {
+async function surfacePublishOutcome(docPath: DocPath, outcome: PublishAttemptOutcome): Promise<void> {
   if (outcome.outcome !== "failed" && outcome.outcome !== "aborted") return;
-  // A commit-gate permission denial is an ordinary `failed` publish outcome —
-  // an ACL steady state an admin resolves, not a process invariant failure. It
-  // must never wedge the session actor or the fatal machinery; the inprogress
-  // proposal keeps the content and the next publish retries. Still surfaced
-  // (never silently discarded), just not as a fatal.
-  if (outcome.error instanceof CommitPermissionError) {
-    console.error(`[publish:${docPath}] permission denied: ${outcome.message}`);
-    return;
-  }
-  // Route to the process-boundary fatal policy rather than a bare console write:
-  // under `crash` the operator's chosen policy stops the process, under `report`
-  // the sticky FatalReport reaches every connected client. `outcome.error` carries
-  // the original error (real stack) where one exists; an aborted publish has no
-  // underlying error, so the outcome message becomes the fatal.
-  handleProcessFatal(
+  console.error(`[publish:${docPath}] ${outcome.outcome}: ${outcome.message}`);
+  if (!outcome.proposalId) return;
+  await raiseImpairmentForLeftoverProposal(
+    outcome.proposalId,
     outcome.error ?? new Error(`[publish:${docPath}] ${outcome.outcome}: ${outcome.message}`),
-    "unhandledRejection",
   );
 }
 
@@ -697,10 +686,12 @@ function describeError(error: unknown): string {
 function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome {
   switch (result.status) {
     case "committed":
+      if (result.proposalId) clearImpairment(result.proposalId);
       return {
         outcome: "committed",
         message: `Published proposal ${result.proposalId ?? ""} to canonical${result.commitSha ? ` (${result.commitSha})` : ""}.`,
         commitSha: result.commitSha,
+        proposalId: result.proposalId,
         changedSections: result.absorbResult?.changedSections,
         absorbedSectionRefs: result.absorbResult?.absorbedSectionRefs,
       };
@@ -711,6 +702,7 @@ function mapPublishResultToOutcome(result: PublishResult): PublishAttemptOutcome
         outcome: "failed",
         message: `Publish failed; proposal ${result.proposalId ?? ""} was returned to inprogress${result.error ? `: ${describeError(result.error)}` : "."}`,
         error: result.error,
+        proposalId: result.proposalId,
       };
   }
 }
@@ -732,11 +724,16 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
         return {
           outcome: "failed",
           message: "Publish aborted: the live session was rebuilt while settling a structural change; the in-progress proposal keeps the edits.",
+          proposalId: session.generator.getCurrentProposalId() ?? undefined,
         };
       }
       outcome = mapPublishResultToOutcome(await session.generator.finalizeAndPublish());
     } else {
-      outcome = { outcome: "aborted", message: "Publish aborted: editors did not acknowledge readiness in time." };
+      outcome = {
+        outcome: "aborted",
+        message: "Publish aborted: editors did not acknowledge readiness in time.",
+        proposalId: session.generator.getCurrentProposalId() ?? undefined,
+      };
     }
   } catch (error) {
     // The live snapshot still disagrees with its layout address after the settle
@@ -754,7 +751,12 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       handleProcessFatal(error instanceof Error ? error : new Error(String(error)), "unhandledRejection");
       throw error;
     }
-    outcome = { outcome: "failed", message: `Publish failed: ${describeError(error)}`, error };
+    outcome = {
+      outcome: "failed",
+      message: `Publish failed: ${describeError(error)}`,
+      error,
+      proposalId: session.generator.getCurrentProposalId() ?? undefined,
+    };
   } finally {
     session.publishPause.end();
     broadcastToAll(session.docPath, encodeDocPublishPauseEnd());
@@ -1310,7 +1312,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   if (decision.shouldPublish) {
     const requiredSockets = activeEditorSocketIds(session.docPath);
     if (requiredSockets.length === 0) {
-      surfacePublishOutcome(session.docPath, await publishInlineOnLane(session));
+      await surfacePublishOutcome(session.docPath, await publishInlineOnLane(session));
     } else {
       void runPublishAttempt(session).then(
         (outcome) => surfacePublishOutcome(session.docPath, outcome),
@@ -2611,7 +2613,7 @@ export async function publishOnLastEditorDisconnect(
     noCollaboratorMutatingChangedSet: true,
   });
   if (decision.shouldPublish) {
-    surfacePublishOutcome(session.docPath, await runPublishAttempt(session));
+    await surfacePublishOutcome(session.docPath, await runPublishAttempt(session));
   }
   return decision;
 }

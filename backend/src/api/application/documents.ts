@@ -40,6 +40,7 @@ import {
   invalidateSessionForReplacement,
 } from "../../crdt/ydoc-lifecycle.js";
 import { requestDocSessionPublish, type PublishAttemptOutcome } from "../../ws/crdt-ws-coordinator.js";
+import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import {
   readDocumentsTreeUnfiltered,
   DocumentsTreePathNotFoundError,
@@ -420,7 +421,13 @@ async function evaluateAndMaybeCommitDocumentProposal(
   writerType: "human" | "agent",
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
-    const absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+    let absorbResult;
+    try {
+      absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(proposalId, error);
+      throw error;
+    }
     const committedHead = absorbResult.commitSha;
     await propagateCommitToLiveSessions(absorbResult, proposalId);
     return { policyResult: humanBypassPolicyResult(), committedHead };
@@ -430,7 +437,13 @@ async function evaluateAndMaybeCommitDocumentProposal(
     return { policyResult };
   }
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  const absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+  let absorbResult;
+  try {
+    absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+  } catch (error) {
+    await raiseImpairmentForLeftoverProposal(proposalId, error);
+    throw error;
+  }
   const committedHead = absorbResult.commitSha;
   await propagateCommitToLiveSessions(absorbResult, proposalId);
   return { policyResult, committedHead };
@@ -461,8 +474,14 @@ export class DocSessionHandoffFailedError extends Error {}
  * on abort/failure throw so the caller does NOT replace canonical or tear down
  * the live Y.Doc (the unpublished in-flight edits must survive).
  */
-function assertHandoffSucceeded(publish: { outcome: string; message?: string }): void {
+async function assertHandoffSucceeded(publish: PublishAttemptOutcome): Promise<void> {
   if (publish.outcome === "committed" || publish.outcome === "noop") return;
+  if (publish.proposalId) {
+    await raiseImpairmentForLeftoverProposal(
+      publish.proposalId,
+      publish.error ?? new Error(publish.message ?? "Publish handoff failed."),
+    );
+  }
   throw new DocSessionHandoffFailedError(
     publish.message
       ?? "Couldn't safely preserve in-progress edits before replacing this document — active editors must pause and retry.",
@@ -482,7 +501,14 @@ function assertHandoffSucceeded(publish: { outcome: string; message?: string }):
  * legitimate outcome, not a failure.
  */
 export async function forcePublishDocument(docPath: DocPath): Promise<PublishAttemptOutcome> {
-  return requestDocSessionPublish(docPath);
+  const outcome = await requestDocSessionPublish(docPath);
+  if ((outcome.outcome === "failed" || outcome.outcome === "aborted") && outcome.proposalId) {
+    await raiseImpairmentForLeftoverProposal(
+      outcome.proposalId,
+      outcome.error ?? new Error(outcome.message ?? "Publish failed."),
+    );
+  }
+  return outcome;
 }
 
 export async function restoreDocument(docPath: DocPath, sha: string, writer: DocumentWriter): Promise<{ committedSha: string; targets: ProposalTargetRef[] }> {
@@ -500,7 +526,7 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
   // handoff publish ABORTS (editor never acked / timed out) or FAILS, STOP — do
   // not create the restore proposal, commit, or tear down the live Y.Doc; the
   // unpublished in-flight edits must survive.
-  assertHandoffSucceeded(await requestDocSessionPublish(docPath));
+  await assertHandoffSucceeded(await requestDocSessionPublish(docPath));
 
   const { createRestoreProposal } = await import("../../storage/restore-service.js");
   const { proposal } = await createRestoreProposal(docPath, sha, restoreWriter);
@@ -530,7 +556,7 @@ export async function adminOverwriteDocument(docPath: DocPath, markdown: string,
   // C5: gate on the pre-handoff publish BEFORE creating any proposal, so a failed
   // handoff leaves no orphan proposal and does not replace canonical / tear down
   // the live Y.Doc.
-  assertHandoffSucceeded(await requestDocSessionPublish(docPath));
+  await assertHandoffSucceeded(await requestDocSessionPublish(docPath));
 
   const { id: proposalId } = await createTransientProposal(
     { id: admin.id, type: admin.type, displayName: admin.displayName, email: admin.email },

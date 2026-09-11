@@ -8,11 +8,12 @@ import { DocumentsTreeNav, computeTreeMoveDest, type TreeDragSource } from "../c
 import { NewDocFullPathForm } from "../components/NewDocTreeForm";
 import { SidebarNavLinks } from "../components/SidebarNavLinks";
 import { SystemFatalScreen } from "../components/SystemFatalScreen";
+import { SystemImpairmentBanner } from "../components/SystemImpairmentBanner";
 import { WsDiagnosticsConsole } from "../components/WsDiagnosticsConsole";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { CurrentUserProvider } from "../contexts/CurrentUserContext";
 import { SidebarIdentity } from "../components/SidebarIdentity";
-import type { DocumentTreeEntry, AuthUser } from "../types/shared.js";
+import type { DocumentTreeEntry, AuthUser, ImpairmentReport } from "../types/shared.js";
 import { DocsLocation, docHref, folderHref } from "./docs-location";
 import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
@@ -188,6 +189,7 @@ export function AppLayout() {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [systemStarting, setSystemStarting] = useState(false);
   const [fatalReport, setFatalReport] = useState<FatalReport | null>(null);
+  const [impairments, setImpairments] = useState<Map<string, ImpairmentReport>>(new Map());
   const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
   const [wsDiagOpen, setWsDiagOpen] = useState(false);
@@ -469,7 +471,6 @@ export function AppLayout() {
     const disconnect = connectSystemEvents((state) => {
       if (state.state === "ready") {
         setSystemStarting(false);
-        setFatalReport(null);
         setTreeError(null);
         loadTree().catch(() => {});
         revalidateSession();
@@ -544,7 +545,6 @@ export function AppLayout() {
         const ready = await apiClient.probeSystemReady();
         if (ready) {
           setSystemStarting(false);
-          setFatalReport(null);
           setTreeError(null);
           loadTree().catch(() => {});
           revalidateSession();
@@ -701,6 +701,19 @@ export function AppLayout() {
       // of dying; late-joining tabs receive it via the hub's sticky replay.
       if (event.type === "system:fatal") {
         setFatalReport(event.report);
+        return;
+      }
+      if (event.type === "system:impairment") {
+        setImpairments((previous) => new Map(previous).set(event.report.id, event.report));
+        return;
+      }
+      if (event.type === "system:impairment-cleared") {
+        setImpairments((previous) => {
+          if (!previous.has(event.proposal_id)) return previous;
+          const next = new Map(previous);
+          next.delete(event.proposal_id);
+          return next;
+        });
         return;
       }
       if (event.type === "doc:structure-changed") {
@@ -1004,6 +1017,7 @@ export function AppLayout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Content */}
         <main className="flex flex-1 flex-col">
+          <SystemImpairmentBanner impairments={[...impairments.values()]} />
           {/* Authoritative session check failed (500 / network / malformed) — a
               visible degraded state so the initial load never fails silently. */}
           {sessionError ? (

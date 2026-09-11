@@ -26,6 +26,7 @@ import { applyImportResolution, ImportResolutionError } from "../../storage/impo
 import { readProposal } from "../../storage/proposal-repository.js";
 import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 
 export { ImportValidationError } from "../../storage/import-service.js";
@@ -351,7 +352,13 @@ export async function commitImport(
 
   const importDiagnostics: string[] = [];
   onProgress?.({ kind: "publishing" });
-  const absorbResult = await publishProposalToCanonicalDetailed(importProposalId, {}, importDiagnostics);
+  let absorbResult;
+  try {
+    absorbResult = await publishProposalToCanonicalDetailed(importProposalId, {}, importDiagnostics);
+  } catch (error) {
+    await raiseImpairmentForLeftoverProposal(importProposalId, error);
+    throw error;
+  }
   const committedHead = absorbResult.commitSha;
   await propagateCommitToLiveSessions(absorbResult, importProposalId);
   await deleteStagingFolder(importId);

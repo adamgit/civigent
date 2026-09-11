@@ -4,6 +4,7 @@
 node_modules/
 .vite/
 
+AGENTS.md
 # vitest artifacts
 coverage/
 

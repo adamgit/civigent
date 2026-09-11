@@ -32,6 +32,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalFsmLockIndex } from "../../domain/proposal-fsm-lock-index.js";
 import { BLOCKING_LOCK_STATUSES } from "../../domain/proposal-fsm-locks.js";
@@ -243,8 +244,13 @@ async function evaluateAndMaybeCommit(
   writerType: "human" | "agent",
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
-
-    const absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+    let absorbResult;
+    try {
+      absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(proposalId, error);
+      throw error;
+    }
     const committedHead = absorbResult.commitSha;
     await propagateCommitToLiveSessions(absorbResult, proposalId);
     return { policyResult: humanBypassPolicyResult(), committedHead };
@@ -254,7 +260,13 @@ async function evaluateAndMaybeCommit(
     return { policyResult };
   }
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-  const absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+  let absorbResult;
+  try {
+    absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+  } catch (error) {
+    await raiseImpairmentForLeftoverProposal(proposalId, error);
+    throw error;
+  }
   const committedHead = absorbResult.commitSha;
   await propagateCommitToLiveSessions(absorbResult, proposalId);
   return { policyResult, committedHead };

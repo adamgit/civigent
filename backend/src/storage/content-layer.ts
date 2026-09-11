@@ -80,7 +80,7 @@ function upsertResultFromHeadingRemoval(
   for (const { oldEntry, newEntry } of effect.preservedDescendants) {
     if (oldEntry.absolutePath !== newEntry.absolutePath) writtenEntries.push(newEntry);
   }
-  if (effect.mergeTarget && effect.mergeTarget.mergedBody !== null) {
+  if (effect.mergeTarget && effect.mergeTarget.mergedBody !== null && !effect.dissolvedBfh) {
     writtenEntries.push(effect.mergeTarget.newEntry);
   }
   const removedContentEntries = effect.removedTargetEntries.filter((e) => !e.isSubSkeleton);
@@ -329,6 +329,22 @@ export interface UpsertSectionFromMarkdownDetailedResult {
     oldEntry: FlatEntry;
     newEntries: FlatEntry[];
   }>;
+}
+
+export async function recordOrphanedSectionRemovals(
+  proposalId: string,
+  docPath: DocPath,
+  writeResult: UpsertSectionFromMarkdownDetailedResult,
+): Promise<FlatEntry[]> {
+  const survivingSectionFiles = new Set(writeResult.writtenEntries.map((e) => e.sectionFile));
+  const orphanedRemovals = writeResult.removedContentEntries.filter(
+    (e) => !survivingSectionFiles.has(e.sectionFile),
+  );
+  if (orphanedRemovals.length > 0) {
+    const { recordDeletedSectionFiles } = await import("./proposal-repository.js");
+    await recordDeletedSectionFiles(proposalId, docPath, orphanedRemovals.map((e) => e.sectionFile));
+  }
+  return orphanedRemovals;
 }
 
 import { getParser } from "./markdown-parser.js";
@@ -1555,7 +1571,6 @@ export class ProposalShadowContentLayer {
       const dissolvedIds = dissolvePlan.removed.filter((e) => !e.isSubSkeleton).map((e) => e.sectionFile);
       return {
         ...effect,
-        mergeTarget: null,
         dissolvedBfh: bfhEntry,
         deletedSectionFileIds: [...effect.deletedSectionFileIds, ...dissolvedIds],
         fragmentKeyChanges: [...effect.fragmentKeyChanges, ...dissolvePlan.fragmentKeyRemaps],

@@ -28,6 +28,7 @@ import {
   publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -223,7 +224,13 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const committedHead = await publishProposalToCanonical(moveProposalId, committedMetadata);
+    let committedHead: string;
+    try {
+      committedHead = await publishProposalToCanonical(moveProposalId, committedMetadata);
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(moveProposalId, error);
+      throw error;
+    }
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
@@ -380,7 +387,13 @@ async function writeDocumentViaProposal(
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
-    const absorbResult = await publishProposalToCanonicalDetailed(writeProposalId, committedMetadata);
+    let absorbResult;
+    try {
+      absorbResult = await publishProposalToCanonicalDetailed(writeProposalId, committedMetadata);
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(writeProposalId, error);
+      throw error;
+    }
     const committedHead = absorbResult.commitSha;
 
     await propagateCommitToLiveSessions(absorbResult, writeProposalId);
@@ -478,7 +491,13 @@ async function deleteDocumentViaProposal(
 
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const committedHead = await publishProposalToCanonical(delProposalId, committedMetadata);
+    let committedHead: string;
+    try {
+      committedHead = await publishProposalToCanonical(delProposalId, committedMetadata);
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(delProposalId, error);
+      throw error;
+    }
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);

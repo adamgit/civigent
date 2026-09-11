@@ -24,12 +24,14 @@ import {
   transitionToWithdrawn,
   transitionToInProgress,
   isProposalMutable,
+  isCrdtOwnedProposal,
   isProposalStatus,
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
 import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { clearImpairment, raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
@@ -449,7 +451,11 @@ export async function commitProposalUseCase(
   if (!isActiveProposal(proposal) || !committableStatuses.includes(proposal.status)) {
     return { kind: "error", status: 409, message: `Cannot commit proposal in ${proposal.status} state.` };
   }
-  if (proposal.writer.type === "human" && proposal.intent.trim().length === 0) {
+  if (
+    proposal.writer.type === "human"
+    && !isCrdtOwnedProposal(proposal)
+    && proposal.intent.trim().length === 0
+  ) {
     return { kind: "error", status: 409, message: "Cannot commit proposal with empty intent." };
   }
 
@@ -465,7 +471,13 @@ export async function commitProposalUseCase(
 
   // Human reservations always commit — humans bypass Agent Write Policy (spec 12).
   if (proposal.writer.type === "human") {
-    const absorbResult = await publishProposalToCanonicalDetailed(proposal.id, {});
+    let absorbResult;
+    try {
+      absorbResult = await publishProposalToCanonicalDetailed(proposal.id, {});
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(proposal.id, error);
+      throw error;
+    }
     await propagateCommitToLiveSessions(absorbResult, proposal.id);
     return {
       kind: "committed",
@@ -482,7 +494,13 @@ export async function commitProposalUseCase(
   const policyResult = await evaluateAgentWritePolicy(proposal.id);
   if (policyResult.canWrite) {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
-    const absorbResult = await publishProposalToCanonicalDetailed(proposal.id, committedMetadata);
+    let absorbResult;
+    try {
+      absorbResult = await publishProposalToCanonicalDetailed(proposal.id, committedMetadata);
+    } catch (error) {
+      await raiseImpairmentForLeftoverProposal(proposal.id, error);
+      throw error;
+    }
     await propagateCommitToLiveSessions(absorbResult, proposal.id);
     return {
       kind: "committed",
@@ -514,6 +532,7 @@ export async function cancelProposalUseCase(proposalId: string, writerId: string
     return { kind: "error", status: 403, message: "You can only withdraw your own proposals." };
   }
   const withdrawn = await transitionToWithdrawn(proposal.id, reason);
+  clearImpairment(withdrawn.id);
   return {
     kind: "withdrawn",
     proposalId: withdrawn.id,

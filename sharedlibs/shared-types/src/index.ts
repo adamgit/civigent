@@ -2561,6 +2561,47 @@ export interface SystemFatalEvent {
   report: FatalReport;
 }
 
+/**
+ * Structured report of a live-publish failure that left a proposal stuck
+ * `inprogress` with in-flight claims on its targets. Unlike {@link FatalReport}
+ * this does not mean the process is broken — every other document keeps
+ * working — but the claimed targets below may block overlapping saves until
+ * the proposal is retried or withdrawn.
+ */
+export interface ImpairmentReport {
+  /** The leftover proposal's id. */
+  id: ProposalId;
+  message: string;
+  stack: string;
+  cause: string | null;
+  /** ISO-8601. */
+  timestamp: string;
+  /** Document paths the leftover proposal claims. */
+  doc_paths: string[];
+  /** Section-level targets the leftover proposal claims. */
+  targets: SectionTargetRef[];
+}
+
+/**
+ * System-scoped app event emitted when a live publish fails and leaves a
+ * proposal `inprogress`. Has no `doc_path`; the hub fans it out to every open
+ * socket so every tab can see the impairment, sticky until cleared.
+ */
+export interface SystemImpairmentEvent {
+  type: "system:impairment";
+  report: ImpairmentReport;
+}
+
+/**
+ * System-scoped app event clearing a previously raised {@link SystemImpairmentEvent}
+ * for the named proposal — either the publish succeeded on retry or the
+ * proposal was withdrawn.
+ */
+export interface SystemImpairmentClearedEvent {
+  type: "system:impairment-cleared";
+  proposal_id: ProposalId;
+}
+
 export interface DocumentActivityHumanEntry {
   writer: WriterIdentity;
   page_open: boolean;
@@ -2599,6 +2640,8 @@ export type WsServerEvent =
   | SectionEditRejectedEvent
   | CatalogChangedEvent
   | SystemFatalEvent
+  | SystemImpairmentEvent
+  | SystemImpairmentClearedEvent
   | DocumentActivityEvent;
 
 // ─── WebSocket Client Messages ─────────────────────────────────────

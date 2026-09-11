@@ -36,6 +36,7 @@ import {
   listExportedSkillsContent,
 } from "./exported-skills.js";
 import { getRuntimeMemoryStats } from "../../runtime/memory-stats.js";
+import { clearImpairment } from "../../runtime/impairment-registry.js";
 import {
   GitBackupOperationError,
   getGitBackupStatus,
@@ -275,6 +276,7 @@ export async function forceCancelProposal(
 ): Promise<ForceCancelProposalResult> {
   const proposal = await readActiveProposal(proposalId);
   await transitionToWithdrawn(proposal.id, reason);
+  clearImpairment(proposal.id);
   return {
     proposalId: proposal.id,
     sections: proposal.sections.map((section) => ({

@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import * as Y from "yjs";
 import {
   acquireDocSession,
@@ -16,9 +18,13 @@ import type { FragmentContent } from "../../storage/section-formatting.js";
 import {
   armQuiescenceTimer,
   registerFakeEditorSocketForTest,
+  requestDocSessionPublish,
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { unclaimedOwnedHeadings } from "../../storage/proposal-overlay-ownership.js";
+import { readSection } from "../../storage/section-reader.js";
+import { DocPath } from "../../types/shared.js";
 import {
   createTempDataRoot,
   type TempDataRootContext,
@@ -44,6 +50,31 @@ async function createEmptyDocument(ctx: TempDataRootContext): Promise<void> {
       "commit",
       "-m",
       "add empty document",
+      "--allow-empty",
+      "--trailer",
+      "Writer-Type: agent",
+    ],
+    ctx.rootDir,
+  );
+}
+
+async function createBfhOnlyCanonical(ctx: TempDataRootContext, body: string): Promise<void> {
+  const skeletonPath = join(ctx.contentDir, DOC_PATH.replace(/^\//, ""));
+  const sectionsDir = `${skeletonPath}.sections`;
+  await mkdir(dirname(skeletonPath), { recursive: true });
+  await mkdir(sectionsDir, { recursive: true });
+  await writeFile(skeletonPath, ["{{section: --before-first-heading--bfhsplit.md}}", ""].join("\n"), "utf8");
+  await writeFile(join(sectionsDir, "--before-first-heading--bfhsplit.md"), `${body}\n`, "utf8");
+  await gitExec(["add", "content/"], ctx.rootDir);
+  await gitExec(
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@test.local",
+      "commit",
+      "-m",
+      "add bfh-only document",
       "--allow-empty",
       "--trailer",
       "Writer-Type: agent",
@@ -180,6 +211,42 @@ describe("BFH root-split lifecycle", () => {
       ).toBe(expectedPreamble !== null);
     },
   );
+
+  // Dissolve records the canonical preamble file as deleted and unions only the
+  // promoted heading. The claim set must still include `[]` (claimed-but-absent)
+  // or publish refuses. Drive settle without a prior `[]` grow so this is that
+  // pairing, not first-touch materialize.
+  it("empty preamble dissolve leaves no unclaimed overlay ownership and publishes", async () => {
+    await createBfhOnlyCanonical(ctx, "");
+    vi.useFakeTimers();
+
+    const session = await openSession("sock-1");
+    const editor = registerFakeEditorSocketForTest(DOC_PATH, "editor-sock");
+    disposers.push(editor.dispose);
+
+    session.liveFragments.replaceFragmentString(
+      BEFORE_FIRST_HEADING_KEY,
+      "## Heading\n\nHeading body." as FragmentContent,
+    );
+    session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
+    await session.generator.ensureAuthoredProposalClaiming([
+      { doc_path: DocPath.parse(DOC_PATH), heading_path: ["Heading"] },
+    ]);
+    await fireQuiescence(session);
+
+    const proposalId = session.generator.getCurrentProposalId();
+    expect(proposalId).not.toBeNull();
+
+    editor.dispose();
+
+    const unclaimed = await unclaimedOwnedHeadings(proposalId!, "inprogress");
+    expect(unclaimed.map((a) => a.headingPath)).toEqual([]);
+
+    vi.useRealTimers();
+    const outcome = await requestDocSessionPublish(DOC_PATH);
+    expect(outcome.outcome).toBe("committed");
+    expect(await readSection(DOC_PATH, ["Heading"])).toBe("Heading body.");
+  });
 
   it("discards and reseeds when proposal-first root-split reflection cannot reach the live Y.Doc", async () => {
     await createEmptyDocument(ctx);

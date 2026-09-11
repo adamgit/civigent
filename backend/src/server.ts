@@ -22,6 +22,7 @@ import type { WorkerIpcMessage } from "./runtime/system-state.js";
 import { startRuntimeMemorySampler } from "./runtime/memory-stats.js";
 import { getFatalErrorsMode } from "./runtime/fatal-errors-mode.js";
 import { handleProcessFatal, installProcessFatalHandlers, setFatalReportDeliveryHandler } from "./runtime/fatal-handler.js";
+import { setImpairmentDeliveryHandler, raiseImpairmentsForLeftoverInProgressProposals } from "./runtime/impairment-registry.js";
 import type { WsServerEvent } from "./types/shared.js";
 import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
 import { DocPath } from "./types/shared.js";
@@ -145,6 +146,15 @@ function handleWsEvent(event: WsServerEvent): void {
 setFatalReportDeliveryHandler((report) => {
   wsHub.broadcast({ type: "system:fatal", report });
 });
+
+setImpairmentDeliveryHandler(
+  (report) => {
+    wsHub.broadcast({ type: "system:impairment", report });
+  },
+  (proposalId) => {
+    wsHub.broadcast({ type: "system:impairment-cleared", proposal_id: proposalId });
+  },
+);
 
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
@@ -285,6 +295,7 @@ if (latchedFatal) {
 
   // System is ready — crash recovery and import complete
   setSystemReady();
+  await raiseImpairmentsForLeftoverInProgressProposals();
   ipcSend({ type: "ready" });
   console.log("  System ready — accepting requests.\n");
 

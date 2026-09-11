@@ -345,7 +345,7 @@ export function applyHeadingRemovalPlan(
   plan: HeadingRemovalPlan,
   origin: unknown,
 ): void {
-  if (plan.mergeTargetKey !== null) {
+  if (plan.mergeTargetKey !== null && plan.mergeTargetKey !== plan.dissolvedBfhKey) {
     if (liveFragments.hasFragmentKey(plan.mergeTargetKey)) {
       if (plan.orphanBody.trim() !== "") {
         const current = liveFragments.readFragmentString(plan.mergeTargetKey);
@@ -405,7 +405,8 @@ export async function reflectSplitIntoProposal(
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
   const { sectionWriteInputFromExternal } = await import("../storage/section-formatting.js");
-  const { unionCurrentProposalSections, recordDeletedSectionFiles } = await import("../storage/proposal-repository.js");
+  const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
+  const { recordOrphanedSectionRemovals } = await import("../storage/content-layer.js");
   const editor = ProposalEditor.open(proposalId, "inprogress");
 
   let survivorPath = [...identity.headingPath];
@@ -457,18 +458,9 @@ export async function reflectSplitIntoProposal(
   );
   const add = [...manifestDeltaFromResult(docPath, writeResult).add];
 
-  // Empty-BFH lifecycle: a root-split whose BFH survivor dissolved (empty/
-  // whitespace preamble) reports the BFH in `removedContentEntries` with no
-  // successor reusing its section-file id (the promoted headings always mint
-  // fresh identities). Record that id in the proposal's identity-based delete
-  // overlay so the effective-structure merge stops inheriting it from
-  // canonical — `writeSection`'s shared subtree-replace path never records
-  // deletions itself (only `deleteSubtree` / heading-removal do).
-  if (change.kind === "root-split") {
-    const dissolvedBfh = writeResult.removedContentEntries.find((e) => e.headingPath.length === 0);
-    if (dissolvedBfh) {
-      await recordDeletedSectionFiles(proposalId, docPath, [dissolvedBfh.sectionFile]);
-    }
+  const orphanedRemovals = await recordOrphanedSectionRemovals(proposalId, docPath, writeResult);
+  for (const entry of orphanedRemovals) {
+    add.push({ doc_path: docPath, heading_path: [...entry.headingPath] });
   }
 
   const parentPath = [...identity.headingPath.slice(0, -1)];

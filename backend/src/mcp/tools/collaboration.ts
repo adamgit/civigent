@@ -39,6 +39,7 @@ import {
 } from "../../storage/commit-pipeline.js";
 import { UnclaimedProposalOverlayError } from "../../storage/proposal-overlay-ownership.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import {
@@ -530,6 +531,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
     if (error instanceof UnclaimedProposalOverlayError) {
       return makeToolErrorResult(error.message);
     }
+    await raiseImpairmentForLeftoverProposal(proposalId, error);
     throw error;
   }
 };
