@@ -26,7 +26,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { readWorkspaceSectionList } from "../../api/application/sections.js";
 import { systemDocRead } from "../../auth/authorized-read.js";
@@ -136,7 +136,7 @@ describe("live display authority + real delete contracts (expect RED today)", ()
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const beta = layout.find((e) => e.heading === "Beta")!;
     expect(beta).toBeDefined();
 
@@ -163,7 +163,7 @@ describe("live display authority + real delete contracts (expect RED today)", ()
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const beta = layout.find((e) => e.heading === "Beta")!;
 
     demoteHeading(session, beta.fragmentKey, "Beta");
@@ -171,7 +171,7 @@ describe("live display authority + real delete contracts (expect RED today)", ()
     await session.generator.materializeEdit({ touchedFragmentKeys: [beta.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     expect(post.some((e) => e.heading === "Beta")).toBe(false);
     expect(session.liveFragments.getFragmentKeys()).not.toContain(beta.fragmentKey);
 

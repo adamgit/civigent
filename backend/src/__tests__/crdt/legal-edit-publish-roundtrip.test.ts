@@ -9,7 +9,7 @@ import {
   requestDocSessionPublish,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
@@ -178,7 +178,7 @@ describe("legal-edit publish round-trip: every accepted shape publishes and asse
     );
     await session.enqueue(() => normalizeQuiescedStructureForTest(session));
 
-    const layoutAfterB = await resolveLiveSectionLayout(
+    const layoutAfterB = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -192,7 +192,7 @@ describe("legal-edit publish round-trip: every accepted shape publishes and asse
     );
     await session.enqueue(() => normalizeQuiescedStructureForTest(session));
 
-    const layoutAfterA = await resolveLiveSectionLayout(
+    const layoutAfterA = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

@@ -27,7 +27,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import {
   encodeUpdate,
   decodeMessage,
@@ -126,7 +126,7 @@ describe("E4: cross-client live split adoption (backend portion)", () => {
     expect(quiescenceFrameTypes).not.toContain(MSG_YJS_UPDATE);
 
     // Resolve the post-split layout to learn the new sibling's fragment key.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
     const sibling = layout.find((e) => e.heading === "Second Section")!;
     expect(sibling).toBeDefined();
     expect(sibling.fragmentKey).not.toBe(OVERVIEW_KEY);

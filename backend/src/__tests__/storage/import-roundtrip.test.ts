@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { evaluateAgentWritePolicy, publishProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { readAssembledDocument } from "../../storage/document-reader.js";
 import { systemDocRead } from "../../auth/authorized-read.js";
@@ -63,7 +63,7 @@ describe("import → commit → read round-trip", () => {
 
     // Read fresh proposal and commit
     const result = await evaluateAgentWritePolicy(id);
-    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishWholesaleToCanonical(id, "import", AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read from canonical
     const assembled = await readAssembledForTest(docPath);
@@ -99,7 +99,7 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishWholesaleToCanonical(id, "import", AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Verify skeleton + body files exist on disk
     const contentRoot = getContentRoot();
@@ -145,7 +145,7 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishWholesaleToCanonical(id, "import", AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     // Read assembled — should not throw and should contain all content
     const assembled = await readAssembledForTest(docPath);
@@ -178,7 +178,7 @@ describe("import → commit → read round-trip", () => {
     );
 
     const result = await evaluateAgentWritePolicy(id);
-    await publishProposalToCanonical(id, AgentWritePolicy.buildCommittedProposalMetadata(result));
+    await publishWholesaleToCanonical(id, "import", AgentWritePolicy.buildCommittedProposalMetadata(result));
 
     const assembled = await readAssembledForTest(docPath);
     // The code block should be preserved intact

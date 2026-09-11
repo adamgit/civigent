@@ -16,7 +16,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -74,7 +74,7 @@ describe("WS-7: merge-target resolution edge cases", () => {
     expect(bfh).toContain("The overview covers our strategic goals.");
 
     // The proposal followed: Overview is gone, Timeline remains.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     expect(layout.some((e) => e.heading === "Overview")).toBe(false);
     expect(layout.some((e) => e.heading === "Timeline")).toBe(true);
   });

@@ -22,7 +22,7 @@ import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer, requestDocSessionPublish } from "../../ws/crdt-ws-coordinator.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody, FragmentContent } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -116,7 +116,7 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     await drainLane(session);
 
     // Exactly one headed section `h3 added`, no partial/duplicate headings.
-    const layout = await resolveLiveSectionLayout(BFH_DOC_PATH, null);
+    const layout = await resolvePersistedSectionLayout(BFH_DOC_PATH, null);
     expect(layout.map((e) => e.heading).filter(Boolean)).toEqual(["h3 added"]);
 
     // BFH body is exactly the preamble — no embedded heading text remaining.
@@ -148,7 +148,7 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     expect(session.generator.hasCurrentProposal()).toBe(false); // published
 
     // Canonical now holds exactly one heading and the preamble as BFH body.
-    const canonicalLayout = await resolveLiveSectionLayout(BFH_DOC_PATH, null);
+    const canonicalLayout = await resolvePersistedSectionLayout(BFH_DOC_PATH, null);
     const canonicalHeadings = canonicalLayout.map((e) => e.heading).filter(Boolean);
     expect(canonicalHeadings).toEqual(["h3 added"]);
 
@@ -162,7 +162,7 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     vi.useRealTimers();
     const reseedHead = await getHeadSha(getDataRoot());
     const session2 = await acquireDocSession(BFH_DOC_PATH, WRITER.id, reseedHead, WRITER, "sock-2");
-    const layout2 = await resolveLiveSectionLayout(BFH_DOC_PATH, session2.generator.getCurrentProposalId());
+    const layout2 = await resolvePersistedSectionLayout(BFH_DOC_PATH, session2.generator.getCurrentProposalId());
     expect(layout2.map((e) => e.heading).filter(Boolean)).toEqual(["h3 added"]);
     for (const entry of layout2) {
       const live = session2.liveFragments.readFragmentString(entry.fragmentKey) as string;
@@ -202,7 +202,7 @@ describe("topology-neutral materialization (priority-0 heading-in-body bug)", ()
     await requestDocSessionPublish(BFH_DOC_PATH);
     await drainLane(session);
 
-    const canonicalLayout = await resolveLiveSectionLayout(BFH_DOC_PATH, null);
+    const canonicalLayout = await resolvePersistedSectionLayout(BFH_DOC_PATH, null);
     const headings = canonicalLayout.map((e) => e.heading).filter(Boolean);
 
     // Exactly one heading; zero partial-heading artifacts from intermediate keystrokes.

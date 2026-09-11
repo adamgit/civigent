@@ -23,7 +23,7 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
 
 const DOC = "/test/todo/no-predecessor-bfh.md";
@@ -112,7 +112,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const alpha = layout.find((e) => e.heading === "Alpha")!;
     expect(alpha).toBeDefined();
     expect(layout[0].fragmentKey).toBe(alpha.fragmentKey); // Alpha is first, no BFH above.
@@ -123,7 +123,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
     await session.generator.materializeEdit({ touchedFragmentKeys: [alpha.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     // The headed "Alpha" identity is gone; a BFH preamble now leads the doc.
     expect(post.some((e) => e.heading === "Alpha")).toBe(false);
     expect(post[0].headingPath.length).toBe(0);
@@ -146,7 +146,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const alpha = layout.find((e) => e.heading === "Alpha")!;
     const beta = layout.find((e) => e.heading === "Beta")!;
 
@@ -155,7 +155,7 @@ describe("no-predecessor heading-deletion → BFH at quiescence", () => {
     await session.generator.materializeEdit({ touchedFragmentKeys: [beta.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     // Beta merged into predecessor Alpha; no BFH was created.
     expect(post.some((e) => e.heading === "Beta")).toBe(false);
     expect(post.some((e) => e.heading === "Alpha")).toBe(true);

@@ -21,7 +21,7 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
 
 const DOC = "/test/todo/heading-into-empty-bfh.md";
@@ -107,7 +107,7 @@ describe("heading-deletion settling into an already-empty BFH dissolves it", () 
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const alpha = layout.find((e) => e.heading === "Alpha")!;
     expect(alpha).toBeDefined();
 
@@ -119,7 +119,7 @@ describe("heading-deletion settling into an already-empty BFH dissolves it", () 
     await session.generator.materializeEdit({ touchedFragmentKeys: [alpha.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     expect(post.some((e) => e.headingPath.length === 0)).toBe(false);
     expect(post.some((e) => e.heading === "Alpha")).toBe(false);
     expect(post.some((e) => e.heading === "Beta")).toBe(true);

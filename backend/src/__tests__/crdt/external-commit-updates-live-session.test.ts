@@ -23,14 +23,14 @@ import {
   destroyAllSessions,
   lookupDocSession,
 } from "../../crdt/ydoc-lifecycle.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { applyCommittedCanonicalToLiveSession } from "../../ws/crdt-ws-coordinator.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
@@ -85,7 +85,7 @@ describe("external commit updates the active live Y.Doc without a session reset"
       heading: "Overview",
       content: "EXTERNALLY COMMITTED OVERVIEW",
     });
-    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
 
     // Apply the external committed canonical change into the live session.
@@ -130,13 +130,13 @@ describe("external commit updates the active live Y.Doc without a session reset"
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Timeline"],
     });
-    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
 
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
     await drainLane(session);
 
-    const effectiveLayout = await resolveLiveSectionLayout(
+    const effectiveLayout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

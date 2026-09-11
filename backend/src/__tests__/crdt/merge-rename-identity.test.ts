@@ -21,7 +21,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -100,7 +100,7 @@ describe("WS-2: identity-preserving MERGE + RENAME", () => {
     expect(structId(overviewBodyNode)).toEqual(overviewBodyIdBefore);
 
     // The proposal followed: Timeline is gone from its layout.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     expect(layout.some((e) => e.heading === "Timeline")).toBe(false);
   });
 
@@ -129,7 +129,7 @@ describe("WS-2: identity-preserving MERGE + RENAME", () => {
 
     // The proposal followed the rename in place — the Overview key still resolves
     // to the renamed section (no re-key divergence).
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     const renamed = layout.find((e) => e.fragmentKey === OVERVIEW_KEY);
     expect(renamed?.heading).toBe("Strategic Overview");
   });

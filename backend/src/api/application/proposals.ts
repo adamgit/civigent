@@ -29,7 +29,7 @@ import {
   ProposalNotFoundError,
   InvalidProposalStateError,
 } from "../../storage/proposal-repository.js";
-import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { clearImpairment, raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
@@ -473,7 +473,7 @@ export async function commitProposalUseCase(
   if (proposal.writer.type === "human") {
     let absorbResult;
     try {
-      absorbResult = await publishProposalToCanonicalDetailed(proposal.id, {});
+      absorbResult = await publishMergeToCanonicalDetailed(proposal.id, {});
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(proposal.id, error);
       throw error;
@@ -496,7 +496,7 @@ export async function commitProposalUseCase(
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
     let absorbResult;
     try {
-      absorbResult = await publishProposalToCanonicalDetailed(proposal.id, committedMetadata);
+      absorbResult = await publishMergeToCanonicalDetailed(proposal.id, committedMetadata);
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(proposal.id, error);
       throw error;

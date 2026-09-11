@@ -1,4 +1,4 @@
-import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../../crdt/live-section-layout.js";
 import { fragmentKeyFromSectionFile } from "../../../crdt/ydoc-fragments.js";
 import { isDocumentBeforeFirstHeading } from "../../../storage/section-shape.js";
 import {
@@ -11,7 +11,7 @@ export async function runLiveTopologyVsCanonicalCheck(ctx: DocumentDiagnosticsCo
   const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
   if (!proposalId) return;
   try {
-    const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
+    const layout = await resolvePersistedSectionLayout(ctx.docPath, proposalId);
     const liveKeys = new Set(layout.map((entry) => entry.fragmentKey));
     const canonicalKeys = new Set<string>();
     const recursiveSkeleton = await ensureRecursiveSkeleton(ctx);

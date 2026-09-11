@@ -24,7 +24,7 @@ import {
 import { importFilesToProposal, type ImportFile } from "../../storage/import-service.js";
 import { applyImportResolution, ImportResolutionError } from "../../storage/import-resolutions.js";
 import { readProposal } from "../../storage/proposal-repository.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishWholesaleToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
@@ -354,7 +354,7 @@ export async function commitImport(
   onProgress?.({ kind: "publishing" });
   let absorbResult;
   try {
-    absorbResult = await publishProposalToCanonicalDetailed(importProposalId, {}, importDiagnostics);
+    absorbResult = await publishWholesaleToCanonicalDetailed(importProposalId, "import", {}, importDiagnostics);
   } catch (error) {
     await raiseImpairmentForLeftoverProposal(importProposalId, error);
     throw error;

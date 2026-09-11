@@ -24,7 +24,7 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { joinLiveRecipient } from "../helpers/live-recipient.js";
@@ -151,7 +151,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
     const grandchild = layout.find((e) => e.heading === "Grandchild")!;
@@ -171,7 +171,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     await session.generator.materializeEdit({ touchedFragmentKeys: [intro.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
 
     // Demoted headed identity gone — must not remain as a durable parent.
     expect(post.some((e) => e.heading === "Intro")).toBe(false);
@@ -199,7 +199,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     await createNestedFirstDoc(ctx.rootDir, "Intro body\n", "Existing preamble\n");
     const session = await openSession();
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const bfh = layout.find((e) => e.headingPath.length === 0)!;
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
@@ -220,7 +220,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     await normalizeQuiescedStructureForTest(session);
 
     const proposalId = session.generator.getCurrentProposalId()!;
-    const post = await resolveLiveSectionLayout(DOC, proposalId);
+    const post = await resolvePersistedSectionLayout(DOC, proposalId);
     expect(post.some((e) => e.fragmentKey === intro.fragmentKey)).toBe(false);
 
     const postBfh = post.find((e) => e.headingPath.length === 0)!;
@@ -254,7 +254,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
     const grandchild = layout.find((e) => e.heading === "Grandchild")!;
@@ -268,7 +268,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     await session.generator.materializeEdit({ touchedFragmentKeys: [intro.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
 
     expect(post.some((e) => e.heading === "Intro")).toBe(false);
     expect(post.some((e) => e.fragmentKey === intro.fragmentKey)).toBe(false);
@@ -301,7 +301,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
     const grandchild = layout.find((e) => e.heading === "Grandchild")!;
@@ -318,7 +318,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     await fireQuiescence(session);
 
     // Layout levels unchanged (## / ###) even though the paths shortened.
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     const postChild = post.find((e) => e.heading === "Child")!;
     const postGrand = post.find((e) => e.heading === "Grandchild")!;
     expect(postChild.headingLevel).toBe(2);
@@ -351,7 +351,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     // No editor socket: the explicit publish runs inline.
     const session = await openSession();
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const intro = layout.find((e) => e.heading === "Intro")!;
 
     setFragment(session, intro.fragmentKey, "");
@@ -384,7 +384,7 @@ describe("nested first-section demotion → BFH + reparent (option B)", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const intro = layout.find((e) => e.heading === "Intro")!;
     const child = layout.find((e) => e.heading === "Child")!;
     const live = await joinLiveRecipient(session);

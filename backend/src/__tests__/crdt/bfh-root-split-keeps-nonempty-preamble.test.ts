@@ -19,7 +19,7 @@ import {
 } from "../../ws/crdt-ws-coordinator.js";
 import { joinLiveRecipient } from "../helpers/live-recipient.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -94,7 +94,7 @@ describe("empty BFH root-split dissolve", () => {
 
     await typeIntoBfhAndQuiesce(session, "## Heading");
 
-    const layout = await resolveLiveSectionLayout(DOC_PATH, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(DOC_PATH, session.generator.getCurrentProposalId());
     expect(layout.some((e) => e.heading === "Heading")).toBe(true);
     expect(layout.some((e) => e.headingPath.length === 0)).toBe(false);
     expect(session.liveFragments.getFragmentKeys()).not.toContain(BEFORE_FIRST_HEADING_KEY);
@@ -149,7 +149,7 @@ describe("empty BFH root-split dissolve", () => {
 
     await typeIntoBfhAndQuiesce(session, "preamble text\n\n## Heading");
 
-    const layout = await resolveLiveSectionLayout(DOC_PATH, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(DOC_PATH, session.generator.getCurrentProposalId());
     expect(layout.some((e) => e.heading === "Heading")).toBe(true);
     const bfh = layout.find((e) => e.headingPath.length === 0);
     expect(bfh).toBeDefined();

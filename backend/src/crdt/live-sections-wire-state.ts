@@ -43,7 +43,7 @@ export async function buildWireLiveSectionsState(
   editorFocusStates: readonly EditorFocusState[] = [],
 ): Promise<WireLiveSectionsState> {
   const currentProposalId = session.generator.getCurrentProposalId();
-  const layout = await resolveLiveSectionLayout(session.docPath, currentProposalId);
+  const layout = await resolveLiveSectionLayout(session);
 
   const topology: WireLiveSectionRef[] = layout.map((entry) => ({
     fragment_key: entry.fragmentKey,

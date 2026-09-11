@@ -1,4 +1,4 @@
-import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../../crdt/live-section-layout.js";
 import { SectionRef } from "../../../domain/section-ref.js";
 import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "../context.js";
 
@@ -6,7 +6,7 @@ export async function runLiveDuplicateHeadingPathsCheck(ctx: DocumentDiagnostics
   const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
   if (!proposalId) return;
   try {
-    const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
+    const layout = await resolvePersistedSectionLayout(ctx.docPath, proposalId);
     const groups = new Map<string, Array<{ fragmentKey: string; headingPath: string[] }>>();
     for (const entry of layout) {
       const key = SectionRef.headingKey(entry.headingPath);

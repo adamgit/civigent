@@ -64,6 +64,6 @@ export async function fireLiveMove(
 
 /** The live effective heading paths, joined by `>>` for readable assertions. */
 export async function liveKeys(session: DocSession): Promise<string[]> {
-  const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+  const layout = await resolveLiveSectionLayout(session);
   return layout.map((e) => e.headingPath.join(">>"));
 }

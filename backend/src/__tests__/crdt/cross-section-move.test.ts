@@ -25,7 +25,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { moveLiveSection } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
@@ -41,7 +41,7 @@ async function openSession(): Promise<DocSession> {
 
 /** Resolve the ordered top-level heading names from the live layout. */
 async function liveHeadingOrder(session: DocSession): Promise<string[]> {
-  const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+  const layout = await resolvePersistedSectionLayout(session.docPath, session.generator.getCurrentProposalId());
   return layout.filter((e) => e.headingPath.length === 1).map((e) => e.heading);
 }
 
@@ -92,7 +92,7 @@ describe("MW-10: cross-section move", () => {
 
     // Body content survives the move exactly (matched by section identity, which
     // may be re-keyed; assert via the resolved layout fragment keys).
-    const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(session.docPath, session.generator.getCurrentProposalId());
     const timelineKey = layout.find((e) => e.heading === "Timeline")!.fragmentKey;
     const overviewKey = layout.find((e) => e.heading === "Overview")!.fragmentKey;
     const overviewAfter = session.liveFragments.readFragmentString(overviewKey) as string;

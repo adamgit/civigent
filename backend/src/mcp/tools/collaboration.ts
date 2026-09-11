@@ -35,7 +35,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  publishProposalToCanonicalDetailed,
+  publishMergeToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
 import { UnclaimedProposalOverlayError } from "../../storage/proposal-overlay-ownership.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
@@ -480,7 +480,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
-      const absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+      const absorbResult = await publishMergeToCanonicalDetailed(proposalId, committedMetadata);
       const committedHead = absorbResult.commitSha;
       forgetSessionDraft(ctx.session, proposalId);
 

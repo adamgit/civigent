@@ -3,7 +3,7 @@
  *
  * After an author types an embedded heading into a fragment and `materializeEdit()`
  * splits it into a body-holder + a new section, the live document layout
- * (`resolveLiveSectionLayout` / `forEachVisibleSection`) emits the nested
+ * (`resolvePersistedSectionLayout` / `forEachVisibleSection`) emits the nested
  * body-holder with its PARENT's VISIBLE heading + level (Option A:
  * `{ headingPath: ["Overview"], heading: "Overview", level: <##> }`), and its live
  * fragment RETAINS the `## Overview` heading line — NOT the literal `("", 0)`
@@ -19,7 +19,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
@@ -94,7 +94,7 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     expect(subBody).toContain("brand new sub body");
 
     // The live layout still resolves the body-holder + New Sub + Timeline.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, thirdId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, thirdId);
     const headings = layout.map((e) => e.heading);
     expect(headings).toContain("New Sub");
     expect(headings).toContain("Timeline");
@@ -154,7 +154,7 @@ describe("MW-16: materialize after a structural-dirty split", () => {
     expect(siblingBody).toContain("brand new sibling body");
 
     // The live layout resolves Overview (leaf) + Second Section + Timeline.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, thirdId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, thirdId);
     const headings = layout.map((e) => e.heading);
     expect(headings).toContain("Overview");
     expect(headings).toContain("Second Section");

@@ -1,4 +1,4 @@
-import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../../crdt/live-section-layout.js";
 import { readActiveProposal } from "../../../storage/proposal-repository.js";
 import { SectionRef } from "../../../domain/section-ref.js";
 import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "../context.js";
@@ -7,7 +7,7 @@ export async function runLiveClaimSetOrphansCheck(ctx: DocumentDiagnosticsContex
   const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
   if (!proposalId) return;
   try {
-    const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
+    const layout = await resolvePersistedSectionLayout(ctx.docPath, proposalId);
     const liveHeadingKeys = new Set(layout.map((entry) => SectionRef.headingKey(entry.headingPath)));
     const proposal = await readActiveProposal(proposalId);
     const orphans: string[] = [];

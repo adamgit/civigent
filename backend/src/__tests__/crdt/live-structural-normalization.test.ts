@@ -22,7 +22,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
@@ -83,7 +83,7 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
     // The proposal layout (authoritative) split Overview into a body-holder +
     // a New Sub section. The LIVE Y.Doc must now hold a fragment for EACH layout
     // entry — i.e. the split happened live.
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -149,7 +149,7 @@ describe("MW-15: live structural normalization (split / orphan-merge)", () => {
 
     // The proposal layout split Overview into a LEAF Overview + a top-level
     // Second Section sibling. The LIVE Y.Doc must hold a fragment for EACH entry.
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

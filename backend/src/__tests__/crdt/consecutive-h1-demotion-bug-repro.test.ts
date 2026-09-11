@@ -24,7 +24,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 
@@ -134,7 +134,7 @@ describe("consecutive H1 demotion bug report repro", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const beta = layout.find((e) => e.heading === "Beta")!;
     const gamma = layout.find((e) => e.heading === "Gamma")!;
     expect(beta).toBeDefined();
@@ -165,7 +165,7 @@ describe("consecutive H1 demotion bug report repro", () => {
     const session = await openSession();
     disposers.push(registerFakeEditorSocketForTest(DOC, "editor-sock").dispose);
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const beta = layout.find((e) => e.heading === "Beta")!;
 
     demoteHeading(session, beta.fragmentKey, "Beta");
@@ -173,7 +173,7 @@ describe("consecutive H1 demotion bug report repro", () => {
     await session.generator.materializeEdit({ touchedFragmentKeys: [beta.fragmentKey] });
     await fireQuiescence(session);
 
-    const post = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const post = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     expect(post.some((e) => e.heading === "Beta")).toBe(false);
     expect(session.liveFragments.getFragmentKeys()).not.toContain(beta.fragmentKey);
 
@@ -188,7 +188,7 @@ describe("consecutive H1 demotion bug report repro", () => {
 
     // The ghost content was dropped and the key stays unregistered (delete stands).
     expect(session.liveFragments.getFragmentKeys()).not.toContain(beta.fragmentKey);
-    const postGhost = await resolveLiveSectionLayout(DOC, session.generator.getCurrentProposalId());
+    const postGhost = await resolvePersistedSectionLayout(DOC, session.generator.getCurrentProposalId());
     expect(postGhost.some((e) => e.heading === "Beta")).toBe(false);
   });
 });

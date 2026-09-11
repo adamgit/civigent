@@ -60,6 +60,7 @@ import {
   useEditorSessionCommandsValue,
 } from "../contexts/EditorSessionCommandsContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
+import type { DocumentAction } from "../components/DocumentActions";
 import { ShareDocumentDialog } from "../components/ShareDocumentDialog";
 import { CanonicalWriteFailureDialog } from "../components/CanonicalWriteFailureDialog";
 import {
@@ -816,6 +817,63 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     return <DocumentLoadErrorView docPath={docPath} error={error} />;
   }
 
+  const documentActions: DocumentAction[] = [
+    {
+      id: "rename",
+      label: "Rename",
+      onClick: () => {
+        setRenameValue(docPath);
+        setRenaming(true);
+      },
+    },
+    {
+      id: "export",
+      label: "Export",
+      onClick: () => {
+        void (async () => {
+          try {
+            const { markdown } = await apiClient.getLiveMarkdown(docPath);
+            const blob = new Blob([markdown], { type: "text/markdown" });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = `${getDocDisplayName(docPath)}.md`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+          }
+        })();
+      },
+    },
+  ];
+  if (shareAvailable) {
+    documentActions.push({
+      id: "share",
+      label: "Share",
+      onClick: () => setShowShareDialog(true),
+    });
+  }
+  documentActions.push({
+    id: "delete",
+    label: "Delete",
+    danger: true,
+    onClick: () => {
+      void (async () => {
+        if (!window.confirm("Delete this document? This cannot be undone.")) return;
+        setDeleteError(null);
+        setDeleteWriteFailure(null);
+        try {
+          await resourceModel.deleteDocument(docPath);
+          navigate(parentFolderRoute(docPath));
+        } catch (err) {
+          if (err instanceof CanonicalWriteFailedError) setDeleteWriteFailure(err.message);
+          else setDeleteError(err instanceof Error ? err.message : String(err));
+        }
+      })();
+    },
+  });
+
   const documentTopbar = (
         <DocumentTopbar
           docPath={docPath}
@@ -831,19 +889,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             }
             pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
           }}
-          onStartRename={() => { setRenameValue(docPath); setRenaming(true); }}
-          onDelete={async () => {
-            if (!window.confirm("Delete this document? This cannot be undone.")) return;
-            setDeleteError(null);
-            setDeleteWriteFailure(null);
-            try {
-              await resourceModel.deleteDocument(docPath);
-              navigate(parentFolderRoute(docPath));
-            } catch (err) {
-              if (err instanceof CanonicalWriteFailedError) setDeleteWriteFailure(err.message);
-              else setDeleteError(err instanceof Error ? err.message : String(err));
-            }
-          }}
+          actions={documentActions}
           toolbarAccessory={toolbarAccessory}
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((v) => !v)}
@@ -1087,9 +1133,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 renameError={renameError}
                 pathCopied={pathCopied}
                 rootRef={paperHeaderRef}
-                onShare={shareAvailable ? () => setShowShareDialog(true) : undefined}
+                actions={documentActions}
                 onRenameValueChange={setRenameValue}
-                onStartRename={() => { setRenameValue(docPath); setRenaming(true); }}
                 onCancelRename={() => { setRenaming(false); setRenameError(null); }}
                 onSubmitRename={async () => {
                   if (!renameValue.trim()) return;
@@ -1101,20 +1146,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                     setRenameError(err instanceof Error ? err.message : String(err));
                   }
                 }}
-                onExportMarkdown={async () => {
-                  try {
-                    const { markdown } = await apiClient.getLiveMarkdown(docPath);
-                    const blob = new Blob([markdown], { type: "text/markdown" });
-                    const url = URL.createObjectURL(blob);
-                    const anchor = document.createElement("a");
-                    anchor.href = url;
-                    anchor.download = `${getDocDisplayName(docPath)}.md`;
-                    anchor.click();
-                    URL.revokeObjectURL(url);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : String(err));
-                  }
-                }}
                 onCopyPath={async () => {
                   const didCopy = await copyTextToClipboard(docPath);
                   if (!didCopy) return;
@@ -1123,18 +1154,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                     clearTimeout(pathCopiedTimeoutRef.current);
                   }
                   pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
-                }}
-                onDelete={async () => {
-                  if (!window.confirm("Delete this document? This cannot be undone.")) return;
-                  setDeleteError(null);
-                  setDeleteWriteFailure(null);
-                  try {
-                    await resourceModel.deleteDocument(docPath);
-                    navigate(parentFolderRoute(docPath));
-                  } catch (err) {
-                    if (err instanceof CanonicalWriteFailedError) setDeleteWriteFailure(err.message);
-                    else setDeleteError(err instanceof Error ? err.message : String(err));
-                  }
                 }}
               />
 

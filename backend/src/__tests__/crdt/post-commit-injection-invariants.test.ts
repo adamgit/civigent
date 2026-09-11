@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonical } from "../../storage/commit-pipeline.js";
 import { setCrdtEventHandler } from "../../ws/crdt-ws-coordinator.js";
 
 vi.mock("../../storage/proposal-repository.js", async (importOriginal) => {
@@ -71,7 +71,7 @@ describe("Post-commit notify invariants", () => {
       events.push(event);
     });
 
-    await publishProposalToCanonical("test-prop-001", {});
+    await publishMergeToCanonical("test-prop-001", {});
 
     // The commit pipeline neither emits WS events nor reinjects into live Y.Docs.
     // Canonical→live propagation is the CRDTProposalGenerator's Y.transact
@@ -110,7 +110,7 @@ describe("Post-commit notify invariants", () => {
       events.push(event);
     });
 
-    await publishProposalToCanonical("test-prop-002", {}, undefined, {
+    await publishMergeToCanonical("test-prop-002", {}, undefined, {
       restoreTargetSha: "abc1234",
     });
 

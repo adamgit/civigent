@@ -31,7 +31,7 @@ import {
   unclaimedOwnedHeadings,
 } from "./proposal-overlay-ownership.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
-import { CanonicalStore, type AbsorbResult } from "./canonical-store.js";
+import { CanonicalStore, type AbsorbResult, type AbsorbMode } from "./canonical-store.js";
 import type { DocPath, DocumentTargetRef, WriterIdentity } from "../types/shared.js";
 import { checkDocPermission } from "../auth/acl.js";
 import { isSystemAuthority, systemAuthority, type SystemAuthority } from "../auth/system-authority.js";
@@ -49,6 +49,14 @@ export class CommitPermissionError extends Error {
 }
 
 export interface CommitProposalToCanonicalOptions {
+  /**
+   * Declared by the caller that performed the document op — never inferred
+   * from the proposal's own targets (spec: absorb mode is not a document
+   * target). `merge` for every section-scoped write, including a DocSession
+   * live publish. `wholesale` only for the caller that actually created,
+   * deleted, renamed, restored, or imported the named document(s).
+   */
+  absorbMode: AbsorbMode;
   /**
    * The ASKER the commit gate evaluates — on whose behalf this publish runs.
    * Absent → the gate checks `proposal.writer` (fail-closed default: someone
@@ -194,15 +202,18 @@ async function absorbCommittingProposalToCanonical(
   const store = new CanonicalStore(getContentRoot(), dataRoot);
   const { commitMessage, author } = buildPublishCommitMessage(proposal, options);
 
-  // Manifest-overlay (Step 5d): ONLY whole-document ops (restore/import, document
-  // delete/rename) claim DOCUMENT targets and take the wholesale replacement path,
-  // not the section-scoped merge. Pass their paths so absorb gates them out of the
-  // merge. EVERY other proposal — including a DocSession live publish (U4) — passes
-  // none → manifest-scoped merge (current canonical overlaid by the manifest).
-  const documentTargetPaths = proposal.targets
-    .filter((t): t is DocumentTargetRef => t.kind === "document")
-    .map((t) => t.doc_path);
-  const wholesaleDocPaths = [...new Set(documentTargetPaths)];
+  // Wholesale-vs-merge is the CALLER's declaration (options.absorbMode), never
+  // inferred from the mere presence of a document target — a document target
+  // can exist on an otherwise section-scoped proposal purely for lock/audit.
+  // Only a caller that declares wholesale takes the whole-document replacement
+  // path, scoped to that proposal's own document targets.
+  const wholesaleDocPaths = options.absorbMode.mode === "wholesale"
+    ? [...new Set(
+        proposal.targets
+          .filter((t): t is DocumentTargetRef => t.kind === "document")
+          .map((t) => t.doc_path),
+      )]
+    : [];
 
   // Identity-based delete detection (D5): hand the absorb merge the canonical
   // section-file ids this proposal deleted, grouped by doc, so the new canonical
@@ -225,6 +236,7 @@ async function absorbCommittingProposalToCanonical(
 
   const absorbResult = await store.absorbChangedSections(overlayRoot, commitMessage, author, {
     diagnostics,
+    absorbMode: options.absorbMode,
     absorbedSectionRefs: proposalSectionRefs(proposal),
     documentPathsToRewrite: wholesaleDocPaths.length > 0 ? wholesaleDocPaths : undefined,
     deletedSectionFilesByDoc,
@@ -314,11 +326,17 @@ async function enforceCommitWritePermission(
   }
 }
 
-export async function publishProposalToCanonicalDetailed(
+/**
+ * Core publish entry point. `options.absorbMode` is mandatory — callers must
+ * use `publishMergeToCanonicalDetailed` / `publishWholesaleToCanonicalDetailed`
+ * rather than construct this options object ad hoc, so the mode is always a
+ * deliberate declaration from the caller that performed the document op.
+ */
+async function publishProposalToCanonicalDetailed(
   proposalId: ProposalId,
   committedMetadata: HumanInvolvementCommittedProposalMetadata,
-  diagnostics?: string[],
-  options: CommitProposalToCanonicalOptions = {},
+  diagnostics: string[] | undefined,
+  options: CommitProposalToCanonicalOptions,
 ): Promise<AbsorbResult> {
   await enforceCommitWritePermission(proposalId, options.authority);
 
@@ -346,14 +364,74 @@ export async function publishProposalToCanonicalDetailed(
   }
 }
 
-export async function publishProposalToCanonical(
+async function publishProposalToCanonical(
   proposalId: ProposalId,
   committedMetadata: HumanInvolvementCommittedProposalMetadata,
-  diagnostics?: string[],
-  options: CommitProposalToCanonicalOptions = {},
+  diagnostics: string[] | undefined,
+  options: CommitProposalToCanonicalOptions,
 ): Promise<string> {
   const absorbResult = await publishProposalToCanonicalDetailed(
     proposalId,
+    committedMetadata,
+    diagnostics,
+    options,
+  );
+  return absorbResult.commitSha;
+}
+
+type PublishCallerOptions = Omit<CommitProposalToCanonicalOptions, "absorbMode">;
+
+/** Section-scoped publish — the manifest is always overlaid onto current canonical. */
+export async function publishMergeToCanonicalDetailed(
+  proposalId: ProposalId,
+  committedMetadata: HumanInvolvementCommittedProposalMetadata,
+  diagnostics?: string[],
+  options: PublishCallerOptions = {},
+): Promise<AbsorbResult> {
+  return publishProposalToCanonicalDetailed(proposalId, committedMetadata, diagnostics, {
+    ...options,
+    absorbMode: { mode: "merge" },
+  });
+}
+
+export async function publishMergeToCanonical(
+  proposalId: ProposalId,
+  committedMetadata: HumanInvolvementCommittedProposalMetadata,
+  diagnostics?: string[],
+  options: PublishCallerOptions = {},
+): Promise<string> {
+  const absorbResult = await publishMergeToCanonicalDetailed(proposalId, committedMetadata, diagnostics, options);
+  return absorbResult.commitSha;
+}
+
+/**
+ * Whole-document publish — the caller that performed the document op (create,
+ * delete, rename, restore, import) names the reason; the proposal's own
+ * document targets are used only as the scope of documents to replace.
+ */
+export async function publishWholesaleToCanonicalDetailed(
+  proposalId: ProposalId,
+  reason: Extract<AbsorbMode, { mode: "wholesale" }>["reason"],
+  committedMetadata: HumanInvolvementCommittedProposalMetadata,
+  diagnostics?: string[],
+  options: PublishCallerOptions = {},
+): Promise<AbsorbResult> {
+  return publishProposalToCanonicalDetailed(proposalId, committedMetadata, diagnostics, {
+    ...options,
+    absorbMode: { mode: "wholesale", reason },
+  });
+}
+
+export async function publishWholesaleToCanonical(
+  proposalId: ProposalId,
+  reason: Extract<AbsorbMode, { mode: "wholesale" }>["reason"],
+  committedMetadata: HumanInvolvementCommittedProposalMetadata,
+  diagnostics?: string[],
+  options: PublishCallerOptions = {},
+): Promise<string> {
+  const absorbResult = await publishWholesaleToCanonicalDetailed(
+    proposalId,
+    reason,
     committedMetadata,
     diagnostics,
     options,
@@ -381,7 +459,7 @@ export async function publishCommittingProposalToCanonical(
   proposalId: ProposalId,
   committedMetadata: HumanInvolvementCommittedProposalMetadata = {},
   diagnostics?: string[],
-  options: CommitProposalToCanonicalOptions = {},
+  options: PublishCallerOptions = {},
 ): Promise<AbsorbResult> {
   const proposal = await readProposal(proposalId);
   if (proposal.status !== "committing") {
@@ -393,13 +471,21 @@ export async function publishCommittingProposalToCanonical(
     proposalId,
     options.authority ?? systemAuthority("crash-recovery republish"),
   );
+  // Recovery re-runs a commit an earlier process already decided on before it
+  // crashed; the original caller's merge-vs-wholesale declaration was never
+  // persisted, so this is the one place mode is still read back from the
+  // proposal's own document targets rather than declared fresh.
+  const hasDocumentTarget = proposal.targets.some((t) => t.kind === "document");
+  const absorbMode: AbsorbMode = hasDocumentTarget
+    ? { mode: "wholesale", reason: "restore" }
+    : { mode: "merge" };
   // Recovery/idempotency path: a re-run of an already-landed commit legitimately
   // absorbs nothing, so an empty commit is permitted here (and only here).
   return absorbCommittingProposalToCanonical(
     proposalId,
     committedMetadata,
     diagnostics,
-    options,
+    { ...options, absorbMode },
     true,
   );
 }

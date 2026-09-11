@@ -233,8 +233,8 @@ interface LiveDocumentSourceDeps {
 function makeLiveDocumentSource(deps: LiveDocumentSourceDeps): LiveDocumentSource {
   return {
     async partitionLiveFragmentsByStructuralCleanliness(): Promise<LiveSectionsSnapshotResult> {
-      const { resolveLiveSectionLayout } = await import("./live-section-layout.js");
-      const layout = await resolveLiveSectionLayout(deps.docPath, deps.getCurrentProposalId());
+      const { resolvePersistedSectionLayout } = await import("./live-section-layout.js");
+      const layout = await resolvePersistedSectionLayout(deps.docPath, deps.getCurrentProposalId());
       const captured = captureLiveFragments(
         layout,
         (fragmentKey) => deps.liveFragments.readFragmentString(fragmentKey),

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
-import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout, type LiveSectionLayoutEntry } from "../../crdt/live-section-layout.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
@@ -96,7 +96,7 @@ export async function collectSectionLayers(ctx: DocumentDiagnosticsContext): Pro
     const draftProposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
     if (draftProposalId) {
       try {
-        const liveLayout = await resolveLiveSectionLayout(ctx.docPath, draftProposalId);
+        const liveLayout = await resolvePersistedSectionLayout(ctx.docPath, draftProposalId);
         for (const entry of liveLayout) liveLayoutByFragmentKey.set(entry.fragmentKey, entry);
       } catch {
         liveLayoutByFragmentKey.clear();

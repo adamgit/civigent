@@ -7,7 +7,7 @@
  * general runtime/admin import path (those go through the normal import flow).
  *
  * It is a thin orchestrator over `importFilesToProposal` + an immediate
- * `publishProposalToCanonical`; the `ProposalEditor` routing is inherited
+ * `publishWholesaleToCanonical`; the `ProposalEditor` routing is inherited
  * transitively through `importFilesToProposal`.
  */
 
@@ -17,7 +17,7 @@ import { directoryExists, readDirentsIfExists, readFileIfExists } from "./fs-pri
 import { docPathFromContentRelativeFsPath } from "./path-utils.js";
 import { getContentRoot } from "./data-root.js";
 import { importFilesToProposal, type ImportFile } from "./import-service.js";
-import { publishProposalToCanonical } from "./commit-pipeline.js";
+import { publishWholesaleToCanonical } from "./commit-pipeline.js";
 import { systemAuthority } from "../auth/system-authority.js";
 import { DocPath, type WriterIdentity } from "../types/shared.js";
 
@@ -145,7 +145,7 @@ export async function bootstrapContentSeed(sourceRoot: string): Promise<Bootstra
   // Startup-only seed: zero scores (empty SectionScoreSnapshot) and an explicit
   // bootstrap-seed commit message rather than the default `agent proposal:`
   // line. See assumptions.md (bootstrap commit-metadata decision).
-  await publishProposalToCanonical(proposalId, {}, undefined, {
+  await publishWholesaleToCanonical(proposalId, "import", {}, undefined, {
     authority: systemAuthority("bootstrap content seed"),
     commitMessageOverride: `bootstrap seed: initial content import from ${sourceRoot}\n\nProposal: ${proposalId}`,
   });

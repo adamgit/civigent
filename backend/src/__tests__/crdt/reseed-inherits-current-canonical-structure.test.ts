@@ -27,7 +27,7 @@ import {
   acquireDocSession,
   destroyAllSessions,
 } from "../../crdt/ydoc-lifecycle.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import {
   getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
@@ -35,7 +35,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { ProposalAdoptionId } from "../../types/shared.js";
@@ -84,7 +84,7 @@ describe("DocSession reseed inherits sections canonical gained after the proposa
       heading: "Roadmap",
       content: "ROADMAP BODY ADDED AFTER THE PROPOSAL OPENED",
     });
-    await publishProposalToCanonicalDetailed(externalId, {});
+    await publishMergeToCanonicalDetailed(externalId, {});
 
     // Reconstruct the DocSession (adopts the inprogress proposal) and seed the Y.Doc.
     destroyAllSessions();
@@ -93,7 +93,7 @@ describe("DocSession reseed inherits sections canonical gained after the proposa
 
     // The reconstructed live document must include Roadmap (inherited from current
     // canonical) alongside the proposal's own Overview and the untouched Timeline.
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

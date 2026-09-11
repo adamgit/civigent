@@ -9,10 +9,9 @@ import {
 } from "../../storage/proposal-repository.js";
 import {
   evaluateAgentWritePolicy,
-  publishProposalToCanonical,
-  publishProposalToCanonicalDetailed,
-  publishProposalToCanonical,
-  publishProposalToCanonicalDetailed,
+  publishMergeToCanonical,
+  publishMergeToCanonicalDetailed,
+  publishWholesaleToCanonicalDetailed,
   publishCommittingProposalToCanonical,
 } from "../../storage/commit-pipeline.js";
 import * as canonicalStore from "../../storage/canonical-store.js";
@@ -99,7 +98,7 @@ describe("commit-pipeline", () => {
     const result = await evaluateAgentWritePolicy(id);
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(result);
 
-    const committedHead = await publishProposalToCanonical(id, committedMetadata);
+    const committedHead = await publishMergeToCanonical(id, committedMetadata);
     expect(typeof committedHead).toBe("string");
     expect(committedHead.length).toBe(40); // SHA hex
   });
@@ -116,7 +115,7 @@ describe("commit-pipeline", () => {
     const key = new SectionRef(SAMPLE_DOC_PATH, ["Timeline"]).globalKey;
     expect(committedMetadata).toHaveProperty(key);
 
-    await publishProposalToCanonical(id, committedMetadata);
+    await publishMergeToCanonical(id, committedMetadata);
 
     // Read the proposal back to verify it's committed with the stored metadata
     const read = await readProposal(id);
@@ -135,14 +134,10 @@ describe("commit-pipeline", () => {
       "Renamed routine",
       [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"], content: "Renamed-routine content.\n" }],
     );
-    const committedHead = await publishProposalToCanonical(id, {});
+    const committedHead = await publishMergeToCanonical(id, {});
     expect(typeof committedHead).toBe("string");
     expect(committedHead.length).toBe(40);
     expect((await readProposal(id)).status).toBe("committed");
-  });
-
-  it("publishProposalToCanonical is a deprecated alias of publishProposalToCanonical", () => {
-    expect(publishProposalToCanonical).toBe(publishProposalToCanonical);
   });
 
   // ── Re-runnable committing-recovery entrypoint ───────────────────
@@ -186,7 +181,7 @@ describe("commit-pipeline", () => {
       .mockRejectedValueOnce(new Error("simulated absorb failure"));
     try {
       await expect(
-        publishProposalToCanonicalDetailed(id, {}, undefined, { ownerKind: "agent" }),
+        publishMergeToCanonicalDetailed(id, {}, undefined, { ownerKind: "agent" }),
       ).rejects.toThrow("simulated absorb failure");
     } finally {
       spy.mockRestore();
@@ -216,7 +211,7 @@ describe("commit-pipeline", () => {
       .mockRejectedValueOnce(new Error("simulated absorb failure"));
     try {
       await expect(
-        publishProposalToCanonicalDetailed(id, {}, undefined, { ownerKind: "docsession" }),
+        publishMergeToCanonicalDetailed(id, {}, undefined, { ownerKind: "docsession" }),
       ).rejects.toThrow("simulated absorb failure");
     } finally {
       spy.mockRestore();
@@ -252,7 +247,7 @@ describe("commit-pipeline", () => {
       newPath: renamedPath,
     });
 
-    const absorb = await publishProposalToCanonicalDetailed(id, {});
+    const absorb = await publishWholesaleToCanonicalDetailed(id, "rename", {});
     expect(absorb.commitSha.length).toBe(40);
 
     expect(await pathExists(resolveSkeletonPath(newNotePath, ctx.contentDir))).toBe(true);
@@ -288,7 +283,7 @@ describe("commit-pipeline", () => {
       newPath: renamedPath,
     });
 
-    const absorb = await publishProposalToCanonicalDetailed(id, {});
+    const absorb = await publishWholesaleToCanonicalDetailed(id, "rename", {});
     expect((await readProposal(id)).status).toBe("committed");
     expect(absorb.commitSha.length).toBe(40);
 
@@ -320,7 +315,7 @@ describe("commit-pipeline", () => {
       newPath: renamedPath,
     });
 
-    const absorb = await publishProposalToCanonicalDetailed(id, {});
+    const absorb = await publishWholesaleToCanonicalDetailed(id, "rename", {});
     expect((await readProposal(id)).status).toBe("committed");
     expect(absorb.commitSha.length).toBe(40);
 

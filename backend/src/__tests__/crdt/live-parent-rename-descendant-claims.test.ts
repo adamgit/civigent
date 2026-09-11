@@ -24,10 +24,10 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { unclaimedOwnedHeadings } from "../../storage/proposal-overlay-ownership.js";
 import { readSection } from "../../storage/section-reader.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -71,7 +71,7 @@ async function seedNestedCanonical(): Promise<void> {
     heading: "Grandchild",
     content: "grandchild body",
   });
-  await publishProposalToCanonicalDetailed(id, {});
+  await publishMergeToCanonicalDetailed(id, {});
 }
 
 describe("live parent rename claims re-keyed descendants", () => {
@@ -95,7 +95,7 @@ describe("live parent rename claims re-keyed descendants", () => {
     const baseHead = await getHeadSha(getDataRoot());
     const session = await acquireDocSession(DOC, WRITER.id, baseHead, WRITER, "sock-1");
 
-    const layout = await resolveLiveSectionLayout(DOC, null);
+    const layout = await resolvePersistedSectionLayout(DOC, null);
     const parent = layout.find(
       (e) => SectionRef.headingKey(e.headingPath) === SectionRef.headingKey(["Parent"]),
     );

@@ -19,7 +19,7 @@ import {
 } from "../../ws/crdt-ws-coordinator.js";
 import { LiveSnapshotIdentityInvariantError } from "../../crdt/crdt-proposal-generator.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
@@ -145,7 +145,7 @@ describe("stale-level materialization", () => {
 
     const proposalId = session.generator.getCurrentProposalId();
     expect(proposalId).toBeTruthy();
-    const layout = await resolveLiveSectionLayout(DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(DOC_PATH, proposalId);
     const entry = layout.find((e) => e.fragmentKey === fragmentKeyBefore);
     expect(entry).toBeDefined();
     expect(entry!.heading).toBe("h3 3");
@@ -170,7 +170,7 @@ describe("stale-level materialization", () => {
     const reader = ProposalReader.open(proposalId!, "inprogress");
     expect(await reader.readEffectiveSection(DOC_PATH, HEADING_PATH)).toBe("real body\n\nmore text");
 
-    const layout = await resolveLiveSectionLayout(DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(DOC_PATH, proposalId);
     const entry = layout.find((e) => e.fragmentKey === SECTION_KEY);
     expect(entry?.headingLevel).toBe(3);
   });

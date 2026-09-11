@@ -30,7 +30,7 @@ import {
   readProposal,
   findInProgressProposalForDoc,
 } from "../../storage/proposal-repository.js";
-import { evaluateAgentWritePolicy, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { evaluateAgentWritePolicy, publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
@@ -246,7 +246,7 @@ async function evaluateAndMaybeCommit(
   if (writerType === "human") {
     let absorbResult;
     try {
-      absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+      absorbResult = await publishMergeToCanonicalDetailed(proposalId, {});
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(proposalId, error);
       throw error;
@@ -262,7 +262,7 @@ async function evaluateAndMaybeCommit(
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
   let absorbResult;
   try {
-    absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+    absorbResult = await publishMergeToCanonicalDetailed(proposalId, committedMetadata);
   } catch (error) {
     await raiseImpairmentForLeftoverProposal(proposalId, error);
     throw error;

@@ -30,7 +30,11 @@ import {
   readDocumentStructure,
   flattenStructureToHeadingPaths,
 } from "../../storage/heading-resolver.js";
-import { evaluateAgentWritePolicy, publishProposalToCanonical, publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import {
+  evaluateAgentWritePolicy,
+  publishWholesaleToCanonical,
+  publishWholesaleToCanonicalDetailed,
+} from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -319,7 +323,7 @@ export async function readLiveDocumentMarkdown(read: AuthorizedDocRead): Promise
     // classification/materialization so the export works even when settle
     // cannot. This is the standing escape hatch for a user's live content.
     const { resolveLiveSectionLayout } = await import("../../crdt/live-section-layout.js");
-    const layout = await resolveLiveSectionLayout(docPath, session.generator.getCurrentProposalId());
+    const layout = await resolveLiveSectionLayout(session);
     const parts = layout
       .map((entry) => session.liveFragments.readFragmentString(entry.fragmentKey).trim())
       .filter((fragment) => fragment.length > 0);
@@ -423,11 +427,12 @@ export async function buildExport(
 async function evaluateAndMaybeCommitDocumentProposal(
   proposalId: string,
   writerType: "human" | "agent",
+  reason: "create" | "delete" | "rename",
 ): Promise<{ policyResult: HumanInvolvementPolicyResult; committedHead?: string }> {
   if (writerType === "human") {
     let absorbResult;
     try {
-      absorbResult = await publishProposalToCanonicalDetailed(proposalId, {});
+      absorbResult = await publishWholesaleToCanonicalDetailed(proposalId, reason, {});
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(proposalId, error);
       throw error;
@@ -443,7 +448,7 @@ async function evaluateAndMaybeCommitDocumentProposal(
   const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
   let absorbResult;
   try {
-    absorbResult = await publishProposalToCanonicalDetailed(proposalId, committedMetadata);
+    absorbResult = await publishWholesaleToCanonicalDetailed(proposalId, reason, committedMetadata);
   } catch (error) {
     await raiseImpairmentForLeftoverProposal(proposalId, error);
     throw error;
@@ -539,7 +544,7 @@ export async function restoreDocument(docPath: DocPath, sha: string, writer: Doc
   }
   const targets = proposal.targets;
 
-  const committedSha = await publishProposalToCanonical(proposal.id, {}, undefined, {
+  const committedSha = await publishWholesaleToCanonical(proposal.id, "restore", {}, undefined, {
     authority: writer,
     restoreTargetSha: sha,
   });
@@ -572,7 +577,7 @@ export async function adminOverwriteDocument(docPath: DocPath, markdown: string,
     files: [{ docPath, markdown }],
   });
 
-  const committedSha = await publishProposalToCanonical(proposalId, {}, undefined, {});
+  const committedSha = await publishWholesaleToCanonical(proposalId, "import", {}, undefined, {});
 
   await invalidateSessionForReplacement(docPath, { message: "admin overwrote this document" });
   return { committedSha, targets: manifest.targets };
@@ -605,7 +610,7 @@ export async function renameDocument(docPath: DocPath, newPath: DocPath, writer:
     `Rename document: ${docPath} -> ${newPath}`,
   );
   await mutateProposalContent(proposalId, { kind: "rename_document", docPath, newPath });
-  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type, "rename");
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
 }
@@ -634,7 +639,7 @@ export async function createDocument(docPath: DocPath, writer: DocumentWriter, i
       files: [{ docPath, markdown: initialMarkdown }],
     });
   }
-  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type, "create");
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
 }
@@ -688,7 +693,7 @@ export async function deleteDocument(docPath: DocPath, writer: DocumentWriter): 
     `Delete document: ${docPath}`,
   );
   await mutateProposalContent(proposalId, { kind: "delete_document", docPath });
-  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type, "delete");
   if (!committedHead) return { kind: "blocked", proposalId, policyResult };
   return { kind: "committed", proposalId, committedHead, policyResult };
 }
@@ -785,7 +790,7 @@ export async function deleteFolder(
   for (const doc of remainingDocPaths) {
     await mutateProposalContent(proposalId, { kind: "delete_document", docPath: doc });
   }
-  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type, "delete");
   const result: StructuralCommitResult = committedHead
     ? { kind: "committed", proposalId, committedHead, policyResult }
     : { kind: "blocked", proposalId, policyResult };
@@ -845,7 +850,7 @@ export async function renameFolder(
   for (const { from: sourceDoc, to: targetDoc } of renames) {
     await mutateProposalContent(proposalId, { kind: "rename_document", docPath: sourceDoc, newPath: targetDoc });
   }
-  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);
+  const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type, "rename");
   const result: StructuralCommitResult = committedHead
     ? { kind: "committed", proposalId, committedHead, policyResult }
     : { kind: "blocked", proposalId, policyResult };

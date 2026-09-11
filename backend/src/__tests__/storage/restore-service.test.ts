@@ -10,7 +10,7 @@ import { mkdir, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { createRestoreProposal } from "../../storage/restore-service.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -41,7 +41,7 @@ describe("createRestoreProposal — deleted sections in manifest", () => {
       writer,
       "Initial version",
     );
-    await publishProposalToCanonical(id1, {});
+    await publishWholesaleToCanonical(id1, "import", {});
     v1Sha = await getHeadSha(ctx.rootDir);
 
     // v2: document with three sections (root + Overview + Details)
@@ -63,7 +63,7 @@ describe("createRestoreProposal — deleted sections in manifest", () => {
       writer,
       "Added Details section",
     );
-    await publishProposalToCanonical(id2, {});
+    await publishWholesaleToCanonical(id2, "import", {});
   });
 
   afterAll(async () => {
@@ -148,7 +148,7 @@ describe("restore recursively deletes stale nested section files", () => {
 
   it("restore to v1 removes nested child files that are absent from the historical subtree", async () => {
     const { proposal } = await createRestoreProposal(docPath, v1Sha, writer);
-    await publishProposalToCanonical(proposal.id, {});
+    await publishWholesaleToCanonical(proposal.id, "restore", {});
 
     const staleNestedFile = join(
       ctx.contentDir,

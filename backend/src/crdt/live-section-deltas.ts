@@ -24,7 +24,7 @@
 
 import { buildFragmentContent, type FragmentContent } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "./live-section-layout.js";
+import { resolvePersistedSectionLayout, type LiveSectionLayoutEntry } from "./live-section-layout.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { ProposalId } from "../types/shared.js";
 import type { DocPath } from "../types/shared.js";
@@ -68,7 +68,7 @@ export async function computeCanonicalToLiveDeltas(
 ): Promise<{ deltas: FragmentStringDelta[]; fragmentKeys: string[] }> {
   const { CanonicalReader } = await import("../storage/canonical-reader.js");
 
-  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
+  const layout = await resolvePersistedSectionLayout(docPath, currentProposalId);
   const byHeadingKey = new Map<string, LiveSectionLayoutEntry>();
   for (const entry of layout) {
     byHeadingKey.set(SectionRef.headingKey(entry.headingPath), entry);

@@ -8,7 +8,7 @@ import {
   lookupDocSession,
   type DocSession,
 } from "../../crdt/ydoc-lifecycle.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
@@ -22,9 +22,17 @@ import {
   resetCoordinatorPublishStateForTest,
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
+import { buildWireLiveSectionsState } from "../../crdt/live-sections-wire-state.js";
 import { unclaimedOwnedHeadings } from "../../storage/proposal-overlay-ownership.js";
 import { readSection } from "../../storage/section-reader.js";
-import { DocPath } from "../../types/shared.js";
+import { documentTargetRef, DocPath } from "../../types/shared.js";
+import {
+  createTransientProposal,
+  readProposal,
+  unsafeReplaceProposalManifestForRecoveryOnly,
+} from "../../storage/proposal-repository.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import {
   createTempDataRoot,
   type TempDataRootContext,
@@ -162,7 +170,7 @@ describe("BFH root-split lifecycle", () => {
         await reader.readEffectiveSection(DOC_PATH, ["Heading"]),
       ).toBe("Heading body.");
 
-      const layout = await resolveLiveSectionLayout(DOC_PATH, proposalId);
+      const layout = await resolvePersistedSectionLayout(DOC_PATH, proposalId);
       const promoted = layout.find(
         (entry) =>
           entry.headingPath.length === 1 &&
@@ -246,6 +254,76 @@ describe("BFH root-split lifecycle", () => {
     const outcome = await requestDocSessionPublish(DOC_PATH);
     expect(outcome.outcome).toBe("committed");
     expect(await readSection(DOC_PATH, ["Heading"])).toBe("Heading body.");
+  });
+
+  it("after force-publish of an empty-doc BFH paste, live layout and wire state still have the heading", async () => {
+    await createEmptyDocument(ctx);
+    vi.useFakeTimers();
+
+    const session = await openSession("sock-1");
+    const editor = registerFakeEditorSocketForTest(DOC_PATH, "editor-sock");
+    disposers.push(editor.dispose);
+
+    session.liveFragments.replaceFragmentString(
+      BEFORE_FIRST_HEADING_KEY,
+      "## Heading\n\nHeading body." as FragmentContent,
+    );
+    session.fragmentLastActivity.set(BEFORE_FIRST_HEADING_KEY, Date.now());
+    await session.generator.materializeEdit({
+      touchedFragmentKeys: [BEFORE_FIRST_HEADING_KEY],
+    });
+    await fireQuiescence(session);
+
+    const liveProposalId = session.generator.getCurrentProposalId();
+    expect(liveProposalId).not.toBeNull();
+    const { id: extraId } = await createTransientProposal(
+      { id: "user-bob", type: "human", displayName: "Bob" },
+      "add extra section after the live proposal opened",
+    );
+    await mutateProposalContent(extraId, {
+      kind: "write_section",
+      docPath: DOC_PATH,
+      headingPath: ["Extra"],
+      heading: "Extra",
+      content: "EXTRA COMMITTED AFTER THE LIVE PROPOSAL OPENED",
+    });
+    await publishMergeToCanonicalDetailed(extraId, {});
+    const liveProposal = await readProposal(liveProposalId!);
+    await unsafeReplaceProposalManifestForRecoveryOnly(
+      liveProposalId!,
+      liveProposal.sections,
+      undefined,
+      [documentTargetRef(DOC_PATH)],
+    );
+
+    editor.dispose();
+    vi.useRealTimers();
+    const outcome = await requestDocSessionPublish(DOC_PATH);
+    expect(outcome.outcome).toBe("committed");
+    expect(session.generator.getCurrentProposalId()).toBeNull();
+    expect(await readSection(DOC_PATH, ["Heading"])).toBe("Heading body.");
+    expect(await readSection(DOC_PATH, ["Extra"])).toBe(
+      "EXTRA COMMITTED AFTER THE LIVE PROPOSAL OPENED",
+    );
+
+    const layout = await resolvePersistedSectionLayout(
+      DOC_PATH,
+      session.generator.getCurrentProposalId(),
+    );
+    expect(
+      layout.some((entry) => entry.headingPath.length === 1 && entry.headingPath[0] === "Heading"),
+    ).toBe(true);
+    expect(
+      layout.length === 1 && layout[0]!.headingPath.length === 0,
+    ).toBe(false);
+
+    const wire = await session.enqueue(() => buildWireLiveSectionsState(session));
+    expect(
+      wire.topology.some((ref) => ref.heading_path.length === 1 && ref.heading_path[0] === "Heading"),
+    ).toBe(true);
+    expect(
+      wire.topology.length === 1 && wire.topology[0]!.heading_path.length === 0,
+    ).toBe(false);
   });
 
   it("discards and reseeds when proposal-first root-split reflection cannot reach the live Y.Doc", async () => {

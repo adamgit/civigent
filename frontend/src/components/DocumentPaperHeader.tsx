@@ -2,15 +2,17 @@
  * DocumentPaperHeader — in-flow title block at the top of the document paper.
  *
  * Pair with {@link DocumentPaperStickyHeader}: this is the full header (serif
- * title + copy + rename/delete on one row; folder breadcrumbs + activity on
- * the next). The sticky sibling is the compact bar that pins when this block
- * scrolls out of view.
+ * title + copy + {@link DocumentActions} inline on one row; folder breadcrumbs
+ * + activity on the next). The sticky sibling is the compact bar that pins
+ * when this block scrolls out of view. The same `actions` list is rendered as
+ * the narrow overflow menu in {@link DocumentTopbar}.
  */
 
 import type { JSX, Ref } from "react";
 import type { DocumentActivityEvent } from "../types/shared.js";
 import type { DocumentPresenceModel } from "../presence/document-presence-model";
 import { CopyPathButton } from "./CopyPathButton";
+import { DocumentActions, type DocumentAction } from "./DocumentActions";
 import { DocumentPresenceActivity } from "./DocumentPresenceActivity";
 import { FolderPathBreadcrumb, folderPathOfDoc } from "./FolderPathBreadcrumb";
 
@@ -25,13 +27,10 @@ export interface DocumentPaperHeaderProps {
   renameError: string | null;
   pathCopied: boolean;
   onRenameValueChange: (value: string) => void;
-  onStartRename: () => void;
   onCancelRename: () => void;
   onSubmitRename: () => void | Promise<void>;
   onCopyPath: () => void | Promise<void>;
-  onExportMarkdown: () => void | Promise<void>;
-  onDelete: () => void | Promise<void>;
-  onShare?: () => void;
+  actions: readonly DocumentAction[];
   /** Observed to pin the sticky header when this block fully leaves the scrollport. */
   rootRef?: Ref<HTMLDivElement>;
   /** Narrow: path + title live in the sticky chrome; this block keeps presence
@@ -50,13 +49,10 @@ export function DocumentPaperHeader({
   renameError,
   pathCopied,
   onRenameValueChange,
-  onStartRename,
   onCancelRename,
   onSubmitRename,
   onCopyPath,
-  onExportMarkdown,
-  onDelete,
-  onShare,
+  actions,
   rootRef,
   layoutMode = "wide",
 }: DocumentPaperHeaderProps): JSX.Element {
@@ -106,43 +102,7 @@ export function DocumentPaperHeader({
                 />
               ) : null}
             </div>
-            <div className="flex items-center gap-2 shrink-0 pt-2">
-              <button
-                type="button"
-                className="text-xs text-accent-primary hover:underline"
-                onClick={onStartRename}
-              >
-                Rename
-              </button>
-              |
-              <button
-                type="button"
-                className="text-xs text-accent-primary hover:underline"
-                onClick={() => { void onExportMarkdown(); }}
-              >
-                Export
-              </button>
-              {onShare ? (
-                <>
-                |
-                <button
-                  type="button"
-                  className="text-xs text-accent-primary hover:underline"
-                  onClick={onShare}
-                >
-                  Share
-                </button>
-                </>
-              ) : null}
-              |
-              <button
-                type="button"
-                className="text-xs text-red-600 hover:underline"
-                onClick={() => { void onDelete(); }}
-              >
-                Delete
-              </button>
-            </div>
+            <DocumentActions actions={actions} variant="inline" />
           </>
         )}
       </div>

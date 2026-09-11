@@ -359,6 +359,14 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
   }
 
   private adoptState(state: WireLiveSectionsState): void {
+    // A topology frame can arrive before the Yjs update that backs a newly
+    // added fragment key (they travel over separate channels/messages). Adopting
+    // it anyway would leave `this.topology` claiming a fragment `this.doc.share`
+    // does not have — refuse the frame and keep the previous topology; the next
+    // frame (or the now-applied Yjs update) resolves it.
+    for (const ref of state.topology) {
+      if (!this.doc.share.has(ref.fragment_key)) return;
+    }
     const previousById = new Map(this.topology.map((ref) => [ref.id, ref]));
     this.topology = state.topology.map((ref) => {
       const id = SectionId.brand(ref.fragment_key);
@@ -393,13 +401,6 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
       fragmentKey: c.fragment_key,
     }));
     this._editorFocusSectionIds = [...(state.editor_focus_section_ids ?? [])];
-    for (const ref of this.topology) {
-      if (!this.doc.share.has(SectionId.text(ref.id))) {
-        throw new Error(
-          `LiveSectionReplica invariant: topology id "${SectionId.text(ref.id)}" has no fragment in the shared doc.`,
-        );
-      }
-    }
     this.syncFragmentChangeObserversToTopology();
   }
 

@@ -34,13 +34,13 @@ import {
   applyCommittedCanonicalToLiveSession,
   resetCoordinatorPublishStateForTest,
 } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { readProposal } from "../../storage/proposal-repository.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { InProgressProposal, ProposalSectionClaim } from "../../types/shared.js";
@@ -124,10 +124,10 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     // New Sub is now proposal-only (not in canonical) — the setup this test is about.
     const proposalId1 = session.generator.getCurrentProposalId();
     expect(proposalId1).not.toBeNull();
-    const layoutAfter1 = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId1);
+    const layoutAfter1 = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId1);
     const newSubEntry = layoutAfter1.find((e) => e.heading === "New Sub");
     expect(newSubEntry).toBeDefined();
-    const canonicalNow = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, null);
+    const canonicalNow = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, null);
     expect(canonicalNow.find((e) => e.heading === "New Sub")).toBeUndefined();
     const newSubKey = newSubEntry!.fragmentKey;
 
@@ -143,7 +143,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layoutAfter2 = await resolveLiveSectionLayout(
+    const layoutAfter2 = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -176,7 +176,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
 
     const proposalId1 = session.generator.getCurrentProposalId();
     expect(proposalId1).not.toBeNull();
-    const layoutAfter1 = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId1);
+    const layoutAfter1 = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId1);
     const newSubEntry = layoutAfter1.find((e) => e.heading === "New Sub")!;
     const newSubKey = newSubEntry.fragmentKey;
 
@@ -186,7 +186,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layoutAfter2 = await resolveLiveSectionLayout(
+    const layoutAfter2 = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -218,13 +218,13 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
 
     const proposalId1 = session.generator.getCurrentProposalId();
     expect(proposalId1).not.toBeNull();
-    const layoutAfter1 = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId1);
+    const layoutAfter1 = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId1);
     const subAEntry = layoutAfter1.find((e) => e.heading === "Sub A")!;
     const subBEntry = layoutAfter1.find((e) => e.heading === "Sub B")!;
     expect(subAEntry).toBeDefined();
     expect(subBEntry).toBeDefined();
     // Sub A and Sub B are both proposal-only — not in canonical yet.
-    const canonicalNow = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, null);
+    const canonicalNow = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, null);
     expect(canonicalNow.find((e) => e.heading === "Sub A")).toBeUndefined();
     expect(canonicalNow.find((e) => e.heading === "Sub B")).toBeUndefined();
 
@@ -263,7 +263,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
 
     const proposalId1 = session.generator.getCurrentProposalId();
     expect(proposalId1).not.toBeNull();
-    const layoutAfter1 = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId1);
+    const layoutAfter1 = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId1);
     const middle = layoutAfter1.find((e) => e.heading === "Middle");
     expect(middle).toBeDefined();
     const middleIdx = layoutAfter1.findIndex((e) => e.heading === "Middle");
@@ -316,7 +316,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
 
     // The split promoted the embedded heading into a real section — canonical
     // origin, proposal-backed normalization.
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -349,14 +349,14 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       heading: "Roadmap",
       content: "external roadmap body",
     });
-    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
     await session.enqueue(() => undefined);
 
     // Effective layout includes Roadmap (inherited canonical) alongside Overview
     // (proposal-claimed) and Timeline (also inherited).
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     expect(layout.find((e) => e.heading === "Overview")).toBeDefined();
     expect(layout.find((e) => e.heading === "Timeline")).toBeDefined();
     expect(layout.find((e) => e.heading === "Roadmap")).toBeDefined();
@@ -379,7 +379,7 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layoutAfter = await resolveLiveSectionLayout(
+    const layoutAfter = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -417,14 +417,14 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       heading: "Appendix",
       content: "external appendix body",
     });
-    const absorb = await publishProposalToCanonicalDetailed(externalProposalId, {});
+    const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
     await applyCommittedCanonicalToLiveSession(SAMPLE_DOC_PATH, changedHeadingPaths, externalProposalId);
     await session.enqueue(() => undefined);
 
     // Effective layout: Timeline stays deleted (claimed-but-absent overlay drop);
     // Appendix appears as inherited (unclaimed by the proposal).
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     expect(layout.find((e) => e.heading === "Timeline")).toBeUndefined();
     expect(layout.find((e) => e.heading === "Appendix")).toBeDefined();
 

@@ -20,7 +20,7 @@ import {
   SAMPLE_SECTIONS,
 } from "../helpers/sample-content.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
-import { publishProposalToCanonical, CommitPermissionError } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonical, CommitPermissionError } from "../../storage/commit-pipeline.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { setDocAcl, invalidateCache } from "../../auth/acl.js";
 import { RoleName } from "../../types/shared.js";
@@ -59,7 +59,7 @@ describe("commit gate is all-or-nothing across a multi-document claim set", () =
 
     let thrown: unknown = null;
     try {
-      await publishProposalToCanonical(id, {});
+      await publishMergeToCanonical(id, {});
     } catch (e) {
       thrown = e;
     }

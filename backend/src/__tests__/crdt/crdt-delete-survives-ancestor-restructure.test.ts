@@ -23,10 +23,10 @@ import {
   registerFakeEditorSocketForTest,
   resetCoordinatorPublishStateForTest,
 } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { createTransientProposal } from "../../storage/proposal-repository.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { getContentRoot } from "../../storage/data-root.js";
 import { SectionRef } from "../../domain/section-ref.js";
@@ -53,7 +53,7 @@ async function fireQuiescence(session: DocSession): Promise<void> {
 }
 
 async function liveKeys(session: DocSession): Promise<string[]> {
-  const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
+  const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
   return layout.map((e) => e.headingPath.join(">>"));
 }
 
@@ -66,7 +66,7 @@ async function nestSubUnderOverview(): Promise<void> {
     heading: "Sub",
     content: "original sub body",
   });
-  await publishProposalToCanonicalDetailed(id, {});
+  await publishMergeToCanonicalDetailed(id, {});
 }
 
 describe("live delete of a subsection survives an ancestor rename (CRDT path)", () => {
@@ -94,7 +94,7 @@ describe("live delete of a subsection survives an ancestor rename (CRDT path)", 
     editorSock = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
 
     // Resolve the seeded fragment keys for Sub and the Overview body-holder.
-    const seeded = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, null);
+    const seeded = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, null);
     const subKey = seeded.find((e) => e.headingPath.join(">>") === "Overview>>Sub")!.fragmentKey;
     const overviewKey = seeded.find((e) => e.headingPath.join(">>") === "Overview")!.fragmentKey;
 
@@ -138,7 +138,7 @@ describe("live delete of a subsection survives an ancestor rename (CRDT path)", 
     editorSock = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
 
     // Resolve the seeded fragment key for Sub.
-    const seeded = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, null);
+    const seeded = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, null);
     const subKey = seeded.find((e) => e.headingPath.join(">>") === "Overview>>Sub")!.fragmentKey;
 
     // 1) Live-delete Sub: strip its heading → heading-deletion merges it away.

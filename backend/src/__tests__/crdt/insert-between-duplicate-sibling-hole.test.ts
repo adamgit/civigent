@@ -25,7 +25,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal } from "../../storage/proposal-repository.js";
@@ -134,7 +134,7 @@ describe("insert-between outside-sibling reinclude → durable duplicate", () =>
     const proposalId = session.generator.getCurrentProposalId();
     expect(proposalId).not.toBeNull();
 
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, proposalId);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, proposalId);
     const counts = topLevelHeadingCounts(layout);
 
     expect(counts.get("Inserted Between") ?? 0).toBe(0);
@@ -164,7 +164,7 @@ describe("insert-between outside-sibling reinclude → durable duplicate", () =>
       threw = err;
     }
 
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

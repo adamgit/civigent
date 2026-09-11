@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
-import { publishProposalToCanonical } from "../../storage/commit-pipeline.js";
+import { publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { createRestoreProposal } from "../../storage/restore-service.js";
 import { readProposal } from "../../storage/proposal-repository.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -39,7 +39,7 @@ describe("restore proposal target claims (spec 12 / Claim 10)", () => {
       writer,
       "v1",
     );
-    await publishProposalToCanonical(id1, {});
+    await publishWholesaleToCanonical(id1, "import", {});
     v1Sha = await getHeadSha(ctx.rootDir);
 
     const { id: id2 } = await importFilesToProposal(
@@ -47,7 +47,7 @@ describe("restore proposal target claims (spec 12 / Claim 10)", () => {
       writer,
       "v2 adds Details",
     );
-    await publishProposalToCanonical(id2, {});
+    await publishWholesaleToCanonical(id2, "import", {});
   });
 
   afterAll(async () => {
@@ -72,7 +72,7 @@ describe("restore proposal target claims (spec 12 / Claim 10)", () => {
     expect(proposal.status).toBe("pending");
 
     // Commits through the normal proposal-backed publication path.
-    const sha = await publishProposalToCanonical(proposal.id, {});
+    const sha = await publishWholesaleToCanonical(proposal.id, "restore", {});
     expect(typeof sha).toBe("string");
     expect((await readProposal(proposal.id)).status).toBe("committed");
   });

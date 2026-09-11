@@ -64,7 +64,7 @@ import {
 } from "../crdt/structural-appliers.js";
 import { removeProposalHeading } from "../storage/proposal-heading-removal.js";
 import { mutateProposalContent } from "../storage/mutate-proposal-content.js";
-import { publishProposalToCanonicalDetailed } from "../storage/commit-pipeline.js";
+import { publishWholesaleToCanonicalDetailed } from "../storage/commit-pipeline.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../crdt/live-section-layout.js";
@@ -837,10 +837,7 @@ async function finalizeAndEnd(session: DocSession, ready: boolean): Promise<Publ
       );
       let landedFragmentKeys = new Set<string>();
       if (landedHeadingKeys.size > 0) {
-        const layout = await resolveLiveSectionLayout(
-          session.docPath,
-          session.generator.getCurrentProposalId(),
-        );
+        const layout = await resolveLiveSectionLayout(session);
         landedFragmentKeys = new Set(
           layout
             .filter((e) => landedHeadingKeys.has(SectionRef.headingKey(e.headingPath)))
@@ -1122,7 +1119,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
   // A canonical-only lookup here silently skipped proposal-only fragments and
   // picked the wrong predecessor for a heading-deletion merge when a live edit
   // inserted a section between two canonical siblings.
-  const effectiveLayout = await resolveLiveSectionLayout(session.docPath, proposalId);
+  const effectiveLayout = await resolveLiveSectionLayout(session);
   let applied = false;
   const removedFragments: Array<{ fragmentKey: string; headingPath: string[] }> = [];
 
@@ -1331,7 +1328,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   
   
   
-  const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+  const layout = await resolveLiveSectionLayout(session);
   const decision = session.generator.evaluatePublishTrigger(
     buildQuiescencePublishSignals(session, layout, activeEditorSocketStates(session.docPath), {
       allFragmentsQuiescent: !anyStillActive,
@@ -1405,7 +1402,7 @@ export async function applyCommittedCanonicalToLiveSession(
     // identity-preserving external rename keeps the sectionFile-derived
     // fragment key in the effective layout too — only the heading/body delta
     // path updates it.
-    const effectiveLayout = await resolveLiveSectionLayout(docPath, proposalId);
+    const effectiveLayout = await resolveLiveSectionLayout(session);
     const effectiveKeys = new Set(effectiveLayout.map((e) => e.fragmentKey));
     const removalKeys: string[] = [];
     for (const liveKey of session.liveFragments.getFragmentKeys()) {
@@ -1565,7 +1562,7 @@ async function runLiveEditAcceptanceGate(
   if (touchedKeys.size === 0) return empty;
 
   const ownProposalId = session.generator.getCurrentProposalId();
-  const layout = await resolveLiveSectionLayout(session.docPath, ownProposalId);
+  const layout = await resolveLiveSectionLayout(session);
   const headingByFragmentKey = new Map<string, string[]>();
   for (const entry of layout) {
     headingByFragmentKey.set(entry.fragmentKey, entry.headingPath);
@@ -1908,7 +1905,7 @@ export async function processArbitratedClientUpdate(
       recordAcceptedHumanDocumentWrite(docPath, acceptedWriterIdentity);
       notifyDocumentActivityChanged(docPath);
     }
-    const layout = await resolveLiveSectionLayout(docPath, session.generator.getCurrentProposalId());
+    const layout = await resolveLiveSectionLayout(session);
     const capturedByKey = new Map(
       captureLiveFragments(layout, (key) => session.liveFragments.readFragmentString(key))
         .map((captured) => [captured.identity.fragmentKey, captured] as const),
@@ -2055,7 +2052,7 @@ export async function moveLiveSection(
   }
 
   const ownProposalId = session.generator.getCurrentProposalId();
-  const layout = await resolveLiveSectionLayout(docPath, ownProposalId);
+  const layout = await resolveLiveSectionLayout(session);
 
   const settlingRefusal = {
     ok: false,
@@ -2743,7 +2740,7 @@ async function runDocumentDeleteCommand(session: DocSession): Promise<DocSession
 
   let commitSha: string;
   try {
-    const absorbResult = await publishProposalToCanonicalDetailed(boundId, {}, undefined, { ownerKind: "docsession" });
+    const absorbResult = await publishWholesaleToCanonicalDetailed(boundId, "delete", {}, undefined, { ownerKind: "docsession" });
     commitSha = absorbResult.commitSha;
   } catch (error) {
     await raiseImpairmentForLeftoverProposal(boundId, error);

@@ -17,7 +17,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { requestDocSessionMove } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getHeadSha, gitExec } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { createProposal, transitionToInProgress } from "../../storage/proposal-repository.js";
@@ -32,7 +32,7 @@ async function openSession(): Promise<DocSession> {
 }
 
 async function liveHeadingOrder(session: DocSession): Promise<string[]> {
-  const layout = await resolveLiveSectionLayout(session.docPath, session.generator.getCurrentProposalId());
+  const layout = await resolvePersistedSectionLayout(session.docPath, session.generator.getCurrentProposalId());
   return layout.filter((e) => e.headingPath.length === 1).map((e) => e.heading);
 }
 

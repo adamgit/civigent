@@ -8,7 +8,7 @@ import type {
   ProposalTargetRef,
 } from "../../types/shared.js";
 import { emitCatalogMutationEvents, type CatalogMutationSummary } from "../../mcp/catalog-events.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
 
@@ -223,7 +223,7 @@ export async function resolveSectionFragmentKey(
   headingPath: string[],
   currentProposalId: import("../../types/shared.js").ProposalId | null = null,
 ): Promise<string | null> {
-  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
+  const layout = await resolvePersistedSectionLayout(docPath, currentProposalId);
   const targetKey = new SectionRef(docPath, headingPath).globalKey;
   for (const entry of layout) {
     if (new SectionRef(docPath, entry.headingPath).globalKey === targetKey) {
@@ -260,7 +260,7 @@ export async function emitSectionBlockState(
 ): Promise<void> {
   if (!emit || headingPaths.length === 0) return;
 
-  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
+  const layout = await resolvePersistedSectionLayout(docPath, currentProposalId);
 
   const fragmentKeyByGlobalKey = new Map<string, { fragmentKey: string; headingPath: string[] }>();
   for (const entry of layout) {

@@ -11,10 +11,17 @@
 
 import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "./ydoc-fragments.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { buildFragmentContent, EMPTY_BODY, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
+import {
+  buildFragmentContent,
+  stripHeadingFromFragment,
+  EMPTY_BODY,
+  type FragmentContent,
+  type SectionBody,
+} from "../storage/section-formatting.js";
 import type { ProposalId } from "../types/shared.js";
 import { HeadingLevel } from "../types/shared.js";
 import type { DocPath } from "../types/shared.js";
+import type { DocSession } from "./ydoc-lifecycle.js";
 
 export interface LiveSectionLayoutEntry {
   fragmentKey: string;
@@ -79,11 +86,15 @@ function resolvePersistedLiveSectionLayout(
 }
 
 /**
- * Resolve the ordered section layout for a live document. When the DocSession has
- * a current `inprogress` proposal, its content tree is the authoritative skeleton;
- * otherwise canonical is used.
+ * Resolve the ordered section layout for a document from its PERSISTED
+ * structure. When the DocSession has a current `inprogress` proposal, its
+ * content tree is the authoritative skeleton; otherwise canonical is used.
+ *
+ * Callers that already hold a `DocSession` should use `resolveLiveSectionLayout(session)`
+ * instead — this disk-only resolver is for callers that have only a
+ * `(docPath, proposalId)` pair (no live Y.Doc topology to cross-check against).
  */
-export async function resolveLiveSectionLayout(
+export async function resolvePersistedSectionLayout(
   docPath: DocPath,
   currentProposalId: ProposalId | null,
 ): Promise<LiveSectionLayoutEntry[]> {
@@ -115,9 +126,47 @@ export async function resolveLiveSectionLayout(
     return [];
   }
   throw new Error(
-    `resolveLiveSectionLayout: document "${docPath}" has no skeleton at "${skeletonRoot}" nor at "${canonicalRoot}". `
+    `resolvePersistedSectionLayout: document "${docPath}" has no skeleton at "${skeletonRoot}" nor at "${canonicalRoot}". `
     + `A live session asked for the layout of a document that is not on disk; reporting it as an empty document would be a lie.`,
   );
+}
+
+/**
+ * Resolve the ordered section layout for a live `DocSession`. This is the
+ * topology callers holding a session must use: it trusts the session's live
+ * Y.Doc fragments over a possibly-stale on-disk read, and never synthesizes an
+ * empty-BFH row while the live Y.Doc actually holds real content — the
+ * empty-document bootstrap classification (`classifyEmptyDocument`) is reserved
+ * for `constructDocSession` / the disk-only `resolvePersistedSectionLayout`.
+ *
+ * Falls back from an empty persisted layout to the session's own live fragment
+ * keys only when those keys genuinely show nothing but an empty (or absent)
+ * before-first-heading fragment; otherwise this throws, because a live Y.Doc
+ * that has moved past empty while the persisted structure still reads empty is
+ * an invariant violation, not a legitimate empty document.
+ */
+export async function resolveLiveSectionLayout(session: DocSession): Promise<LiveSectionLayoutEntry[]> {
+  const currentProposalId = session.generator.getCurrentProposalId();
+  const persistedLayout = await resolvePersistedSectionLayout(session.docPath, currentProposalId);
+  if (persistedLayout.length > 0) return persistedLayout;
+
+  const liveKeys = session.liveFragments.getFragmentKeys();
+  const hasNonBfhKey = liveKeys.some((key) => key !== BEFORE_FIRST_HEADING_KEY);
+  const bfhBody = liveKeys.includes(BEFORE_FIRST_HEADING_KEY)
+    ? stripHeadingFromFragment(
+        session.liveFragments.readFragmentString(BEFORE_FIRST_HEADING_KEY),
+        HeadingLevel.beforeFirstHeading,
+      )
+    : null;
+  const bfhHasContent = bfhBody !== null && String(bfhBody).trim() !== "";
+  if (hasNonBfhKey || bfhHasContent) {
+    throw new Error(
+      `resolveLiveSectionLayout: persisted structure for "${session.docPath}" reads empty, but the live ` +
+        `Y.Doc still has ${hasNonBfhKey ? "a registered non-BFH fragment" : "a non-empty before-first-heading fragment"}. ` +
+        `Reporting an empty-BFH layout here would contradict the session's own live topology.`,
+    );
+  }
+  return [emptyDocumentFirstEditSection()];
 }
 
 /**
@@ -153,7 +202,7 @@ export async function buildLiveSeedContentMap(
   currentProposalId: ProposalId | null,
 ): Promise<Map<string, FragmentContent>> {
   const [layout, bodies] = await Promise.all([
-    resolveLiveSectionLayout(docPath, currentProposalId),
+    resolvePersistedSectionLayout(docPath, currentProposalId),
     readLiveSectionBodies(docPath, currentProposalId),
   ]);
   const contentMap = new Map<string, FragmentContent>();

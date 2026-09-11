@@ -1,4 +1,4 @@
-import { resolveLiveSectionLayout } from "../../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../../crdt/live-section-layout.js";
 import { isBodyHolderShape } from "../../../storage/section-shape.js";
 import type { HeadingLevel } from "../../../types/shared.js";
 import { resolveDiagnosticsDraftProposalId, type DocumentDiagnosticsContext } from "../context.js";
@@ -7,7 +7,7 @@ export async function runLiveDuplicateSiblingHeadingsCheck(ctx: DocumentDiagnost
   const proposalId = await resolveDiagnosticsDraftProposalId(ctx.docPath);
   if (!proposalId) return;
   try {
-    const layout = await resolveLiveSectionLayout(ctx.docPath, proposalId);
+    const layout = await resolvePersistedSectionLayout(ctx.docPath, proposalId);
     interface Row { fragmentKey: string; heading: string; headingLevel: HeadingLevel; headingPath: string[]; isBodyHolder: boolean }
     const groups = new Map<string, Row[]>();
     for (const entry of layout) {

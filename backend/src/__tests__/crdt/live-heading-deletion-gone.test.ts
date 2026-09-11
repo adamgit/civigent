@@ -24,7 +24,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { joinLiveRecipient } from "../helpers/live-recipient.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -103,7 +103,7 @@ describe("live heading-deletion merge + section:gone", () => {
     // Demotion leaves the former heading text as leading orphan body.
     expect(overview).toContain("Timeline");
 
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

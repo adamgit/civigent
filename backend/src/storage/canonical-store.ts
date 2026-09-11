@@ -141,8 +141,19 @@ export class CanonicalRollbackFailedError extends Error {
   }
 }
 
+/**
+ * Absorb mode is a caller declaration, never inferred from proposal targets.
+ * `wholesale` replaces the named documents outright (documentPathsToRewrite);
+ * `merge` always overlays the manifest onto current canonical, regardless of
+ * whether the proposal happens to carry a document target for lock/audit.
+ */
+export type AbsorbMode =
+  | { mode: "merge" }
+  | { mode: "wholesale"; reason: "create" | "delete" | "rename" | "restore" | "import" };
+
 export interface AbsorbOptions {
   diagnostics?: string[];
+  absorbMode?: AbsorbMode;
   documentPathsToRewrite?: string[];
   absorbedSectionRefs?: SectionRefReceipt[];
   /**
@@ -302,8 +313,12 @@ export class CanonicalStore {
       // docs with no manifest claim (direct absorb callers / legacy staging).
       const deletedSectionFilesByDoc = opts?.deletedSectionFilesByDoc;
       const claimedDocPaths = new Set(manifestClaimedDocPaths);
+      const isWholesaleAbsorb = opts?.absorbMode?.mode === "wholesale";
       for (const docPath of claimedDocPaths) {
-        if (documentTargetSet.has(docPath)) continue; // whole-doc op → wholesale
+        // Skip the merge only for a document this absorb declared wholesale AND
+        // named in its explicit scope — a document target present for lock/audit
+        // on an otherwise-merge absorb never takes this skip.
+        if (isWholesaleAbsorb && documentTargetSet.has(docPath)) continue;
         const deletedIds = deletedSectionFilesByDoc?.get(docPath) ?? new Set<string>();
         await this.rewriteStagingSkeletonToMerge(stagingRoot, docPath, deletedIds, diag);
       }

@@ -26,7 +26,7 @@ import { markdownToJSON } from "@ks/milkdown-serializer";
 import { updateYFragment } from "y-prosemirror";
 import { buildFragmentContent, EMPTY_BODY, appendBodyToFragment, bodyFromFragmentStrippingLeadingHeading, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
 import { SectionRef } from "../domain/section-ref.js";
-import { resolveLiveSectionLayout, readLiveSectionBodies } from "./live-section-layout.js";
+import { resolvePersistedSectionLayout, readLiveSectionBodies } from "./live-section-layout.js";
 import { fragmentKeyFromSectionFile, getBackendSchema } from "./ydoc-fragments.js";
 import type { LiveFragmentStringsStore } from "./live-fragment-strings-store.js";
 import type { StructuralChange } from "./structural-change.js";
@@ -176,7 +176,7 @@ export async function computeStructuralSplitPlan(
   dirtyKey: string,
   change: Extract<StructuralChange, { kind: "root-split" | "section-split" }>,
 ): Promise<StructuralSplitPlan | null> {
-  const layout = await resolveLiveSectionLayout(docPath, currentProposalId);
+  const layout = await resolvePersistedSectionLayout(docPath, currentProposalId);
   const liveKeys = new Set(liveFragments.getFragmentKeys());
   const addedEntries = layout.filter((e) => !liveKeys.has(e.fragmentKey));
   const dissolveSurvivorBfh =

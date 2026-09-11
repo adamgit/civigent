@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { folderHref } from "../app/docs-location";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { resolveTransportStatus, TRANSPORT_STATUS_META } from "../services/section-save-state";
+import { DocumentActions, type DocumentAction } from "./DocumentActions";
 import { PublishRequirementsHover } from "./PublishRequirementsHover";
 import { FolderPath, type PublishTriggerDecision } from "../types/shared";
 
@@ -16,10 +17,8 @@ interface DocumentTopbarProps {
   layoutMode?: "wide" | "narrow";
   pathCopied?: boolean;
   onCopyPath?: () => void | Promise<void>;
-  /** Narrow overflow: start in-paper rename. Omitted on read-only surfaces. */
-  onStartRename?: () => void;
-  /** Narrow overflow: delete this document. Omitted on read-only surfaces. */
-  onDelete?: () => void | Promise<void>;
+  /** Paper actions; narrow overflow renders the full list. Omitted on read-only surfaces. */
+  actions?: readonly DocumentAction[];
   /**
    * Optional control rendered just before History (e.g. Standard/Governance/Agent
    * view toggle). Keeps page-specific chrome out of the paper header.
@@ -97,8 +96,7 @@ function ClockIcon() {
 export function DocumentTopbar({
   docPath,
   layoutMode = "wide",
-  onStartRename,
-  onDelete,
+  actions = [],
   toolbarAccessory,
   showHistory,
   onToggleHistory,
@@ -249,6 +247,7 @@ export function DocumentTopbar({
             ) : null}
             {narrow ? (
               <button
+                type="button"
                 role="menuitem"
                 onClick={() => {
                   onToggleHistory();
@@ -263,29 +262,12 @@ export function DocumentTopbar({
                 History
               </button>
             ) : null}
-            {narrow && onStartRename ? (
-              <button
-                role="menuitem"
-                onClick={() => {
-                  onStartRename();
-                  setMenuOpen(false);
-                }}
-                className="w-full text-left text-[11px] px-3 py-1.5 text-text-muted hover:bg-section-hover hover:text-text-primary"
-              >
-                Rename
-              </button>
-            ) : null}
-            {narrow && onDelete ? (
-              <button
-                role="menuitem"
-                onClick={() => {
-                  void onDelete();
-                  setMenuOpen(false);
-                }}
-                className="w-full text-left text-[11px] px-3 py-1.5 text-red-600 hover:bg-section-hover"
-              >
-                Delete
-              </button>
+            {narrow ? (
+              <DocumentActions
+                actions={actions}
+                variant="menu"
+                onItemChosen={() => setMenuOpen(false)}
+              />
             ) : null}
             <button
               role="menuitem"

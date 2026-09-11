@@ -19,7 +19,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { gitExec, getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { fragmentKeyFromSectionFile, BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
@@ -107,7 +107,7 @@ describe("dupeheadings corruption flow", () => {
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -134,7 +134,7 @@ describe("dupeheadings corruption flow", () => {
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layout = await resolveLiveSectionLayout(H1_DOC, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(H1_DOC, session.generator.getCurrentProposalId());
     const h1Rows = layout.filter((e) => e.heading === "heading 1");
     expect(h1Rows).toHaveLength(1);
     expect(uniqueHeadingPaths(layout)).toBe(true);
@@ -160,7 +160,7 @@ describe("dupeheadings corruption flow", () => {
     await session.generator.materializeEdit();
     await fireQuiescence(session);
 
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );
@@ -208,7 +208,7 @@ describe("dupeheadings corruption flow", () => {
   it("C1: ingress rejects self-duplicated sibling heading in one fragment", async () => {
     await createSampleDocument(ctx.rootDir);
     const session = await openSession();
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, null);
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, null);
 
     const duplicated =
       "## Overview\n\nbody\n\n## Overview\n\nagain" as FragmentContent;
@@ -250,7 +250,7 @@ describe("dupeheadings corruption flow", () => {
       threw = err;
     }
 
-    const layout = await resolveLiveSectionLayout(
+    const layout = await resolvePersistedSectionLayout(
       SAMPLE_DOC_PATH,
       session.generator.getCurrentProposalId(),
     );

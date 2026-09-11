@@ -26,15 +26,21 @@ import {
   getOrCreateInProgressProposalForAdoptionId,
   updateCurrentProposalSections,
   createTransientProposal,
+  unsafeReplaceProposalManifestForRecoveryOnly,
+  readProposal,
 } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { publishProposalToCanonicalDetailed } from "../../storage/commit-pipeline.js";
+import { publishMergeToCanonicalDetailed } from "../../storage/commit-pipeline.js";
 import { ContentLayer } from "../../storage/content-layer.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot, getContentRoot } from "../../storage/data-root.js";
-import { ProposalAdoptionId } from "../../types/shared.js";
+import { documentTargetRef, ProposalAdoptionId } from "../../types/shared.js";
+import { buildFragmentContent } from "../../storage/section-formatting.js";
+import type { SectionBody } from "../../storage/section-formatting.js";
+
+const OVERVIEW_KEY = "section::overview";
 
 const WRITER = { id: "user-alice", type: "human" as const, displayName: "Alice" };
 
@@ -81,7 +87,7 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
       heading: "Roadmap",
       content: "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
     });
-    await publishProposalToCanonicalDetailed(externalId, {});
+    await publishMergeToCanonicalDetailed(externalId, {});
 
     // Canonical now genuinely contains Roadmap.
     const roadmapKey = SectionRef.headingKey(["Roadmap"]);
@@ -101,6 +107,61 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
     // 5. Roadmap MUST still exist in canonical — the publish must not have
     //    reverted the document to its pre-Roadmap structure.
     const afterPublish = await new ContentLayer(getContentRoot()).readAllSections(SAMPLE_DOC_PATH);
+    expect(afterPublish.has(roadmapKey)).toBe(true);
+    expect(afterPublish.get(roadmapKey) as string).toContain(
+      "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
+    );
+  });
+
+  it("leftover document target on a live publish must not drop a section committed after the proposal opened", async () => {
+    const baseHead = await getHeadSha(getDataRoot());
+    const session = await acquireDocSession(SAMPLE_DOC_PATH, WRITER.id, baseHead, WRITER, "sock-live");
+    session.liveFragments.replaceFragmentString(
+      OVERVIEW_KEY,
+      buildFragmentContent("Alice's in-flight overview edit." as SectionBody, 2, "Overview"),
+    );
+    session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+    const inflightId = await session.generator.materializeEdit({
+      touchedFragmentKeys: [OVERVIEW_KEY],
+    });
+    await ProposalEditor.open(inflightId, "inprogress").retitleSection(
+      SAMPLE_DOC_PATH,
+      ["Overview"],
+      "Overview",
+      2,
+      "Alice's in-flight overview edit." as SectionBody,
+    );
+
+    const { id: externalId } = await createTransientProposal(
+      { id: "user-bob", type: "human", displayName: "Bob" },
+      "add roadmap section",
+    );
+    await mutateProposalContent(externalId, {
+      kind: "write_section",
+      docPath: SAMPLE_DOC_PATH,
+      headingPath: ["Roadmap"],
+      heading: "Roadmap",
+      content: "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
+    });
+    await publishMergeToCanonicalDetailed(externalId, {});
+    const current = await readProposal(inflightId);
+    await unsafeReplaceProposalManifestForRecoveryOnly(
+      inflightId,
+      current.sections,
+      undefined,
+      [documentTargetRef(SAMPLE_DOC_PATH)],
+    );
+
+    const roadmapKey = SectionRef.headingKey(["Roadmap"]);
+    const overviewKey = SectionRef.headingKey(["Overview"]);
+    const beforePublish = await new ContentLayer(getContentRoot()).readAllSections(SAMPLE_DOC_PATH);
+    expect(beforePublish.has(roadmapKey)).toBe(true);
+
+    const result = await session.generator.finalizeAndPublish();
+    expect(result.status).toBe("committed");
+
+    const afterPublish = await new ContentLayer(getContentRoot()).readAllSections(SAMPLE_DOC_PATH);
+    expect(afterPublish.get(overviewKey) as string).toContain("Alice's in-flight overview edit.");
     expect(afterPublish.has(roadmapKey)).toBe(true);
     expect(afterPublish.get(roadmapKey) as string).toContain(
       "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",

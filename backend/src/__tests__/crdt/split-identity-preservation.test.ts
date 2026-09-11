@@ -21,7 +21,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
 import { acquireDocSession, destroyAllSessions, type DocSession } from "../../crdt/ydoc-lifecycle.js";
 import { armQuiescenceTimer } from "../../ws/crdt-ws-coordinator.js";
-import { resolveLiveSectionLayout } from "../../crdt/live-section-layout.js";
+import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { getBackendSchema } from "../../crdt/ydoc-fragments.js";
 import { getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
@@ -90,7 +90,7 @@ describe("WS-2: identity-preserving SPLIT", () => {
     await fireQuiescence(session);
 
     // The split happened live: New Sub is its own fragment with the sub body.
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
     const newSub = layout.find((e) => e.heading === "New Sub")!;
     expect(session.liveFragments.getFragmentKeys()).toContain(newSub.fragmentKey);
     expect(session.liveFragments.readFragmentString(newSub.fragmentKey) as string).toContain(
@@ -157,7 +157,7 @@ describe("WS-2: identity-preserving SPLIT", () => {
 
     await fireQuiescence(session);
 
-    const layout = await resolveLiveSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
+    const layout = await resolvePersistedSectionLayout(SAMPLE_DOC_PATH, session.generator.getCurrentProposalId());
 
     // The new sibling split out into its own fragment, at the SAME level (2) and
     // as a TOP-LEVEL heading path (not nested under Overview).

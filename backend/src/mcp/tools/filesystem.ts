@@ -24,8 +24,8 @@ import { InvalidDocPathError } from "../../storage/path-utils.js";
 import { applyUnifiedDiff, DiffParseError, DiffApplyError } from "../../storage/diff-parser.js";
 import {
   evaluateAgentWritePolicy,
-  publishProposalToCanonical,
-  publishProposalToCanonicalDetailed,
+  publishWholesaleToCanonical,
+  publishWholesaleToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
 import { propagateCommitToLiveSessions, requestDocSessionDocumentDelete } from "../../ws/crdt-ws-coordinator.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
@@ -227,7 +227,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
     let committedHead: string;
     try {
-      committedHead = await publishProposalToCanonical(moveProposalId, committedMetadata);
+      committedHead = await publishWholesaleToCanonical(moveProposalId, "rename", committedMetadata);
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(moveProposalId, error);
       throw error;
@@ -390,7 +390,7 @@ async function writeDocumentViaProposal(
 
     let absorbResult;
     try {
-      absorbResult = await publishProposalToCanonicalDetailed(writeProposalId, committedMetadata);
+      absorbResult = await publishWholesaleToCanonicalDetailed(writeProposalId, "import", committedMetadata);
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(writeProposalId, error);
       throw error;
@@ -537,7 +537,7 @@ async function deleteDocumentViaProposal(
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
     let committedHead: string;
     try {
-      committedHead = await publishProposalToCanonical(delProposalId, committedMetadata);
+      committedHead = await publishWholesaleToCanonical(delProposalId, "delete", committedMetadata);
     } catch (error) {
       await raiseImpairmentForLeftoverProposal(delProposalId, error);
       throw error;
