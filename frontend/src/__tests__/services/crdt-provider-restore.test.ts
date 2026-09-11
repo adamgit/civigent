@@ -310,6 +310,29 @@ describe("CrdtProvider document replacement notice handling", () => {
     provider.destroy();
   });
 
+  it("document deleted (4026) does NOT reconnect and does NOT reseed", () => {
+    vi.useFakeTimers();
+    const onSessionReinit = vi.fn();
+    const onForceRebuild = vi.fn();
+    const doc = new Y.Doc();
+    const provider = new CrdtProvider(doc, "/test/doc.md", { onSessionReinit, onForceRebuild });
+
+    provider.connect();
+    const ws1 = StubWebSocket.lastInstance!;
+    ws1.open();
+    ws1.onclose?.(new CloseEvent("close", { code: 4026, reason: "document_deleted" }));
+
+    expect(onSessionReinit).not.toHaveBeenCalled();
+    expect(onForceRebuild).not.toHaveBeenCalled();
+    expect(provider.state).toBe("disconnected");
+
+    vi.advanceTimersByTime(2000);
+    expect(StubWebSocket.lastInstance).toBe(ws1);
+
+    provider.destroy();
+    vi.useRealTimers();
+  });
+
   it("superseded (4023) fires onSuperseded, does NOT reconnect, and does NOT surface a generic error", () => {
     const onSuperseded = vi.fn();
     const onError = vi.fn();

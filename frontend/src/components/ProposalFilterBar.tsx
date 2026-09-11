@@ -2,15 +2,7 @@ import type { ReactNode } from "react";
 
 function Group({ children }: { children: ReactNode }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 2,
-        background: "#f7f5f1",
-        borderRadius: 6,
-        padding: 2,
-      }}
-    >
+    <div className="flex gap-0.5 bg-footer-bg rounded-md p-0.5">
       {children}
     </div>
   );
@@ -27,18 +19,13 @@ function Option({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      style={{
-        fontSize: 11,
-        fontWeight: 500,
-        padding: "4px 10px",
-        borderRadius: 4,
-        background: active ? "white" : "none",
-        color: active ? "var(--color-text-primary)" : "var(--color-text-muted)",
-        boxShadow: active ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
-        border: "none",
-        cursor: "pointer",
-      }}
+      className={`text-[11px] font-medium px-2.5 py-1 rounded border-none cursor-pointer ${
+        active
+          ? "bg-canvas-bg text-text-primary shadow-sm"
+          : "bg-transparent text-text-muted"
+      }`}
     >
       {children}
     </button>
@@ -60,30 +47,14 @@ function SearchField({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      style={{
-        fontSize: 12,
-        padding: "5px 10px",
-        border: "1px solid #eae7e2",
-        borderRadius: 5,
-        width: 180,
-        marginLeft: "auto",
-        outline: "none",
-      }}
+      className="input-field text-xs w-[180px] ml-auto"
     />
   );
 }
 
 export function ProposalFilterBar({ children }: { children: ReactNode }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        marginBottom: 16,
-        flexWrap: "wrap",
-      }}
-    >
+    <div className="flex items-center gap-2 mb-4 flex-wrap">
       {children}
     </div>
   );

@@ -34,9 +34,11 @@ import {
   getReplacementNoticeForDisplacedSession,
   setBroadcastSessionReplacementInvalidation,
   setBroadcastAdminRebuildInvalidation,
+  setBroadcastDocumentDeletedInvalidation,
   noteFragmentActivity,
   onSessionDiscard,
   invalidateSessionForReplacement,
+  invalidateSessionForDocumentDelete,
   type DocSession,
 } from "../crdt/ydoc-lifecycle.js";
 import {
@@ -61,6 +63,8 @@ import {
   type StructuralHeadingEditPlan,
 } from "../crdt/structural-appliers.js";
 import { removeProposalHeading } from "../storage/proposal-heading-removal.js";
+import { mutateProposalContent } from "../storage/mutate-proposal-content.js";
+import { publishProposalToCanonicalDetailed } from "../storage/commit-pipeline.js";
 import { getHeadSha } from "../storage/git-repo.js";
 import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../crdt/live-section-layout.js";
@@ -106,6 +110,8 @@ import {
   WS_CLOSE_AUTHORIZATION_FAILED,
   WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SYSTEM_LOCKDOWN,
+  WS_CLOSE_DOCUMENT_DELETED,
+  WS_CLOSE_REASON_DOCUMENT_DELETED,
   WS_CLOSE_UPGRADE_FAILED,
 } from "./crdt-ws-frames.js";
 import {
@@ -151,6 +157,14 @@ const SERVER_NORMALIZATION_ORIGIN = Symbol("crdt:server-normalization");
 
 
 const quiescenceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Documents whose delete command has taken the actor lane. While a docPath is
+ * here, the autonomous publish triggers (settled-frontier quiescence timer,
+ * last-editor-leave) are dead for that session: they would race the delete for
+ * the same bound proposal.
+ */
+const documentDeleteInFlight = new Set<string>();
 
 function setParticipantFromSocketState(state: CrdtSocketState): void {
   participants.set(state.clientInstanceId, {
@@ -331,6 +345,7 @@ export function resetCoordinatorPublishStateForTest(): void {
   quiescenceTimers.clear();
   publishChains.clear();
   pendingFragmentsByDoc.clear();
+  documentDeleteInFlight.clear();
 }
 
 
@@ -412,6 +427,18 @@ export function broadcastAdminRebuildInvalidation(docPath: DocPath): void {
   for (const socket of docSockets.get(docPath) ?? []) {
     if (socket.readyState === WebSocket.OPEN) {
       socket.close(WS_CLOSE_ADMIN_REBUILD, "admin rebuild");
+    }
+  }
+}
+
+/**
+ * Close every socket on a document whose canonical deletion just committed.
+ * Terminal (4026): no reseed, no reconnect — the document is gone.
+ */
+export function broadcastDocumentDeletedInvalidation(docPath: DocPath): void {
+  for (const socket of docSockets.get(docPath) ?? []) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(WS_CLOSE_DOCUMENT_DELETED, WS_CLOSE_REASON_DOCUMENT_DELETED);
     }
   }
 }
@@ -943,6 +970,9 @@ async function runPublishAttemptInner(session: DocSession): Promise<PublishAttem
 
 export function armQuiescenceTimer(session: DocSession): void {
   const docPath = session.docPath;
+  // A delete command owns the lane and the bound proposal; re-arming the
+  // settled-frontier publish would race it for the same proposal.
+  if (documentDeleteInFlight.has(docPath)) return;
   const existing = quiescenceTimers.get(docPath);
   if (existing) clearTimeout(existing);
   const thresholdMs = session.generator.publishTriggerPolicy.quiescenceThresholdMs;
@@ -2424,6 +2454,7 @@ async function handleMessage(
 
 setBroadcastSessionReplacementInvalidation((docPath) => broadcastSessionReplacementInvalidation(docPath));
 setBroadcastAdminRebuildInvalidation((docPath) => broadcastAdminRebuildInvalidation(docPath));
+setBroadcastDocumentDeletedInvalidation((docPath) => broadcastDocumentDeletedInvalidation(docPath));
 
 
 
@@ -2603,6 +2634,11 @@ export async function publishOnLastEditorDisconnect(
   if (remainingEditorCount > 0 || !session.generator.hasCurrentProposal()) {
     return { shouldPublish: false, rule: "none", blockers: [] };
   }
+  // Delete has taken the lane for this session: its tombstone commit owns the
+  // bound proposal, so the last-editor-leave publish must not fire against it.
+  if (documentDeleteInFlight.has(session.docPath)) {
+    return { shouldPublish: false, rule: "none", blockers: [] };
+  }
   const decision = session.generator.evaluatePublishTrigger({
     forcedCanonicalOperation: false,
     lastEditorLeft: true,
@@ -2647,6 +2683,91 @@ export async function requestDocSessionPublish(docPath: DocPath): Promise<Publis
 
 
 
+
+/**
+ * Result of routing a workspace document delete through the live DocSession's
+ * actor lane (spec 05 §Document delete).
+ *
+ * `no-session` means there is no live session to take the delete, so the caller
+ * falls back to the transient-proposal tombstone path. `refused` is a PRE-WRITE
+ * refusal: nothing was mutated, so it is ordinary user-facing error text.
+ * `failed` means the session's bound proposal was already mutated (or its commit
+ * attempted) and the write did not land — a canonical-write failure report.
+ */
+export type DocSessionDocumentDeleteOutcome =
+  | { outcome: "no-session" }
+  | { outcome: "committed"; proposalId: ProposalId; commitSha: string }
+  | { outcome: "refused"; message: string }
+  | { outcome: "failed"; message: string; proposalId?: ProposalId; error: unknown };
+
+async function runDocumentDeleteCommand(session: DocSession): Promise<DocSessionDocumentDeleteOutcome> {
+  const docPath = session.docPath;
+  if (session.state !== "active") {
+    return { outcome: "refused", message: "This document isn't available for editing right now — try deleting it again in a moment." };
+  }
+  if (session.publishPause.getState() !== "idle") {
+    return { outcome: "refused", message: "This document is being published right now — try deleting it again in a moment." };
+  }
+
+  documentDeleteInFlight.add(docPath);
+  cancelQuiescenceTimer(docPath);
+
+  void session.publishPause.start(activeEditorSocketIds(docPath));
+  broadcastToAll(docPath, encodeDocPublishPauseStart());
+
+  const abandonDelete = (proposalId: ProposalId | undefined, error: unknown, what: string): DocSessionDocumentDeleteOutcome => {
+    session.publishPause.end();
+    broadcastToAll(docPath, encodeDocPublishPauseEnd());
+    documentDeleteInFlight.delete(docPath);
+    return {
+      outcome: "failed",
+      message: `${what} for ${docPath}: ${describeError(error)}`,
+      proposalId,
+      error,
+    };
+  };
+
+  let boundId: ProposalId;
+  try {
+    boundId = await session.generator.ensureCurrentProposal();
+  } catch (error) {
+    return abandonDelete(undefined, error, "Couldn't open an in-progress proposal to record the deletion");
+  }
+
+  try {
+    await mutateProposalContent(boundId, { kind: "delete_document", docPath });
+  } catch (error) {
+    await raiseImpairmentForLeftoverProposal(boundId, error);
+    return abandonDelete(boundId, error, "Couldn't record the deletion in the in-progress proposal");
+  }
+
+  let commitSha: string;
+  try {
+    const absorbResult = await publishProposalToCanonicalDetailed(boundId, {}, undefined, { ownerKind: "docsession" });
+    commitSha = absorbResult.commitSha;
+  } catch (error) {
+    await raiseImpairmentForLeftoverProposal(boundId, error);
+    return abandonDelete(boundId, error, "Couldn't publish the deletion to canonical");
+  }
+
+  clearImpairment(boundId);
+  pendingFragmentsByDoc.delete(docPath);
+  await invalidateSessionForDocumentDelete(docPath);
+  documentDeleteInFlight.delete(docPath);
+  return { outcome: "committed", proposalId: boundId, commitSha };
+}
+
+/**
+ * Route a workspace document delete through the document's live DocSession so
+ * the tombstone lands on the SAME `inprogress` proposal that holds the session's
+ * unpublished live work (spec 05 §Document delete). Returns `no-session` when
+ * there is nothing live, so the caller keeps today's transient-proposal path.
+ */
+export async function requestDocSessionDocumentDelete(docPath: DocPath): Promise<DocSessionDocumentDeleteOutcome> {
+  const session = lookupDocSession(docPath);
+  if (!session) return { outcome: "no-session" };
+  return session.enqueue(() => runDocumentDeleteCommand(session));
+}
 
 export async function requestDocSessionMove(
   docPath: DocPath,

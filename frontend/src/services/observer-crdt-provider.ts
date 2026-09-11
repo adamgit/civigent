@@ -8,6 +8,7 @@ import type {
 import { DocPath } from "../types/shared";
 import {
   WS_CLOSE_DOCUMENT_REPLACED,
+  WS_CLOSE_DOCUMENT_DELETED,
   WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SYSTEM_LOCKDOWN,
   WS_CLOSE_SESSION_ENDED,
@@ -49,6 +50,10 @@ export interface ObserverCrdtProviderEvents {
   /** Fired when the server closes this socket with code 4022 (document replaced).
    *  The provider reconnects immediately (backoff reset). */
   onSessionReinit?: () => void;
+  /** Fired when the server closes this socket with 4026 (document deleted).
+   *  TERMINAL: the document no longer exists, so this provider never reconnects
+   *  and never reseeds. The consumer must navigate away. */
+  onDocumentDeleted?: () => void;
   /** Fired once on the post-replacement reconnection, after the live-sections
    *  bootstrap has applied (never before the doc is filled), with the notice. */
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
@@ -78,6 +83,8 @@ export class ObserverCrdtProvider {
   private readonly maxReconnectDelayMs = 15000;
   private reconnectAttempts = 0;
   private destroyed = false;
+  /** Set by a 4026 close. The document is gone; every reconnect route is dead. */
+  private documentDeleted = false;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: DocPath;
@@ -153,7 +160,7 @@ export class ObserverCrdtProvider {
   }
 
   private openWebSocket(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.documentDeleted) return;
     try {
       this.ws = new WebSocket(this.url);
       this.ws.binaryType = "arraybuffer";
@@ -178,6 +185,19 @@ export class ObserverCrdtProvider {
 
     this.ws.onclose = (event: CloseEvent) => {
       this.ws = null;
+
+      if (event.code === WS_CLOSE_DOCUMENT_DELETED) {
+        // 4026 document_deleted — TERMINAL. Unlike 4022/4024 there is nothing
+        // left to reseed: reconnecting would poll a document that no longer
+        // exists. The consumer navigates away instead.
+        this.documentDeleted = true;
+        this.wakeReconnectPending = false;
+        this.clearReconnectTimer();
+        this.reconnectAttempts = 0;
+        this.setState("disconnected");
+        this.events.onDocumentDeleted?.();
+        return;
+      }
 
       if (event.code === WS_CLOSE_DOCUMENT_REPLACED || event.code === WS_CLOSE_ADMIN_REBUILD) {
         // Document replaced (restore 4022) or admin force-rebuild (4024) — both

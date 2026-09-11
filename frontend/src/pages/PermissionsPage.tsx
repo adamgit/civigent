@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type AclSnapshot } from "../services/api-client";
 import { DocPath } from "../types/shared";
@@ -56,7 +56,7 @@ export function PermissionsPage() {
     }
   };
 
-  const handleCreateRole = async (e: React.FormEvent) => {
+  const handleCreateRole = async (e: FormEvent) => {
     e.preventDefault();
     const name = newRoleName.trim();
     if (!name) return;
@@ -84,7 +84,7 @@ export function PermissionsPage() {
     }
   };
 
-  const handleAddDocOverride = async (e: React.FormEvent) => {
+  const handleAddDocOverride = async (e: FormEvent) => {
     e.preventDefault();
     const raw = newDocPath.trim();
     if (!raw) return;
@@ -124,7 +124,7 @@ export function PermissionsPage() {
     }
   };
 
-  const handleSetUserRoles = async (e: React.FormEvent) => {
+  const handleSetUserRoles = async (e: FormEvent) => {
     e.preventDefault();
     const userId = newUserId.trim();
     if (!userId) return;
@@ -158,129 +158,195 @@ export function PermissionsPage() {
     }
   };
 
-  if (loading) return <div style={{ padding: "2rem" }}>Loading...</div>;
+  if (loading) {
+    return (
+      <div className="flex flex-col">
+        <SharedPageHeader title="Permissions" backTo="/admin" />
+        <div className="p-8 font-ui text-[13px] text-text-muted">Loading...</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: "1rem 2rem", maxWidth: 900 }}>
-      <SharedPageHeader title="Permissions" />
+    <div className="flex flex-col">
+      <SharedPageHeader title="Permissions" backTo="/admin" />
+      <div className="p-4 font-ui max-w-[900px]">
 
-      {error && (
-        <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 6, padding: "0.75rem 1rem", marginBottom: "1rem", color: "#991b1b" }}>
-          {error}
-        </div>
-      )}
+        {error && (
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[13px]">
+            {error}
+          </div>
+        )}
 
-      {/* ── Roles ── */}
-      <section style={{ marginBottom: "2rem" }}>
-        <h2>Roles</h2>
-        <p style={{ color: "#666", fontSize: "0.9rem" }}>
-          Magic roles (<strong>public</strong>, <strong>authenticated</strong>, <strong>admin</strong>) are auto-granted and cannot be edited.
-        </p>
-        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.75rem" }}>
-          {MAGIC_ROLES.map(r => (
-            <span key={r} style={{ background: "#e0e7ff", padding: "0.25rem 0.75rem", borderRadius: 12, fontSize: "0.85rem" }}>{r}</span>
-          ))}
-          {(snapshot?.customRoles ?? []).map(r => (
-            <span key={r} style={{ background: "#d1fae5", padding: "0.25rem 0.75rem", borderRadius: 12, fontSize: "0.85rem", display: "inline-flex", alignItems: "center", gap: 4 }}>
-              {r}
-              <button onClick={() => handleDeleteRole(r)} disabled={saving} style={{ background: "none", border: "none", cursor: "pointer", color: "#991b1b", fontWeight: "bold", fontSize: "0.9rem" }}>x</button>
-            </span>
-          ))}
-        </div>
-        <form onSubmit={handleCreateRole} style={{ display: "flex", gap: "0.5rem" }}>
-          <input value={newRoleName} onChange={e => setNewRoleName(e.target.value)} placeholder="New role name" style={{ padding: "0.4rem 0.6rem", borderRadius: 4, border: "1px solid #ccc" }} />
-          <button type="submit" disabled={saving || !newRoleName.trim()} style={{ padding: "0.4rem 0.8rem" }}>Create</button>
-        </form>
-      </section>
+        <section className="mb-8">
+          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-1">Roles</h2>
+          <p className="text-text-muted text-[13px] mb-3">
+            Magic roles (<strong className="text-text-primary">public</strong>, <strong className="text-text-primary">authenticated</strong>, <strong className="text-text-primary">admin</strong>) are auto-granted and cannot be edited.
+          </p>
+          <div className="flex gap-2 flex-wrap mb-3">
+            {MAGIC_ROLES.map(r => (
+              <span key={r} className="bg-accent-light text-accent-text px-3 py-1 rounded-full text-[13px]">{r}</span>
+            ))}
+            {(snapshot?.customRoles ?? []).map(r => (
+              <span key={r} className="bg-status-green-light text-status-green px-3 py-1 rounded-full text-[13px] inline-flex items-center gap-1">
+                {r}
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteRole(r)}
+                  disabled={saving}
+                  className="bg-transparent border-none cursor-pointer text-status-red font-bold text-[14px] leading-none disabled:opacity-50"
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+          <form onSubmit={(e) => void handleCreateRole(e)} className="flex gap-2">
+            <input
+              value={newRoleName}
+              onChange={e => setNewRoleName(e.target.value)}
+              placeholder="New role name"
+              className="input-field"
+            />
+            <button type="submit" disabled={saving || !newRoleName.trim()} className="btn-primary disabled:opacity-50">
+              Create
+            </button>
+          </form>
+        </section>
 
-      {/* ── Defaults ── */}
-      <section style={{ marginBottom: "2rem" }}>
-        <h2>Default Permissions</h2>
-        <p style={{ color: "#666", fontSize: "0.9rem" }}>Applied when no document-specific override exists.</p>
-        <div style={{ display: "flex", gap: "2rem" }}>
-          <label>
-            Read:
-            <select value={snapshot?.defaults.read ?? "authenticated"} onChange={e => handleUpdateDefaults("read", e.target.value)} disabled={saving} style={{ marginLeft: "0.5rem" }}>
+        <section className="mb-8">
+          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-1">Default Permissions</h2>
+          <p className="text-text-muted text-[13px] mb-3">Applied when no document-specific override exists.</p>
+          <div className="flex gap-8">
+            <label className="text-[13px] text-text-primary">
+              Read:
+              <select
+                value={snapshot?.defaults.read ?? "authenticated"}
+                onChange={e => void handleUpdateDefaults("read", e.target.value)}
+                disabled={saving}
+                className="input-field ml-2"
+              >
+                {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </label>
+            <label className="text-[13px] text-text-primary">
+              Write:
+              <select
+                value={snapshot?.defaults.write ?? "authenticated"}
+                onChange={e => void handleUpdateDefaults("write", e.target.value)}
+                disabled={saving}
+                className="input-field ml-2"
+              >
+                {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-3">Document Overrides</h2>
+          <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-3">
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr className="bg-section-hover border-b border-footer-border">
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Document Path</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Read</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Write</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(snapshot?.acl ?? {}).map(([path, perms]) => (
+                  <tr key={path} className="border-b border-footer-border last:border-0">
+                    <td className="px-3 py-2 font-mono text-[12px] text-text-primary">{path}</td>
+                    <td className="px-3 py-2 text-text-primary">{perms.read ?? "-"}</td>
+                    <td className="px-3 py-2 text-text-primary">{perms.write ?? "-"}</td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveDocOverride(path)}
+                        disabled={saving}
+                        className="btn-danger disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <form onSubmit={(e) => void handleAddDocOverride(e)} className="flex gap-2 flex-wrap">
+            <input
+              value={newDocPath}
+              onChange={e => setNewDocPath(e.target.value)}
+              placeholder="Document path"
+              className="input-field flex-1 min-w-[200px]"
+            />
+            <select value={newDocRead} onChange={e => setNewDocRead(e.target.value)} className="input-field">
+              <option value="">Read: (default)</option>
               {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
-          </label>
-          <label>
-            Write:
-            <select value={snapshot?.defaults.write ?? "authenticated"} onChange={e => handleUpdateDefaults("write", e.target.value)} disabled={saving} style={{ marginLeft: "0.5rem" }}>
+            <select value={newDocWrite} onChange={e => setNewDocWrite(e.target.value)} className="input-field">
+              <option value="">Write: (default)</option>
               {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
-          </label>
-        </div>
-      </section>
+            <button type="submit" disabled={saving || !newDocPath.trim()} className="btn-primary disabled:opacity-50">
+              Add
+            </button>
+          </form>
+        </section>
 
-      {/* ── Document overrides ── */}
-      <section style={{ marginBottom: "2rem" }}>
-        <h2>Document Overrides</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "0.75rem" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
-              <th style={{ textAlign: "left", padding: "0.5rem" }}>Document Path</th>
-              <th style={{ textAlign: "left", padding: "0.5rem" }}>Read</th>
-              <th style={{ textAlign: "left", padding: "0.5rem" }}>Write</th>
-              <th style={{ padding: "0.5rem" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(snapshot?.acl ?? {}).map(([path, perms]) => (
-              <tr key={path} style={{ borderBottom: "1px solid #e5e7eb" }}>
-                <td style={{ padding: "0.5rem", fontFamily: "monospace", fontSize: "0.85rem" }}>{path}</td>
-                <td style={{ padding: "0.5rem" }}>{perms.read ?? "-"}</td>
-                <td style={{ padding: "0.5rem" }}>{perms.write ?? "-"}</td>
-                <td style={{ padding: "0.5rem", textAlign: "right" }}>
-                  <button onClick={() => handleRemoveDocOverride(path)} disabled={saving} style={{ color: "#991b1b", background: "none", border: "none", cursor: "pointer" }}>Remove</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <form onSubmit={handleAddDocOverride} style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <input value={newDocPath} onChange={e => setNewDocPath(e.target.value)} placeholder="Document path" style={{ padding: "0.4rem 0.6rem", borderRadius: 4, border: "1px solid #ccc", flex: 1, minWidth: 200 }} />
-          <select value={newDocRead} onChange={e => setNewDocRead(e.target.value)} style={{ padding: "0.4rem" }}>
-            <option value="">Read: (default)</option>
-            {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <select value={newDocWrite} onChange={e => setNewDocWrite(e.target.value)} style={{ padding: "0.4rem" }}>
-            <option value="">Write: (default)</option>
-            {allRoles.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <button type="submit" disabled={saving || !newDocPath.trim()} style={{ padding: "0.4rem 0.8rem" }}>Add</button>
-        </form>
-      </section>
-
-      {/* ── User roles ── */}
-      <section style={{ marginBottom: "2rem" }}>
-        <h2>User Roles</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "0.75rem" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #e5e7eb" }}>
-              <th style={{ textAlign: "left", padding: "0.5rem" }}>User ID</th>
-              <th style={{ textAlign: "left", padding: "0.5rem" }}>Roles</th>
-              <th style={{ padding: "0.5rem" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(snapshot?.roles ?? {}).map(([userId, roles]) => (
-              <tr key={userId} style={{ borderBottom: "1px solid #e5e7eb" }}>
-                <td style={{ padding: "0.5rem", fontFamily: "monospace", fontSize: "0.85rem" }}>{userId}</td>
-                <td style={{ padding: "0.5rem" }}>{roles.join(", ")}</td>
-                <td style={{ padding: "0.5rem", textAlign: "right" }}>
-                  <button onClick={() => handleRemoveUser(userId)} disabled={saving} style={{ color: "#991b1b", background: "none", border: "none", cursor: "pointer" }}>Remove</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <form onSubmit={handleSetUserRoles} style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-          <input value={newUserId} onChange={e => setNewUserId(e.target.value)} placeholder="User ID" style={{ padding: "0.4rem 0.6rem", borderRadius: 4, border: "1px solid #ccc", minWidth: 200 }} />
-          <input value={newUserRoles} onChange={e => setNewUserRoles(e.target.value)} placeholder="Roles (comma-separated)" style={{ padding: "0.4rem 0.6rem", borderRadius: 4, border: "1px solid #ccc", flex: 1, minWidth: 200 }} />
-          <button type="submit" disabled={saving || !newUserId.trim()} style={{ padding: "0.4rem 0.8rem" }}>Set</button>
-        </form>
-      </section>
+        <section className="mb-8">
+          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-3">User Roles</h2>
+          <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-3">
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr className="bg-section-hover border-b border-footer-border">
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">User ID</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Roles</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(snapshot?.roles ?? {}).map(([userId, roles]) => (
+                  <tr key={userId} className="border-b border-footer-border last:border-0">
+                    <td className="px-3 py-2 font-mono text-[12px] text-text-primary">{userId}</td>
+                    <td className="px-3 py-2 text-text-primary">{roles.join(", ")}</td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveUser(userId)}
+                        disabled={saving}
+                        className="btn-danger disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <form onSubmit={(e) => void handleSetUserRoles(e)} className="flex gap-2 flex-wrap">
+            <input
+              value={newUserId}
+              onChange={e => setNewUserId(e.target.value)}
+              placeholder="User ID"
+              className="input-field min-w-[200px]"
+            />
+            <input
+              value={newUserRoles}
+              onChange={e => setNewUserRoles(e.target.value)}
+              placeholder="Roles (comma-separated)"
+              className="input-field flex-1 min-w-[200px]"
+            />
+            <button type="submit" disabled={saving || !newUserId.trim()} className="btn-primary disabled:opacity-50">
+              Set
+            </button>
+          </form>
+        </section>
+      </div>
     </div>
   );
 }

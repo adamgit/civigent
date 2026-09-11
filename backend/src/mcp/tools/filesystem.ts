@@ -27,7 +27,8 @@ import {
   publishProposalToCanonical,
   publishProposalToCanonicalDetailed,
 } from "../../storage/commit-pipeline.js";
-import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
+import { propagateCommitToLiveSessions, requestDocSessionDocumentDelete } from "../../ws/crdt-ws-coordinator.js";
+import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
@@ -461,9 +462,9 @@ async function deleteDocumentViaProposal(
 
   // NOTE: no DocSession topology precondition here — MCP filesystem writes
   // stage proposal content only. Topology safety (an active live editing
-  // session on this document) is enforced at the publish/commit boundary by
-  // the DocSession actor's publish-or-abort / invalidation policy (Areas B/C/F),
-  // not by blocking the staged proposal write.
+  // session on this document) is enforced at the publish/commit boundary: an
+  // immediate delete commit hands off to the DocSession's own delete command
+  // below, and a blocked delete parks as a draft that touches nothing live.
 
   // Auto-withdraw this session's remembered draft (session-local memory only —
   // another session's draft under the same credential is never touched).
@@ -490,6 +491,49 @@ async function deleteDocumentViaProposal(
   const policyResult = await evaluateAgentWritePolicy(delProposalId);
 
   if (policyResult.canWrite) {
+    // A live DocSession owns this document's single `inprogress` proposal, which
+    // may hold unpublished live work. The tombstone must land on THAT proposal
+    // (spec 05 §Document delete), so drop this transient one rather than
+    // committing a second delete proposal for the same document. The policy gate
+    // above still had to run on a real proposal — the DocSession commit path is
+    // human-authoritative and never re-evaluates the agent write policy.
+    if (lookupDocSession(docPath)) {
+      await transitionToWithdrawn(delProposalId, "superseded by live DocSession delete");
+      const live = await requestDocSessionDocumentDelete(docPath);
+      if (live.outcome === "refused") {
+        return makeToolErrorResult(`Could not delete "${docPath}": ${live.message}`);
+      }
+      if (live.outcome === "failed") {
+        throw new Error(`Live-session delete of "${docPath}" failed: ${live.message}`, { cause: live.error });
+      }
+      if (live.outcome === "no-session") {
+        return makeToolErrorResult(
+          `Could not delete "${docPath}": its live editing session ended while the delete was being prepared. Try again.`,
+        );
+      }
+      if (ctx.emitEvent) {
+        emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], live.commitSha, manifest.targets);
+        emitCatalogMutationEvents(
+          ctx.emitEvent,
+          {
+            catalogChanged: true,
+            createdDocPaths: [],
+            deletedDocPaths: [docPath],
+            renamed: null,
+          },
+          writer,
+        );
+      }
+      return jsonToolResult({
+        success: true,
+        doc_path: docPath,
+        deleted: true,
+        committed_head: live.commitSha,
+        proposal_id: live.proposalId,
+        status: "committed",
+      });
+    }
+
     const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
     let committedHead: string;
     try {

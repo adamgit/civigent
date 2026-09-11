@@ -33,6 +33,9 @@ export interface CrdtTransportOptions {
   onSessionReinit?: (reason: string) => void;
   /** Called on admin force-rebuild (4024). Same replacement semantics as 4022. */
   onForceRebuild?: () => void;
+  /** Called on document delete (4026). Terminal: no reconnect, no reseed —
+   *  the consumer leaves the document. */
+  onDocumentDeleted?: () => void;
   /** Called when the server closes this editor socket with 4023 because a newer
    *  same-writer editor tab superseded this one. Not a reconnect. */
   onSuperseded?: () => void;
@@ -90,6 +93,9 @@ export class CrdtTransport {
         },
         onForceRebuild: () => {
           this.opts.onForceRebuild?.();
+        },
+        onDocumentDeleted: () => {
+          this.opts.onDocumentDeleted?.();
         },
         onSuperseded: () => {
           this.opts.onSuperseded?.();

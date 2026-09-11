@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import type { AgentAuthPolicy } from "../types/shared";
@@ -15,40 +15,28 @@ function AgentAuthStatus({ policy }: { policy: AgentAuthPolicy }) {
   const secretRequired = policy === "confidential";
 
   return (
-    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.75rem 1rem", marginBottom: "1rem" }}>
-      <div style={{ display: "flex", gap: "1.5rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          <span style={{
-            display: "inline-block",
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: anonEnabled ? "#22c55e" : "#94a3b8",
-          }} />
-          <span style={{ fontSize: "0.85rem", color: anonEnabled ? "#166534" : "#64748b" }}>
+    <div className="border border-card-border rounded-lg bg-canvas-bg px-4 py-3 mb-4">
+      <div className="flex flex-wrap gap-6">
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block w-2 h-2 rounded-full ${anonEnabled ? "bg-status-green" : "bg-text-faint"}`} />
+          <span className={`text-[13px] ${anonEnabled ? "text-status-green" : "text-text-muted"}`}>
             Anonymous agents {anonEnabled ? "enabled" : "disabled"}
             {policy === "approve" ? " (human approves first connection)" : ""}
           </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          <span style={{
-            display: "inline-block",
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: preAuthEnabled ? "#22c55e" : "#94a3b8",
-          }} />
-          <span style={{ fontSize: "0.85rem", color: preAuthEnabled ? "#166534" : "#64748b" }}>
+        <div className="flex items-center gap-1.5">
+          <span className={`inline-block w-2 h-2 rounded-full ${preAuthEnabled ? "bg-status-green" : "bg-text-faint"}`} />
+          <span className={`text-[13px] ${preAuthEnabled ? "text-status-green" : "text-text-muted"}`}>
             Pre-authenticated agents {preAuthEnabled ? "enabled" : "disabled"}
             {secretRequired ? " (secret required)" : ""}
           </span>
         </div>
       </div>
-      <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.4rem" }}>
-        Policy: <strong>{policy}</strong> — configured via <code>KS_AGENT_AUTH_POLICY</code>
+      <div className="text-[12px] text-text-muted mt-1.5">
+        Policy: <strong className="text-text-primary">{policy}</strong> — configured via <code className="font-mono">KS_AGENT_AUTH_POLICY</code>
       </div>
-      <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "0.2rem" }}>
-        Anonymous agent identities are signed with an HMAC salt (<code>KS_AGENT_ANON_SALT</code>).
+      <div className="text-[12px] text-text-muted mt-0.5">
+        Anonymous agent identities are signed with an HMAC salt (<code className="font-mono">KS_AGENT_ANON_SALT</code>).
         Auto-generated if unset; anonymous agents will not survive a restart unless this is set explicitly.
       </div>
     </div>
@@ -87,7 +75,7 @@ export function AgentKeysPage() {
 
   useEffect(() => { reload(); }, [reload]);
 
-  const handleAdd = async (e: React.FormEvent) => {
+  const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
@@ -170,137 +158,133 @@ export function AgentKeysPage() {
   };
 
   return (
-    <>
+    <div className="flex flex-col">
       <SharedPageHeader title="Pre-Authenticated Agents" backTo="/admin" />
 
-      <section style={{ maxWidth: 700, margin: "0 auto", padding: "1rem" }}>
+      <section className="max-w-[700px] mx-auto p-4 font-ui w-full">
         {authPolicy && <AgentAuthStatus policy={authPolicy} />}
 
         {error && (
-          <div style={{ background: "#ffeaea", color: "#a00", padding: "0.5rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[13px]">
             {error}
           </div>
         )}
 
         {parseErrors.length > 0 && (
-          <div style={{ background: "#fff3e0", border: "1px solid #ff9800", color: "#e65100", padding: "0.75rem 1rem", borderRadius: 4, marginBottom: "1rem" }}>
+          <div className="mb-4 p-3 bg-status-yellow-light border border-status-yellow/30 text-status-yellow rounded">
             <strong>Warning: {parseErrors.length} malformed {parseErrors.length === 1 ? "entry" : "entries"} in agents.keys</strong>
-            <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.2rem" }}>
+            <ul className="mt-2 mb-0 pl-5">
               {parseErrors.map((err, i) => (
-                <li key={i} style={{ fontSize: "0.85rem", marginBottom: "0.2rem" }}>{err}</li>
+                <li key={i} className="text-[13px] mb-0.5">{err}</li>
               ))}
             </ul>
           </div>
         )}
 
         {newSecret && (
-          <div style={{ background: "#e8f5e9", border: "1px solid #4caf50", padding: "1rem", borderRadius: 6, marginBottom: "1rem" }}>
-            <strong>
+          <div className="mb-4 p-4 bg-status-green-light border border-status-green/30 rounded-lg">
+            <strong className="text-status-green">
               {newSecret.kind === "rotated"
                 ? `Secret rotated for: ${newSecret.agentId}`
                 : `New agent created: ${newSecret.agentId}`}
             </strong>
-            <p style={{ margin: "0.5rem 0", color: "#333" }}>
+            <p className="my-2 text-[13px] text-text-primary">
               Copy the secret below. It will not be shown again.
             </p>
-            <code style={{ display: "block", background: "#fff", padding: "0.5rem", borderRadius: 4, wordBreak: "break-all", fontSize: "0.85rem" }}>
+            <code className="block bg-canvas-bg border border-card-border p-2 rounded break-all text-[13px] font-mono text-text-primary">
               {newSecret.secret}
             </code>
-            <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
-              <button onClick={copySecret} style={btnStyle}>
+            <div className="mt-2 flex gap-2">
+              <button type="button" onClick={() => void copySecret()} className="btn-primary">
                 {copied ? "Copied" : "Copy Secret"}
               </button>
-              <button onClick={() => setNewSecret(null)} style={{ ...btnStyle, background: "#888" }}>
+              <button type="button" onClick={() => setNewSecret(null)} className="btn-secondary">
                 Dismiss
               </button>
             </div>
           </div>
         )}
 
-        <form onSubmit={handleAdd} style={{ display: "flex", gap: "0.5rem", marginBottom: "1.5rem" }}>
+        <form onSubmit={(e) => void handleAdd(e)} className="flex gap-2 mb-6">
           <input
             type="text"
             placeholder="Agent display name"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            style={{ flex: 1, padding: "0.4rem 0.6rem", border: "1px solid #ccc", borderRadius: 4 }}
+            className="input-field flex-1"
           />
-          <button type="submit" disabled={adding || !newName.trim()} style={btnStyle}>
+          <button type="submit" disabled={adding || !newName.trim()} className="btn-primary disabled:opacity-50">
             {adding ? "Adding..." : "Add Agent"}
           </button>
         </form>
 
         {loading ? (
-          <p style={{ color: "#888" }}>Loading...</p>
+          <p className="text-xs text-text-muted">Loading...</p>
         ) : agents.length === 0 ? (
-          <p style={{ color: "#888" }}>No pre-authenticated agents configured.</p>
+          <p className="text-xs text-text-muted">No pre-authenticated agents configured.</p>
         ) : (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-              <label style={{ cursor: "pointer" }}>
+            <div className="flex justify-between items-center mb-2">
+              <label className="cursor-pointer text-[13px] text-text-primary">
                 <input type="checkbox" checked={selected.size === agents.length} onChange={toggleAll} />{" "}
                 Select all ({agents.length})
               </label>
               {selected.size > 0 && (
-                <button onClick={handleDeleteSelected} style={{ ...btnStyle, background: "#d32f2f" }}>
+                <button type="button" onClick={() => void handleDeleteSelected()} className="btn-danger">
                   Delete {selected.size} selected
                 </button>
               )}
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ borderBottom: "2px solid #ddd", textAlign: "left" }}>
-                  <th style={{ padding: "0.3rem" }}></th>
-                  <th style={{ padding: "0.3rem" }}>Agent ID</th>
-                  <th style={{ padding: "0.3rem" }}>Display Name</th>
-                  <th style={{ padding: "0.3rem" }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((agent) => (
-                  <tr key={agent.agent_id} style={{ borderBottom: "1px solid #eee" }}>
-                    <td style={{ padding: "0.3rem" }}>
-                      <input
-                        type="checkbox"
-                        checked={selected.has(agent.agent_id)}
-                        onChange={() => toggleSelect(agent.agent_id)}
-                      />
-                    </td>
-                    <td style={{ padding: "0.3rem", fontFamily: "monospace", fontSize: "0.85rem" }}>
-                      {agent.agent_id}
-                    </td>
-                    <td style={{ padding: "0.3rem" }}>{agent.display_name}</td>
-                    <td style={{ padding: "0.3rem", display: "flex", gap: "0.35rem", justifyContent: "flex-end" }}>
-                      <button
-                        onClick={() => handleRotate(agent.agent_id)}
-                        style={{ ...btnStyle, background: "#f59e0b", padding: "0.2rem 0.5rem", fontSize: "0.8rem" }}
-                      >
-                        Rotate secret
-                      </button>
-                      <button
-                        onClick={() => handleDelete(agent.agent_id)}
-                        style={{ ...btnStyle, background: "#d32f2f", padding: "0.2rem 0.5rem", fontSize: "0.8rem" }}
-                      >
-                        Delete
-                      </button>
-                    </td>
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg">
+              <table className="w-full border-collapse text-[13px]">
+                <thead>
+                  <tr className="bg-section-hover border-b border-footer-border">
+                    <th className="px-3 py-2"></th>
+                    <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Agent ID</th>
+                    <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Display Name</th>
+                    <th className="px-3 py-2"></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {agents.map((agent) => (
+                    <tr key={agent.agent_id} className="border-b border-footer-border last:border-0">
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(agent.agent_id)}
+                          onChange={() => toggleSelect(agent.agent_id)}
+                        />
+                      </td>
+                      <td className="px-3 py-2 font-mono text-[12px] text-text-primary">
+                        {agent.agent_id}
+                      </td>
+                      <td className="px-3 py-2 text-text-primary">{agent.display_name}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-1.5 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => void handleRotate(agent.agent_id)}
+                            className="btn-small"
+                          >
+                            Rotate secret
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDelete(agent.agent_id)}
+                            className="btn-danger"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </>
         )}
       </section>
-    </>
+    </div>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  background: "#2d7a8a",
-  color: "white",
-  border: "none",
-  padding: "0.4rem 1rem",
-  borderRadius: 4,
-  cursor: "pointer",
-  fontSize: "0.9rem",
-};

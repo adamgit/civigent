@@ -26,7 +26,7 @@ export function ContentIntegrityPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Content Integrity" backTo="/admin" />
-      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4 font-ui">
         <p className="text-[13px] text-text-muted mb-4 max-w-2xl leading-relaxed">
           Scans every canonical document with the same section-assembly path the document page uses.
           Nothing is written — results are computed in memory and discarded when you leave.
@@ -37,7 +37,7 @@ export function ContentIntegrityPage() {
             type="button"
             onClick={() => void runScan()}
             disabled={scanning}
-            className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            className="btn-primary disabled:opacity-50"
           >
             {scanning ? "Scanning…" : "Scan all documents"}
           </button>
@@ -49,7 +49,7 @@ export function ContentIntegrityPage() {
         </div>
 
         {error ? (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px] font-mono whitespace-pre-wrap">
             {error}
           </div>
         ) : null}
@@ -60,8 +60,8 @@ export function ContentIntegrityPage() {
 
         {result ? (
           <>
-            <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
                 <div className="text-[13px] font-semibold text-text-primary">Summary</div>
               </div>
               <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border">
@@ -70,13 +70,13 @@ export function ContentIntegrityPage() {
               </div>
               <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border">
                 <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">OK</span>
-                <span className="text-[13px] text-green-700 font-medium tabular-nums">{result.ok_count}</span>
+                <span className="text-[13px] text-status-green font-medium tabular-nums">{result.ok_count}</span>
               </div>
               <div className="flex items-baseline gap-4 px-4 py-2">
                 <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">Failures</span>
                 <span
                   className={`text-[13px] font-medium tabular-nums ${
-                    result.failure_count > 0 ? "text-red-700" : "text-text-primary"
+                    result.failure_count > 0 ? "text-status-red" : "text-text-primary"
                   }`}
                 >
                   {result.failure_count}
@@ -84,8 +84,8 @@ export function ContentIntegrityPage() {
               </div>
             </div>
 
-            <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white">
-              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
                 <div className="text-[13px] font-semibold text-text-primary">Failures</div>
                 <div className="text-[11px] text-text-muted">
                   Full error text including stack traces
@@ -93,7 +93,7 @@ export function ContentIntegrityPage() {
               </div>
 
               {result.failures.length === 0 ? (
-                <div className="px-4 py-4 text-[12px] text-green-700">
+                <div className="px-4 py-4 text-[12px] text-status-green">
                   No integrity failures found.
                 </div>
               ) : (
@@ -115,7 +115,7 @@ export function ContentIntegrityPage() {
                       )}
                       <span className="pill pill-red">error</span>
                     </div>
-                    <pre className="m-0 rounded border border-red-200 bg-red-50 p-3 text-[11px] text-red-800 overflow-auto max-h-[40vh] whitespace-pre-wrap break-words font-mono">
+                    <pre className="m-0 rounded border border-status-red/25 bg-status-red-light p-3 text-[11px] text-status-red overflow-auto max-h-[40vh] whitespace-pre-wrap break-words font-mono">
                       {failure.error}
                     </pre>
                   </div>

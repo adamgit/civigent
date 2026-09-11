@@ -44,6 +44,9 @@ export interface UseLiveSectionReplicaParams {
   /** 4023: a newer same-writer editor tab took over. The hook demotes this tab
    *  back to observer itself; the callback is for user-facing messaging. */
   onSuperseded?: () => void;
+  /** 4026: the document was deleted. The hook tears the live pipeline down and
+   *  never rejoins; the page must navigate away. */
+  onDocumentDeleted?: () => void;
   caretFrameHooks?: CaretFrameHooks;
 }
 
@@ -138,6 +141,8 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   onDocumentReplacementNoticeRef.current = params.onDocumentReplacementNotice;
   const onSupersededRef = useRef(params.onSuperseded);
   onSupersededRef.current = params.onSuperseded;
+  const onDocumentDeletedRef = useRef(params.onDocumentDeleted);
+  onDocumentDeletedRef.current = params.onDocumentDeleted;
   const caretFrameHooksRef = useRef(params.caretFrameHooks);
   caretFrameHooksRef.current = params.caretFrameHooks;
   const demoteRef = useRef<(() => Promise<void>) | null>(null);
@@ -269,6 +274,13 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         onSessionReinit: () => {
           onSessionReinitRef.current?.();
         },
+        onDocumentDeleted: () => {
+          // 4026: the document is gone. Drop the socket and do NOT rejoin —
+          // there is nothing to observe. The page navigates away.
+          teardownConnection();
+          forceRender();
+          onDocumentDeletedRef.current?.();
+        },
         onDocumentReplacementNotice: (payload) => {
           onDocumentReplacementNoticeRef.current?.(payload);
         },
@@ -327,6 +339,14 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         void demoteRef.current?.();
         onSupersededRef.current?.();
       },
+      onDocumentDeleted: () => {
+        // 4026: the document is gone. Unlike 4022/4024 there is no replacement
+        // pipeline to build and no observer to fall back to — tear the editor
+        // transport down and let the page navigate away.
+        teardownConnection();
+        forceRender();
+        onDocumentDeletedRef.current?.();
+      },
       onDocumentReplacementNotice: (payload) => {
         onDocumentReplacementNoticeRef.current?.(payload);
       },
@@ -354,7 +374,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     // and that callback must not read as a dead editor socket.
     editorStateRef.current = "connecting";
     transport.connect();
-  }, [handleLiveSectionFrame]);
+  }, [handleLiveSectionFrame, teardownConnection]);
 
   /** Drop and replace the whole live pipeline as OBSERVER — for stale-session
    *  rejection, unknown 4022 reasons, session end, and a bootstrap for a

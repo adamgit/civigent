@@ -162,6 +162,12 @@ export function setBroadcastAdminRebuildInvalidation(cb: (docPath: DocPath) => v
   _broadcastAdminRebuildInvalidation = cb;
 }
 
+let _broadcastDocumentDeletedInvalidation: ((docPath: DocPath) => void) | null = null;
+
+export function setBroadcastDocumentDeletedInvalidation(cb: (docPath: DocPath) => void): void {
+  _broadcastDocumentDeletedInvalidation = cb;
+}
+
 // ─── Lookup ──────────────────────────────────────────────────────
 
 export function lookupDocSession(docPath: DocPath): DocSession | undefined {
@@ -678,6 +684,33 @@ export async function invalidateSessionForReplacement(
     _broadcastSessionReplacementInvalidation(docPath);
   }
 
+  if (session) {
+    assertState(session, ["active", "acquiring"]);
+    session.publishPause.end();
+    session.state = "ended";
+    session.ydoc.destroy();
+    sessions.delete(docPath);
+    sessionPromises.delete(docPath);
+    notifySessionDiscarded(docPath);
+  }
+}
+
+/**
+ * Tear down the live Y.Doc for a document whose canonical deletion has just
+ * committed (spec 05 §Document delete). Sockets are closed with 4026
+ * (`document_deleted`) — a TERMINAL close, unlike 4022 replacement: there is no
+ * document left to reseed from and no reconnect notice, so clients navigate away
+ * rather than rebuild.
+ *
+ * Precondition: the tombstone has already landed in canonical. This function
+ * does the disruptive part only.
+ */
+export async function invalidateSessionForDocumentDelete(docPath: DocPath): Promise<void> {
+  if (_broadcastDocumentDeletedInvalidation) {
+    _broadcastDocumentDeletedInvalidation(docPath);
+  }
+
+  const session = sessions.get(docPath);
   if (session) {
     assertState(session, ["active", "acquiring"]);
     session.publishPause.end();

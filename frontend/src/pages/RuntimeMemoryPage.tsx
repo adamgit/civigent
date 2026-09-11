@@ -101,8 +101,8 @@ function MeasureChart({
 
   if (measure.key === "container_memory_bytes" && numericValues.length === 0) {
     return (
-      <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-        <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+      <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+        <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
           <div className="text-[13px] font-semibold text-text-primary">{measure.title}</div>
           <div className="text-[11px] text-text-muted">{measure.explanation}</div>
         </div>
@@ -119,8 +119,8 @@ function MeasureChart({
   const highWaterPct = highWater !== null ? (highWater / scaleMax) * 100 : null;
 
   return (
-    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+    <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
         <div className="text-[13px] font-semibold text-text-primary">{measure.title}</div>
         <div className="text-[11px] text-text-muted">{measure.explanation}</div>
       </div>
@@ -134,7 +134,7 @@ function MeasureChart({
           </span>
         </div>
         <div
-          className="relative bg-[#f7f5f1] border border-[#eae7e2] rounded"
+          className="relative bg-footer-bg border border-card-border rounded"
           style={{ height: 80 }}
         >
           <div
@@ -165,7 +165,7 @@ function MeasureChart({
           </div>
           {highWaterPct !== null && (
             <div
-              className="absolute left-0 right-0 border-t border-dashed border-amber-500 pointer-events-none"
+              className="absolute left-0 right-0 border-t border-dashed border-status-yellow pointer-events-none"
               style={{ bottom: `${highWaterPct}%` }}
               title={`Peak: ${formatBytes(highWater)}`}
             />
@@ -199,15 +199,15 @@ function MemoryCompositionCard({ current }: { current: RuntimeMemorySample | nul
   ].filter((segment) => segment.value > 0);
 
   return (
-    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+    <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
         <div className="text-[13px] font-semibold text-text-primary">Memory composition</div>
         <div className="text-[11px] text-text-muted">
           JS heap is part of backend mem; backend mem is compared against the cgroup container total.
         </div>
       </div>
       <div className="px-4 py-3">
-        <div className="h-10 flex overflow-hidden rounded border border-[#eae7e2] bg-[#f7f5f1]">
+        <div className="h-10 flex overflow-hidden rounded border border-card-border bg-footer-bg">
           {segments.map((segment) => {
             const pct = (segment.value / total) * 100;
             return (
@@ -261,8 +261,8 @@ function MajorMemoryBarsCard({
 }) {
   if (unavailable) {
     return (
-      <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white h-full">
-        <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+      <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg h-full">
+        <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
           <div className="text-[13px] font-semibold text-text-primary">{title}</div>
           <div className="text-[11px] text-text-muted">Unavailable outside container/cgroup environment.</div>
         </div>
@@ -273,8 +273,8 @@ function MajorMemoryBarsCard({
   const maxValue = Math.max(...items.map((item) => item.value), 1);
 
   return (
-    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white h-full">
-      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+    <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg h-full">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
         <div className="text-[13px] font-semibold text-text-primary">{title}</div>
         <div className="text-[11px] text-text-muted">{explanation}</div>
       </div>
@@ -286,9 +286,9 @@ function MajorMemoryBarsCard({
             <div className="flex items-end gap-2 h-28">
               {items.map((item) => {
                 const heightPct = (item.value / maxValue) * 100;
-                const barColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.light : "#d8dee6";
-                const barBorderColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.dark : "#c8d0da";
-                const labelColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.dark : "#3a3530";
+                const barColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.light : "var(--color-footer-border)";
+                const barBorderColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.dark : "var(--color-folder-card-border)";
+                const labelColor = item.expectedInProduction ? CIVIGENT_RSS_COLOR.dark : "var(--color-text-primary)";
                 return (
                   <div
                     key={item.id}
@@ -381,14 +381,14 @@ export function RuntimeMemoryPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Runtime Memory" backTo="/admin" />
-      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4 font-ui">
 
         <div className="flex items-center gap-2 mb-4">
           <button
             type="button"
             onClick={() => void load()}
             disabled={loading}
-            className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+            className="btn-secondary disabled:opacity-50"
           >
             Refresh
           </button>
@@ -398,7 +398,7 @@ export function RuntimeMemoryPage() {
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px] font-mono whitespace-pre-wrap">
             {error}
           </div>
         )}
@@ -409,8 +409,8 @@ export function RuntimeMemoryPage() {
 
         {data && (
           <>
-            <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
                 <div className="text-[13px] font-semibold text-text-primary">Summary</div>
                 <div className="text-[11px] text-text-muted">In-memory only — resets when the server restarts</div>
               </div>

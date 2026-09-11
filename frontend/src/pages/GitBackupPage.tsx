@@ -42,8 +42,8 @@ function KVRow({ label, children }: { label: string; children: React.ReactNode }
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+    <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
         <div className="text-[13px] font-semibold text-text-primary">{title}</div>
         {subtitle && <div className="text-[11px] text-text-muted">{subtitle}</div>}
       </div>
@@ -61,7 +61,7 @@ function Card({ title, subtitle, children }: { title: string; subtitle?: string;
  */
 function RemoteCheckCard({ remoteUrl }: { remoteUrl: string | null }) {
   return (
-    <div className="border-2 border-[#998866] rounded-lg overflow-hidden bg-white mb-4 shadow-sm">
+    <div className="border-2 border-sidebar-marker rounded-lg overflow-hidden bg-canvas-bg mb-4 shadow-sm">
       <div className="px-5 py-6 flex items-center gap-5">
         <div
           className="git-backup-checking-spinner"
@@ -92,9 +92,9 @@ function RemoteCheckCard({ remoteUrl }: { remoteUrl: string | null }) {
 function CheckBadge({ check }: { check: GitBackupStatusCheck }) {
   switch (check.status) {
     case "pass":
-      return <span className="text-emerald-700">✓ ok</span>;
+      return <span className="text-status-green">✓ ok</span>;
     case "fail":
-      return <span className="text-red-700">✗ {check.message}</span>;
+      return <span className="text-status-red">✗ {check.message}</span>;
     case "not_applicable":
       return <span className="text-text-muted italic">not applicable</span>;
     case "not_checked":
@@ -126,7 +126,7 @@ function DocSection({ title, children }: { title: string; children: ReactNode })
 
 function Code({ children }: { children: ReactNode }) {
   return (
-    <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-[#f0ede8] text-[#3a3530]">
+    <code className="font-mono text-[11px] px-1 py-0.5 rounded bg-footer-bg text-text-primary">
       {children}
     </code>
   );
@@ -134,7 +134,7 @@ function Code({ children }: { children: ReactNode }) {
 
 function Pre({ children }: { children: string }) {
   return (
-    <pre className="m-0 p-2.5 rounded bg-[#f7f5f1] border border-[#eae7e2] text-[11px] font-mono leading-snug text-[#3a3530] overflow-x-auto whitespace-pre">
+    <pre className="m-0 p-2.5 rounded bg-footer-bg border border-card-border text-[11px] font-mono leading-snug text-text-primary overflow-x-auto whitespace-pre">
       {children}
     </pre>
   );
@@ -160,8 +160,8 @@ function ModeButton({
       className={
         "px-2.5 py-1 rounded text-[11px] border " +
         (active
-          ? "border-[#3a3530] bg-[#3a3530] text-white font-semibold"
-          : "border-[#eae7e2] bg-white text-text-muted hover:bg-[#f0ede8]")
+          ? "border-text-primary bg-text-primary text-canvas-bg font-semibold"
+          : "border-card-border bg-canvas-bg text-text-muted hover:bg-footer-bg")
       }
     >
       {children}
@@ -208,7 +208,7 @@ function GitBackupInstructions({
   ].join("\n");
 
   return (
-    <div className="p-4 lg:border-l border-[#eae7e2] bg-[#faf8f5]">
+    <div className="p-4 lg:border-l border-card-border bg-section-hover">
       <DocSection title="What this is">
         <p>
           One-directional whole-instance backup: push published content history and durable
@@ -246,7 +246,7 @@ function GitBackupInstructions({
           }}
           placeholder="git@<forge-host>:<owner>/<repo>.git"
           spellCheck={false}
-          className="w-full px-2.5 py-1.5 rounded border border-[#eae7e2] bg-white text-[12px] font-mono text-text-primary mb-2"
+          className="input-field w-full text-[12px] font-mono mb-2"
         />
         <p className="text-text-muted text-[11px]">
           Format: <Code>git@host:owner/repo.git</Code> or <Code>ssh://git@host/owner/repo.git</Code>.
@@ -331,7 +331,7 @@ ssh-keygen -t ed25519 -f backup-secrets/civigent_backup_ssh_key -N "" -C "civige
               href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints"
               target="_blank"
               rel="noreferrer"
-              className="underline text-[#3a3530]"
+              className="underline text-text-primary"
             >
               GitHub&apos;s SSH key fingerprints
             </a>
@@ -358,7 +358,7 @@ ${knownHostsHost} ssh-rsa AAAA...`}</Pre>
 
       <DocSection title="3. Wire .env">
         {!remoteReady && (
-          <p className="text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+          <p className="text-status-yellow bg-status-yellow-light border border-status-yellow/30 rounded px-2 py-1.5">
             Enter your SSH remote URL above so <Code>KS_BACKUP_GIT_REMOTE</Code> is filled with a
             real value (not a placeholder).
           </p>
@@ -584,17 +584,14 @@ export function GitBackupPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Git Backup" backTo="/admin" />
-      <div
-        className="grid grid-cols-1 lg:grid-cols-2"
-        style={{ fontFamily: "var(--font-ui)" }}
-      >
+      <div className="grid grid-cols-1 lg:grid-cols-2 font-ui">
         <div className="p-4">
           <div className="flex items-center gap-2 mb-4">
             <button
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+              className="btn-secondary disabled:opacity-50"
             >
               Refresh
             </button>
@@ -606,9 +603,9 @@ export function GitBackupPage() {
             <Card title="Backup configuration">
               <KVRow label="Feature state">
                 {backup.feature_state === "configured" ? (
-                  <span className="text-emerald-700">configured</span>
+                  <span className="text-status-green">configured</span>
                 ) : (
-                  <span className="text-red-700">not configured</span>
+                  <span className="text-status-red">not configured</span>
                 )}
               </KVRow>
               <KVRow label="Remote URL">
@@ -619,9 +616,9 @@ export function GitBackupPage() {
               <KVRow label="SSH agent socket"><CheckBadge check={backup.ssh_agent_socket_reachable} /></KVRow>
               <KVRow label="known_hosts configured">
                 {backup.known_hosts_configured ? (
-                  <span className="text-emerald-700">yes</span>
+                  <span className="text-status-green">yes</span>
                 ) : (
-                  <span className="text-amber-700">
+                  <span className="text-status-yellow">
                     advisory: {backup.known_hosts_warning ?? "not set"}
                   </span>
                 )}
@@ -649,9 +646,9 @@ export function GitBackupPage() {
               <KVRow label="Active proposals">{backup.active_proposal_count}</KVRow>
               <KVRow label="State">
                 {backup.quiet_state === "quiet" ? (
-                  <span className="text-emerald-700">{QUIET_STATE_OK_COPY}</span>
+                  <span className="text-status-green">{QUIET_STATE_OK_COPY}</span>
                 ) : (
-                  <span className="text-red-700">
+                  <span className="text-status-red">
                     {QUIET_STATE_WARNING_COPY}. Backup is blocked until every
                     outstanding proposal is committed or withdrawn.
                   </span>
@@ -666,7 +663,7 @@ export function GitBackupPage() {
                 type="button"
                 onClick={() => void runBackup()}
                 disabled={!backupEnabled || runningBackup}
-                className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {runningBackup ? "Running…" : "Run quiet-state backup"}
               </button>
@@ -674,30 +671,30 @@ export function GitBackupPage() {
                 type="button"
                 onClick={() => void runVerify()}
                 disabled={backup?.feature_state !== "configured" || runningVerify}
-                className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-secondary disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {runningVerify ? "Verifying…" : "Verify remote backup"}
               </button>
             </div>
             {error && (
-              <div className="mx-4 mb-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+              <div className="mx-4 mb-3 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px] font-mono whitespace-pre-wrap">
                 {error}
               </div>
             )}
             {verifyResult && (
-              <div className="px-4 py-3 border-t border-footer-border bg-[#faf8f5] text-[12px]">
+              <div className="px-4 py-3 border-t border-footer-border bg-section-hover text-[12px]">
                 <div>
                   Content ref: {verifyResult.content_ref_match ? (
-                    <span className="text-emerald-700">matches</span>
+                    <span className="text-status-green">matches</span>
                   ) : (
-                    <span className="text-red-700">differs</span>
+                    <span className="text-status-red">differs</span>
                   )}
                 </div>
                 <div>
                   Auth ref: {verifyResult.auth_ref_match ? (
-                    <span className="text-emerald-700">matches</span>
+                    <span className="text-status-green">matches</span>
                   ) : (
-                    <span className="text-red-700">differs</span>
+                    <span className="text-status-red">differs</span>
                   )}
                 </div>
                 <div className="text-text-muted mt-1">{verifyResult.message}</div>
@@ -718,9 +715,9 @@ export function GitBackupPage() {
             <Card title="Restore target state">
               <KVRow label="Target virgin">
                 {restore.target_virgin ? (
-                  <span className="text-emerald-700">green — restore may proceed</span>
+                  <span className="text-status-green">green — restore may proceed</span>
                 ) : (
-                  <span className="text-red-700">red — restore refuses to run</span>
+                  <span className="text-status-red">red — restore refuses to run</span>
                 )}
               </KVRow>
               <KVRow label="Reason / detail">
@@ -736,7 +733,7 @@ export function GitBackupPage() {
                   type="button"
                   onClick={() => void runRestore()}
                   disabled={!restoreEnabled || runningRestore}
-                  className="text-xs px-3 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="btn-danger disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {runningRestore ? "Restoring…" : "Restore from remote backup"}
                 </button>

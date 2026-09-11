@@ -177,6 +177,6 @@ describe("DocumentPage lazy editor mounting (spec 05)", () => {
     // Focus Appendix (index 3): its window mounts ON DEMAND (Details + Appendix).
     fireEvent.click(screen.getByText("Appendix body."));
     await waitFor(() => expect(mountedFragmentKeys()).toContain("frag:sec_appendix"));
-    expect(new Set(mountedFragmentKeys()).has("frag:sec_details")).toBe(true);
+    await waitFor(() => expect(mountedFragmentKeys()).toContain("frag:sec_details"));
   });
 });

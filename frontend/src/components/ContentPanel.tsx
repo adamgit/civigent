@@ -2,10 +2,7 @@ import type { ReactNode } from "react";
 
 function Header({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div
-      className={`flex items-center justify-between ${className}`}
-      style={{ padding: "12px 16px", borderBottom: "1px solid #f0ede8" }}
-    >
+    <div className={`flex items-center justify-between px-4 py-3 border-b border-footer-bg ${className}`}>
       {children}
     </div>
   );
@@ -13,7 +10,7 @@ function Header({ children, className = "" }: { children: ReactNode; className?:
 
 function Title({ children, icon }: { children: ReactNode; icon?: ReactNode }) {
   return (
-    <div className="flex items-center gap-1.5" style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)" }}>
+    <div className="flex items-center gap-1.5 text-[13px] font-semibold text-text-primary">
       {icon}
       {children}
     </div>
@@ -22,7 +19,7 @@ function Title({ children, icon }: { children: ReactNode; icon?: ReactNode }) {
 
 function Subtitle({ children }: { children: ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 2 }}>
+    <div className="text-[11px] text-text-muted mt-0.5">
       {children}
     </div>
   );
@@ -30,7 +27,7 @@ function Subtitle({ children }: { children: ReactNode }) {
 
 function Body({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className={className} style={{ padding: className.includes("p-0") || className.includes("padding") ? undefined : "14px 16px" }}>
+    <div className={className.includes("p-0") || className.includes("padding") ? className : `px-4 py-3.5 ${className}`}>
       {children}
     </div>
   );
@@ -38,15 +35,7 @@ function Body({ children, className = "" }: { children: ReactNode; className?: s
 
 function Summary({ children }: { children: ReactNode }) {
   return (
-    <div
-      style={{
-        padding: "10px 16px",
-        borderTop: "1px solid #f0ede8",
-        background: "var(--color-section-hover, #faf8f5)",
-        fontSize: 11,
-        color: "var(--color-text-muted)",
-      }}
-    >
+    <div className="px-4 py-2.5 border-t border-footer-bg bg-section-hover text-[11px] text-text-muted">
       {children}
     </div>
   );
@@ -54,15 +43,7 @@ function Summary({ children }: { children: ReactNode }) {
 
 export function ContentPanel({ children }: { children: ReactNode }) {
   return (
-    <div
-      style={{
-        background: "white",
-        border: "1px solid var(--color-card-border, #eae7e2)",
-        borderRadius: "var(--color-card-radius, 10px)",
-        marginBottom: 16,
-        overflow: "hidden",
-      }}
-    >
+    <div className="bg-canvas-bg border border-card-border rounded-[10px] mb-4 overflow-hidden">
       {children}
     </div>
   );

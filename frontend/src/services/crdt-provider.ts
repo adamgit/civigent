@@ -15,6 +15,7 @@ import {
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_AUTH_FAILED,
   WS_CLOSE_DOCUMENT_REPLACED,
+  WS_CLOSE_DOCUMENT_DELETED,
   WS_CLOSE_ADMIN_REBUILD,
   WS_CLOSE_SYSTEM_LOCKDOWN,
   WS_CLOSE_SUPERSEDED,
@@ -96,6 +97,10 @@ export interface CrdtProviderEvents {
    *  (4024). Behaves like 4022: no reconnect; the consumer replaces the
    *  live pipeline. */
   onForceRebuild?: () => void;
+  /** Fired when the server closes this socket with 4026 (document deleted).
+   *  TERMINAL: the document no longer exists, so this provider never reconnects
+   *  and never reseeds. The consumer must navigate away, not rebuild. */
+  onDocumentDeleted?: () => void;
   /** Fired when the server closes this editor socket with 4023 because the same
    *  writer opened a newer editor tab that took over. This is an intentional
    *  editor-session handoff, not a transport failure: the provider will not
@@ -131,6 +136,8 @@ export class CrdtProvider {
   private readonly maxReconnectDelayMs = 15000;
   private reconnectAttempts = 0;
   private destroyed = false;
+  /** Set by a 4026 close. The document is gone; every reconnect route is dead. */
+  private documentDeleted = false;
   private bootstrapApplied = false;
   private sentUpdateCount = 0;
   private ackedUpdateCount = 0;
@@ -343,7 +350,7 @@ export class CrdtProvider {
   }
 
   private openWebSocket(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.documentDeleted) return;
     try {
       this.ws = new WebSocket(this.url);
       this.ws.binaryType = "arraybuffer";
@@ -393,6 +400,20 @@ export class CrdtProvider {
         this.reconnectAttempts = 0;
         this.setState("disconnected");
         this.events.onSessionReinit?.(event.reason);
+        return;
+      }
+
+      if (event.code === WS_CLOSE_DOCUMENT_DELETED) {
+        // 4026 document_deleted — TERMINAL. Unlike 4022 there is nothing to
+        // reseed from: the document's canonical content is gone. Never
+        // reconnect (including on page wake) and never rebuild the pipeline;
+        // the consumer navigates away from the deleted document.
+        this.documentDeleted = true;
+        this.wakeReconnectPending = false;
+        this.clearReconnectTimer();
+        this.reconnectAttempts = 0;
+        this.setState("disconnected");
+        this.events.onDocumentDeleted?.();
         return;
       }
 

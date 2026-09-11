@@ -44,7 +44,7 @@ function HistoryRow({ entry }: { entry: SnapshotRunRecord }) {
       <span className="tabular-nums">
         <span className="text-text-primary">{entry.batch_doc_count ?? "—"}</span>
         {(entry.failed_doc_count ?? 0) > 0 && (
-          <span className="text-red-600 ml-1">({entry.failed_doc_count} failed)</span>
+          <span className="text-status-red ml-1">({entry.failed_doc_count} failed)</span>
         )}
       </span>
       <span className="text-text-primary tabular-nums">{entry.content_file_count ?? "—"}</span>
@@ -53,7 +53,7 @@ function HistoryRow({ entry }: { entry: SnapshotRunRecord }) {
         {entry.error ? (
           <details>
             <summary className="cursor-pointer"><StatusBadge ok={false} /></summary>
-            <span className="block mt-1 text-red-600 text-[11px] font-mono whitespace-pre-wrap">{entry.error}</span>
+            <span className="block mt-1 text-status-red text-[11px] font-mono whitespace-pre-wrap">{entry.error}</span>
           </details>
         ) : (
           <StatusBadge ok={true} />
@@ -107,7 +107,7 @@ export function SnapshotsPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Snapshots" backTo="/admin" />
-      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4 font-ui">
 
         {/* Action bar */}
         <div className="flex items-center gap-2 mb-4">
@@ -115,7 +115,7 @@ export function SnapshotsPage() {
             type="button"
             onClick={() => void load()}
             disabled={loading || snapshotting}
-            className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+            className="btn-secondary disabled:opacity-50"
           >
             Refresh
           </button>
@@ -123,7 +123,7 @@ export function SnapshotsPage() {
             type="button"
             onClick={() => void handleSnapshotNow()}
             disabled={snapshotting || loading || (data?.snapshot_enabled === true && health?.snapshot_root_writable === false)}
-            className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            className="btn-primary disabled:opacity-50"
           >
             {snapshotting ? "Snapshotting…" : "Snapshot Now"}
           </button>
@@ -135,13 +135,13 @@ export function SnapshotsPage() {
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px] font-mono whitespace-pre-wrap">
             {error}
           </div>
         )}
 
         {data?.snapshot_enabled && health && !health.snapshot_root_writable && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px]">
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px]">
             <div className="font-semibold mb-1">Snapshot destination is not writable.</div>
             <div className="font-mono whitespace-pre-wrap">{health.snapshot_root_error ?? `Cannot write to ${health.snapshot_root}`}</div>
             <div className="mt-2">
@@ -157,8 +157,8 @@ export function SnapshotsPage() {
         {data && (
           <>
             {/* Current State */}
-            <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
                 <div className="text-[13px] font-semibold text-text-primary">Current State</div>
                 <div className="text-[11px] text-text-muted">Live counts from disk</div>
               </div>
@@ -169,9 +169,9 @@ export function SnapshotsPage() {
                   <KVRow label="Snapshot root"><span className="font-mono">{health.snapshot_root}</span></KVRow>
                   <KVRow label="Snapshot destination">
                     {health.snapshot_root_writable ? (
-                      <span className="text-green-700 font-medium">writable</span>
+                      <span className="text-status-green font-medium">writable</span>
                     ) : (
-                      <span className="text-red-700 font-medium">not writable</span>
+                      <span className="text-status-red font-medium">not writable</span>
                     )}
                   </KVRow>
                 </>
@@ -180,7 +180,7 @@ export function SnapshotsPage() {
                 {data.commits_since_last_snapshot === null ? (
                   <em className="text-text-muted">unknown — no snapshot this session</em>
                 ) : (
-                  <span className={data.commits_since_last_snapshot > 0 ? "text-amber-600 font-semibold" : ""}>
+                  <span className={data.commits_since_last_snapshot > 0 ? "text-status-yellow font-semibold" : ""}>
                     {data.commits_since_last_snapshot}
                   </span>
                 )}
@@ -199,13 +199,13 @@ export function SnapshotsPage() {
             </div>
 
             {/* History */}
-            <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white">
-              <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+            <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg">
+              <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
                 <div className="text-[13px] font-semibold text-text-primary">History</div>
                 <div className="text-[11px] text-text-muted">In-memory only — oldest entry is server start</div>
               </div>
               {/* Column headers */}
-              <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 px-4 py-1.5 border-b border-[#eae7e2] bg-[#faf8f5]">
+              <div className="grid grid-cols-[180px_90px_70px_90px_90px_1fr] gap-x-4 px-4 py-1.5 border-b border-card-border bg-section-hover">
                 {["Time", "Event", "Batch", "Content", "Snapshots", "Status"].map((h) => (
                   <span key={h} className="text-[11px] font-semibold text-text-muted uppercase tracking-wide">{h}</span>
                 ))}
@@ -216,12 +216,9 @@ export function SnapshotsPage() {
             </div>
 
             {/* Status bar */}
-            <div
-              className="mt-3 flex items-center gap-1 text-text-muted"
-              style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "10.5px" }}
-            >
+            <div className="mt-3 flex items-center gap-1 text-text-muted font-mono text-[10.5px]">
               <span>Snapshots</span>
-              <span style={{ margin: "0 6px", color: "#d0ccc4" }}>&middot;</span>
+              <span className="mx-1.5 text-text-faint">&middot;</span>
               <span>{data.history.filter((e) => e.type === "snapshot").length} snapshot events this session</span>
             </div>
           </>

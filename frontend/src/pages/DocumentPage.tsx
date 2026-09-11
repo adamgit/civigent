@@ -9,7 +9,7 @@ import { SectionTransferService, type SectionTransfer } from "../services/sectio
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
-import { DocumentTopbar } from "../components/DocumentTopbar";
+import { DocumentTopbar, parentFolderRoute } from "../components/DocumentTopbar";
 import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner";
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentCanvas } from "../components/DocumentCanvas";
@@ -66,7 +66,7 @@ import {
   DocumentPaperStickyHeader,
   docPaperSectionScrollOffsetPx,
 } from "../components/DocumentPaperStickyHeader";
-import { apiClient, resolveWriterId } from "../services/api-client";
+import { apiClient, resolveWriterId, CanonicalWriteFailedError } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
@@ -111,6 +111,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteWriteFailure, setDeleteWriteFailure] = useState<string | null>(null);
   const [pathCopied, setPathCopied] = useState(false);
   const pathCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const paperHeaderRef = useRef<HTMLDivElement>(null);
@@ -185,6 +186,12 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
+  // 4026: the document was deleted out from under this tab. There is nothing to
+  // reseed and nothing to edit — leave for the parent folder rather than sitting
+  // on a document that no longer exists.
+  const handleDocumentDeleted = useCallback(() => {
+    navigate(parentFolderRoute(docPath), { replace: true });
+  }, [navigate, docPath]);
   const caretGlue = useCaretRecoveryGlue();
   const liveReplica = useLiveSectionReplica({
     docPath,
@@ -194,6 +201,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     onSessionReinit: handleLiveSessionReinit,
     onDocumentReplacementNotice: handleDocumentReplacementNotice,
     onSuperseded: handleSuperseded,
+    onDocumentDeleted: handleDocumentDeleted,
     caretFrameHooks: caretGlue.caretFrameHooks,
   });
   const liveReplicaReadyRef = useRef(false);
@@ -827,11 +835,13 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           onDelete={async () => {
             if (!window.confirm("Delete this document? This cannot be undone.")) return;
             setDeleteError(null);
+            setDeleteWriteFailure(null);
             try {
               await resourceModel.deleteDocument(docPath);
-              navigate("/");
+              navigate(parentFolderRoute(docPath));
             } catch (err) {
-              setDeleteError(err instanceof Error ? err.message : String(err));
+              if (err instanceof CanonicalWriteFailedError) setDeleteWriteFailure(err.message);
+              else setDeleteError(err instanceof Error ? err.message : String(err));
             }
           }}
           toolbarAccessory={toolbarAccessory}
@@ -1117,11 +1127,13 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 onDelete={async () => {
                   if (!window.confirm("Delete this document? This cannot be undone.")) return;
                   setDeleteError(null);
+                  setDeleteWriteFailure(null);
                   try {
                     await resourceModel.deleteDocument(docPath);
-                    navigate("/");
+                    navigate(parentFolderRoute(docPath));
                   } catch (err) {
-                    setDeleteError(err instanceof Error ? err.message : String(err));
+                    if (err instanceof CanonicalWriteFailedError) setDeleteWriteFailure(err.message);
+                    else setDeleteError(err instanceof Error ? err.message : String(err));
                   }
                 }}
               />
@@ -1167,6 +1179,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
               {/* Status / error */}
               {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
+              {deleteError ? (
+                <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
+                  {deleteError}
+                </pre>
+              ) : null}
               {error ? (
                 <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                   {error}
@@ -1317,11 +1334,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       />
       ) : null}
 
-      {deleteError ? (
+      {deleteWriteFailure ? (
         <CanonicalWriteFailureDialog
           operation="Delete document"
-          error={deleteError}
-          onDismiss={() => setDeleteError(null)}
+          error={deleteWriteFailure}
+          onDismiss={() => setDeleteWriteFailure(null)}
         />
       ) : null}
     </div>

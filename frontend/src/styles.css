@@ -19,6 +19,9 @@
   --color-topbar-bg: #ffffff;
   --color-topbar-border: #e5e1db;
 
+  /* Cards / admin panels */
+  --color-card-border: #eae7e2;
+
   /* Text hierarchy */
   --color-text-primary: #1a1610;
   --color-text-secondary: #5c564c;

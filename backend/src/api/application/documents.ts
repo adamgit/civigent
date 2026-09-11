@@ -39,7 +39,11 @@ import {
   countEditorSockets,
   invalidateSessionForReplacement,
 } from "../../crdt/ydoc-lifecycle.js";
-import { requestDocSessionPublish, type PublishAttemptOutcome } from "../../ws/crdt-ws-coordinator.js";
+import {
+  requestDocSessionPublish,
+  requestDocSessionDocumentDelete,
+  type PublishAttemptOutcome,
+} from "../../ws/crdt-ws-coordinator.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import {
   readDocumentsTreeUnfiltered,
@@ -640,21 +644,44 @@ export async function createDocument(docPath: DocPath, writer: DocumentWriter, i
 export class DocumentNotFoundForDeleteError extends Error {}
 export class UncommittedSessionFilesError extends Error {}
 
+/**
+ * The delete tombstone reached the DocSession's `inprogress` proposal but the
+ * canonical write did not land. Distinct from a pre-write refusal: the proposal
+ * was mutated, the leftover is impaired, and the caller has a canonical-write
+ * failure to report rather than an ordinary refusal message.
+ */
+export class DocumentDeleteWriteFailedError extends Error {}
+
 export async function deleteDocument(docPath: DocPath, writer: DocumentWriter): Promise<StructuralCommitResult> {
   if (!(await canonicalDocumentExists(docPath))) {
     throw new DocumentNotFoundForDeleteError(`Document not found: ${docPath}`);
   }
 
-  const docSession = lookupDocSession(docPath);
-  if (docSession) {
-    throw new ActiveSessionConflictError("Cannot delete document with active editing session.");
+  // A live DocSession owns the document's single `inprogress` proposal, which may
+  // hold unpublished live work. The delete tombstones THAT proposal on the session's
+  // own actor lane (spec 05 §Document delete) rather than racing it with a second
+  // transient proposal.
+  const live = await requestDocSessionDocumentDelete(docPath);
+  if (live.outcome === "committed") {
+    return {
+      kind: "committed",
+      proposalId: live.proposalId,
+      committedHead: live.commitSha,
+      policyResult: humanBypassPolicyResult(),
+    };
+  }
+  if (live.outcome === "refused") {
+    throw new ActiveSessionConflictError(live.message);
+  }
+  if (live.outcome === "failed") {
+    throw new DocumentDeleteWriteFailedError(live.message, { cause: live.error });
   }
 
   // Note (MW-7 / Area D): the legacy "uncommitted session files" probe against
   // the `sessions/sections` overlay was removed with that dead storage surface.
-  // `sessions/` is never written in production; in-flight live edits are now
-  // guarded entirely by the active-DocSession check above. UncommittedSessionFilesError
-  // is retained as an exported type for the route handler but is no longer thrown.
+  // `sessions/` is never written in production; in-flight live edits are carried
+  // by the DocSession delete path above. UncommittedSessionFilesError is retained
+  // as an exported type for the route handler but is no longer thrown.
 
   const { id: proposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
@@ -715,17 +742,47 @@ export async function deleteFolder(
     throw new FolderWritePermissionError(folder, denied);
   }
 
+  // A descendant with a live DocSession has its delete taken by that session's
+  // own actor lane and its own `inprogress` proposal (spec 05 §Document delete),
+  // so its unpublished live work is tombstoned rather than stranded. Only the
+  // remaining, session-free documents go onto the folder's transient proposal.
+  const sessionCommitted: Array<{ proposalId: string; commitSha: string }> = [];
+  const sessionDeleted = new Set<DocPath>();
   for (const doc of deletedDocPaths) {
-    if (lookupDocSession(doc)) {
-      throw new ActiveSessionConflictError(`Cannot delete document with active editing session: ${doc}`);
+    const live = await requestDocSessionDocumentDelete(doc);
+    if (live.outcome === "no-session") continue;
+    if (live.outcome === "refused") {
+      throw new ActiveSessionConflictError(`Cannot delete document with active editing session: ${doc} — ${live.message}`);
     }
+    if (live.outcome === "failed") {
+      throw new DocumentDeleteWriteFailedError(`Couldn't delete ${doc}: ${live.message}`, { cause: live.error });
+    }
+    sessionCommitted.push({ proposalId: live.proposalId, commitSha: live.commitSha });
+    sessionDeleted.add(doc);
+  }
+
+  const remainingDocPaths = deletedDocPaths.filter((doc) => !sessionDeleted.has(doc));
+  if (remainingDocPaths.length === 0) {
+    // Every document in the folder was live; each landed on its own DocSession
+    // proposal, so there is no folder proposal to report. The last commit is the
+    // head the folder delete finished at.
+    const last = sessionCommitted[sessionCommitted.length - 1]!;
+    return {
+      result: {
+        kind: "committed",
+        proposalId: last.proposalId,
+        committedHead: last.commitSha,
+        policyResult: humanBypassPolicyResult(),
+      },
+      deletedDocPaths,
+    };
   }
 
   const { id: proposalId } = await createTransientProposal(
     { id: writer.id, type: writer.type, displayName: writer.displayName, email: writer.email },
-    `Delete folder: ${folder} (${deletedDocPaths.length} documents)`,
+    `Delete folder: ${folder} (${remainingDocPaths.length} documents)`,
   );
-  for (const doc of deletedDocPaths) {
+  for (const doc of remainingDocPaths) {
     await mutateProposalContent(proposalId, { kind: "delete_document", docPath: doc });
   }
   const { policyResult, committedHead } = await evaluateAndMaybeCommitDocumentProposal(proposalId, writer.type);

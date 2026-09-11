@@ -4,24 +4,10 @@ interface PageStatusBarProps {
 
 export function PageStatusBar({ items }: PageStatusBarProps) {
   return (
-    <div
-      style={{
-        height: 26,
-        minHeight: 26,
-        background: "#f0ede8",
-        borderTop: "1px solid #e2ded8",
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: "10.5px",
-        color: "#a09888",
-        display: "flex",
-        alignItems: "center",
-        padding: "0 14px",
-        gap: 4,
-      }}
-    >
+    <div className="h-[26px] min-h-[26px] bg-footer-bg border-t border-footer-border font-mono text-[10.5px] text-footer-text flex items-center px-3.5 gap-1">
       {items.map((item, i) => (
         <span key={i}>
-          {i > 0 && <span style={{ margin: "0 6px", color: "#d0ccc4" }}>&middot;</span>}
+          {i > 0 && <span className="mx-1.5 text-text-faint">&middot;</span>}
           {item}
         </span>
       ))}

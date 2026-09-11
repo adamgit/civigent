@@ -14,11 +14,11 @@ function formatTs(iso: string): string {
 function resultLabel(result: AgentMcpActionEntry["result"]): { text: string; className: string } {
   switch (result) {
     case "ok":
-      return { text: "Succeeded", className: "text-green-600" };
+      return { text: "Succeeded", className: "text-status-green" };
     case "error":
-      return { text: "Failed", className: "text-red-500" };
+      return { text: "Failed", className: "text-status-red" };
     case "blocked":
-      return { text: "Blocked", className: "text-amber-500" };
+      return { text: "Blocked", className: "text-status-yellow" };
     default:
       return { text: "Unknown", className: "text-text-muted" };
   }
@@ -45,7 +45,7 @@ function SessionRow({
       <button
         type="button"
         onClick={onToggle}
-        className="w-full grid grid-cols-[200px_160px_120px_80px_1fr] gap-x-4 items-center px-4 py-2 text-left hover:bg-[rgba(255,255,255,0.03)] cursor-pointer text-[12px]"
+        className="w-full grid grid-cols-[200px_160px_120px_80px_1fr] gap-x-4 items-center px-4 py-2 text-left hover:bg-section-hover cursor-pointer text-[12px]"
       >
         <span className="text-text-muted font-mono truncate" title={session.session_id}>
           {session.session_id.slice(0, 8)}...
@@ -77,7 +77,7 @@ function SessionRow({
                   </span>
                 </div>
                 {action.result === "error" && action.error_message && (
-                  <div className="px-2 pb-1 pl-[196px] text-[11px] text-red-500 font-mono whitespace-pre-wrap break-words">
+                  <div className="px-2 pb-1 pl-[196px] text-[11px] text-status-red font-mono whitespace-pre-wrap break-words">
                     {action.error_message}
                   </div>
                 )}
@@ -120,9 +120,9 @@ export function AgentMcpLogsPage() {
     <div>
       <SharedPageHeader title="Agent MCP Logs" backTo="/admin" />
 
-      <div style={{ maxWidth: "72rem", margin: "0 auto", padding: "1.5rem 1rem" }}>
+      <div className="max-w-6xl mx-auto px-4 py-6 font-ui">
         {loading && <p className="text-text-muted text-[13px]">Loading...</p>}
-        {error && <p className="text-red-500 text-[13px]">{error}</p>}
+        {error && <p className="text-status-red text-[13px]">{error}</p>}
 
         {!loading && !error && logFile && (
           <div className="mb-4 flex items-center justify-between gap-4 rounded border border-footer-border px-4 py-3">

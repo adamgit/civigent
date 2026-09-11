@@ -354,6 +354,19 @@ export class SystemStartingError extends Error {
   }
 }
 
+/**
+ * A mutation whose proposal was already written but whose canonical write did
+ * not land (`error: "canonical_write_failed"`). Distinct from an ordinary
+ * refusal: there is a durable leftover to report, so callers surface the
+ * blocking canonical-write failure report rather than inline error text.
+ */
+export class CanonicalWriteFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalWriteFailedError";
+  }
+}
+
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const text = await response.text();
@@ -379,11 +392,13 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
     }
 
     let detail: string | undefined;
+    let canonicalWriteFailed = false;
     try {
-      const parsed = JSON.parse(text) as { message?: string };
+      const parsed = JSON.parse(text) as { message?: string; error?: string };
       if (typeof parsed.message === "string") {
         detail = parsed.message;
       }
+      canonicalWriteFailed = parsed.error === "canonical_write_failed";
     } catch {
       // Non-JSON body — strip HTML tags and trim to something readable.
       const plain = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -392,7 +407,9 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
       }
     }
     const prefix = `${response.status} ${response.statusText} — ${response.url}`;
-    throw new Error(detail ? `${prefix}: ${detail}` : prefix);
+    const message = detail ? `${prefix}: ${detail}` : prefix;
+    if (canonicalWriteFailed) throw new CanonicalWriteFailedError(message);
+    throw new Error(message);
   }
   return (await response.json()) as T;
 }

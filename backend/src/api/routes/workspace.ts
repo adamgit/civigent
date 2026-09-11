@@ -40,6 +40,7 @@ import {
   DocumentPendingDeletionError,
   DocumentNotFoundForDeleteError,
   UncommittedSessionFilesError,
+  DocumentDeleteWriteFailedError,
   deleteFolder,
   renameFolder,
   FolderWritePermissionError,
@@ -346,6 +347,10 @@ export function registerWorkspaceRoutes(
           sendApiError(res, 409, error.message);
           return;
         }
+        if (error instanceof DocumentDeleteWriteFailedError) {
+          res.status(500).json({ error: "canonical_write_failed", message: error.stack || error.message });
+          return;
+        }
         throw error;
       }
 
@@ -553,6 +558,10 @@ export function registerWorkspaceCatchAllRoutes(
         }
         if (error instanceof UncommittedSessionFilesError) {
           sendApiError(res, 409, error.message);
+          return;
+        }
+        if (error instanceof DocumentDeleteWriteFailedError) {
+          res.status(500).json({ error: "canonical_write_failed", message: error.stack || error.message });
           return;
         }
         throw error;

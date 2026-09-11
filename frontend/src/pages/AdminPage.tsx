@@ -37,8 +37,8 @@ const AUTH_MODE_ONE_LINERS: Array<{ mode: HumanAuthMode; text: string }> = [
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-[#eae7e2] rounded-lg overflow-hidden bg-white mb-4">
-      <div className="px-4 py-2.5 border-b border-footer-border bg-[#faf8f5]">
+    <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-4">
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
         <div className="text-[13px] font-semibold text-text-primary">{title}</div>
         {subtitle && <div className="text-[11px] text-text-muted">{subtitle}</div>}
       </div>
@@ -64,7 +64,7 @@ function ConfigCardFallback({ configLoaded, configError }: { configLoaded: boole
     <div className="px-4 py-3">
       <p className="text-[12px] text-text-muted">Admin config unavailable.</p>
       {configError && (
-        <p className="mt-1 text-[12px] text-red-700 font-mono whitespace-pre-wrap">{configError}</p>
+        <p className="mt-1 text-[12px] text-status-red font-mono whitespace-pre-wrap">{configError}</p>
       )}
     </div>
   );
@@ -195,13 +195,13 @@ export function AdminPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Administration" backTo="/" />
-      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4 font-ui">
         <p className="text-[12px] text-text-muted mb-4">
           Operational status, human-involvement preset configuration, and local frontend controls.
         </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-[12px] font-mono whitespace-pre-wrap">
+          <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px] font-mono whitespace-pre-wrap">
             {error}
           </div>
         )}
@@ -245,18 +245,14 @@ export function AdminPage() {
               type="text"
               name="pattern"
               placeholder="Search /api/search"
-              className="input-field"
-              style={{ flex: 1, minWidth: "16rem", height: 34 }}
+              className="input-field flex-1 min-w-64 h-[34px]"
               required
             />
-            <select name="syntax" defaultValue="literal" className="input-field" style={{ width: "8rem", height: 34 }}>
+            <select name="syntax" defaultValue="literal" className="input-field w-32 h-[34px]">
               <option value="literal">Plaintext</option>
               <option value="regexp">Regexp</option>
             </select>
-            <button
-              type="submit"
-              className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530]"
-            >
+            <button type="submit" className="btn-secondary">
               Search raw GET
             </button>
           </form>
@@ -268,7 +264,7 @@ export function AdminPage() {
               type="button"
               onClick={() => void reloadOperationalSnapshot()}
               disabled={loading}
-              className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+              className="btn-secondary disabled:opacity-50"
             >
               Refresh snapshot
             </button>
@@ -309,7 +305,7 @@ export function AdminPage() {
                   <button
                     type="button"
                     onClick={() => void handleCopyPluginUrl(adminConfig.exportedSkills.plugin_url)}
-                    className="text-xs px-2 py-1 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] shrink-0"
+                    className="btn-small shrink-0"
                   >
                     {pluginUrlCopied ? "Copied" : "Copy"}
                   </button>
@@ -323,7 +319,7 @@ export function AdminPage() {
                   <button
                     type="button"
                     onClick={() => void handleCopyInstallCommand(adminConfig.exportedSkills.plugin_url)}
-                    className="text-xs px-2 py-1 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] shrink-0"
+                    className="btn-small shrink-0"
                   >
                     {installCommandCopied ? "Copied" : "Copy"}
                   </button>
@@ -342,7 +338,7 @@ export function AdminPage() {
                     type="button"
                     onClick={() => void handleCreateFirstSkill(adminConfig.exportedSkills.folder)}
                     disabled={creatingFirstSkill}
-                    className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530] disabled:opacity-50"
+                    className="btn-secondary disabled:opacity-50"
                   >
                     {creatingFirstSkill ? "Creating…" : "Create your first custom skill"}
                   </button>
@@ -367,7 +363,7 @@ export function AdminPage() {
               </KVRow>
               <KVRow label="Link durability">
                 {adminConfig.shareLinks.salt_is_ephemeral ? (
-                  <span className="text-red-700">
+                  <span className="text-status-red">
                     Ephemeral — <span className="font-mono">KS_SHARE_SALT</span> is auto-generated, so every share
                     link and shared session stops working when the server restarts. Set{" "}
                     <span className="font-mono">KS_SHARE_SALT</span> to make links durable.
@@ -432,8 +428,7 @@ export function AdminPage() {
                 min={1}
                 value={limitSetting}
                 onChange={(e) => setLimitSetting(Number(e.target.value || "1"))}
-                className="input-field"
-                style={{ width: "7rem", height: 30 }}
+                className="input-field w-28 h-[30px]"
               />
             </label>
             <label className="flex items-center gap-2 text-[13px] text-text-primary">
@@ -443,22 +438,21 @@ export function AdminPage() {
                 min={1}
                 value={daysSetting}
                 onChange={(e) => setDaysSetting(Number(e.target.value || "1"))}
-                className="input-field"
-                style={{ width: "7rem", height: 30 }}
+                className="input-field w-28 h-[30px]"
               />
             </label>
             <div>
               <button
                 type="button"
                 onClick={saveLocalSettings}
-                className="text-xs px-3 py-1.5 bg-[#f7f5f1] border border-[#eae7e2] rounded hover:bg-[#eae7e2] text-[#3a3530]"
+                className="btn-secondary"
               >
                 Save local preferences
               </button>
             </div>
           </div>
           {savedMessage && (
-            <p className="px-4 py-2 text-[12px] text-emerald-700 border-t border-footer-border bg-[#faf8f5]">
+            <p className="px-4 py-2 text-[12px] text-status-green border-t border-footer-border bg-section-hover">
               {savedMessage}
             </p>
           )}

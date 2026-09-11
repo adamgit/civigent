@@ -927,7 +927,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
               properties: {
                 doc_path: { type: "string", description: "Document path (must end with .md)" },
                 heading_path: { type: "array", items: { type: "string" } },
-                content: { type: "string", description: "Section content. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
+                content: { type: "string", description: "Section content. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block. This store is version-controlled: every write is audit-logged and prior versions of the section are retained (list_section_history), so the body never carries its own history. Do NOT add a changelog, revision-history block, or 'updated'/'edited' note unless you were explicitly asked for one." },
                 justification: { type: "string", description: "Optional justification for overwriting this section" },
               },
               required: ["doc_path", "heading_path", "content"],
@@ -966,7 +966,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
           proposal_id: { type: "string", description: "ID of the draft proposal" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Section heading path" },
-          content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block." },
+          content: { type: "string", description: "Section content (markdown). Describes the section as the user wants it to read after the call. The value is markdown containing the real characters the section should read as; a \\uXXXX escape sequence in prose is refused — write escape sequences inside inline code or a fenced code block. This store is version-controlled: every write is audit-logged and prior versions of the section are retained (list_section_history), so the body never carries its own history. Do NOT add a changelog, revision-history block, or 'updated'/'edited' note unless you were explicitly asked for one." },
           justification: { type: "string", description: "Optional justification for overwriting this section" },
         },
         required: ["proposal_id", "doc_path", "heading_path", "content"],

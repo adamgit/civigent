@@ -43,6 +43,8 @@ export const WS_CLOSE_REASON_STALE_DOC_SESSION = "stale_doc_session";
 export const WS_CLOSE_SUPERSEDED = 4023;
 export const WS_CLOSE_ADMIN_REBUILD = 4024;
 export const WS_CLOSE_SYSTEM_LOCKDOWN = 4025;
+export const WS_CLOSE_DOCUMENT_DELETED = 4026;
+export const WS_CLOSE_REASON_DOCUMENT_DELETED = "document_deleted";
 export const WS_CLOSE_REASON_MAX_LENGTH = 123;
 
 export const CRDT_PATH_PREFIX = "/ws/crdt/";

@@ -25,4 +25,6 @@ export const WS_CLOSE_ADMIN_REBUILD = 4024;
  * gate reopens.
  */
 export const WS_CLOSE_SYSTEM_LOCKDOWN = 4025;
+export const WS_CLOSE_DOCUMENT_DELETED = 4026;
+export const WS_CLOSE_REASON_DOCUMENT_DELETED = "document_deleted";
 export const WS_CLOSE_REASON_MAX_LENGTH = 123;

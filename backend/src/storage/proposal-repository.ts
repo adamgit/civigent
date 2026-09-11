@@ -49,6 +49,7 @@ import type {
   ProposalId,
   ProposalLockResult,
   ProposalReportingUndecodableEntry,
+  DocumentTargetRef,
   ProposalSectionClaim,
   ProposalStatus,
   ProposalTargetRef,
@@ -1381,10 +1382,23 @@ export async function getOrCreateInProgressProposalForAdoptionId(input: {
 }
 
 /**
+ * Document targets a proposal already carries. Live editing only ever derives
+ * SECTION targets from `sections`, so a document target on a DocSession-owned
+ * proposal came from a document-level op (e.g. the delete tombstone the
+ * DocSession delete command writes onto its own `inprogress` proposal) and must
+ * survive any later section-manifest rewrite — dropping it would silently
+ * un-claim the document and publish the proposal as a section-only edit.
+ */
+function documentTargetsOf(targets: ProposalTargetRef[]): DocumentTargetRef[] {
+  return targets.filter((t): t is DocumentTargetRef => t.kind === "document");
+}
+
+/**
  * Update the section manifest of a CRDT-owned `inprogress` proposal as its live
  * content tree grows. Distinct from {@link updateProposalSections}: it keeps
  * `targets` in sync with `sections` for a DocSession-owned `inprogress` proposal
- * (live editing is section-only, so the claim set is the section targets).
+ * (live editing is section-only, so the derived claim set is the section targets;
+ * any document target the proposal already holds is preserved).
  */
 export async function updateCurrentProposalSections(
   id: ProposalId,
@@ -1416,7 +1430,7 @@ export async function updateCurrentProposalSections(
   const updated: InProgressProposal = {
     ...current,
     sections,
-    targets: sectionsToTargets(sections),
+    targets: [...sectionsToTargets(sections), ...documentTargetsOf(current.targets)],
     ...(intent !== undefined ? { intent } : {}),
   };
   await writeJsonFile(filePath, proposalToFile(updated), status);
@@ -1431,8 +1445,9 @@ export async function updateCurrentProposalSections(
  * canonical section-file id in `deleted_section_files` (identity-based delete
  * detection), so the manifest stays a pure grow-only lock/audit claim set and the
  * structural merge keys delete-vs-inherit on the id set, not on a manifest path.
- * `targets` is kept identical to the section targets of `sections` (live editing is
- * section-only; see assumptions.md C4).
+ * `targets` is kept identical to the section targets of `sections` plus any document
+ * target the proposal already holds (live editing derives only section claims; see
+ * assumptions.md C4).
  */
 export async function unionCurrentProposalSections(
   id: ProposalId,
@@ -1473,7 +1488,7 @@ export async function unionCurrentProposalSections(
   const updated: InProgressProposal = {
     ...current,
     sections: merged,
-    targets: sectionsToTargets(merged),
+    targets: [...sectionsToTargets(merged), ...documentTargetsOf(current.targets)],
   };
   await writeJsonFile(filePath, proposalToFile(updated), status);
   return updated;

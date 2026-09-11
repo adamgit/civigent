@@ -44,11 +44,11 @@ function ProposalStoreDirPath({ status, id }: { status: string; id: string }) {
   const dir = proposalStoreDir(status, id);
   return (
     <div className="mt-1.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-red-700/80">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-status-red">
         On-disk directory
       </div>
       <code
-        className="mt-0.5 block break-all rounded border border-red-200 bg-red-50/80 px-1.5 py-1 text-[11px] text-red-900"
+        className="mt-0.5 block break-all rounded border border-status-red/25 bg-status-red-light px-1.5 py-1 text-[11px] text-status-red"
         title="Relative to the server data root (KS_DATA_ROOT)"
       >
         {dir}
@@ -61,9 +61,9 @@ function ProposalStoreDirPath({ status, id }: { status: string; id: string }) {
 function AdminReviewDivider() {
   return (
     <>
-      <div className="mx-2.5 my-0.5 h-px bg-red-300/70 sm:hidden" aria-hidden />
+      <div className="mx-2.5 my-0.5 h-px bg-status-red/40 sm:hidden" aria-hidden />
       <div className="hidden shrink-0 self-stretch py-2.5 sm:flex" aria-hidden>
-        <div className="w-px bg-red-300/70" />
+        <div className="w-px bg-status-red/40" />
       </div>
     </>
   );
@@ -72,8 +72,8 @@ function AdminReviewDivider() {
 function AdminReviewGuidance({ guidance }: { guidance: ProposalDefectGuidance }) {
   return (
     <div className="min-w-0 flex-1 px-3 py-2">
-      <div className="text-[12px] leading-[1.45] text-red-800">{guidance.explanation}</div>
-      <div className="mt-2 text-[11px] italic leading-[1.45] text-red-700">
+      <div className="text-[12px] leading-[1.45] text-status-red">{guidance.explanation}</div>
+      <div className="mt-2 text-[11px] italic leading-[1.45] text-status-red">
         {guidance.suggestedFix}
       </div>
     </div>
@@ -214,17 +214,17 @@ export function ProposalsPage() {
   return (
     <div className="flex flex-col">
       <SharedPageHeader title="Proposals" backTo="/admin" />
-      <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
+      <div className="p-4 font-ui">
         {!loading && !error && adminReviewCount > 0 && (
           <div
             role="alert"
             data-testid="proposals-admin-review-banner"
-            className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-[13px] text-red-800"
+            className="mb-4 rounded-md border border-status-red/25 bg-status-red-light px-3 py-2.5 text-[13px] text-status-red"
           >
             <div className="font-semibold">
               {adminReviewCount} {adminReviewCount === 1 ? "proposal needs" : "proposals need"} admin review
             </div>
-            <p className="mt-1 mb-2 text-[12px] text-red-700">
+            <p className="mt-1 mb-2 text-[12px] text-status-red">
               These proposals failed strict decode or carry a degraded marker. Repairable defects can be
               autofixed below; undecodable metas need manual investigation on disk.
             </p>
@@ -236,7 +236,7 @@ export function ProposalsPage() {
                 return (
                   <li
                     key={proposal.id}
-                    className="flex flex-col rounded border border-red-200 bg-white/70 sm:flex-row"
+                    className="flex flex-col rounded border border-status-red/25 bg-canvas-bg/70 sm:flex-row"
                   >
                     <div className="min-w-0 flex-1 px-2.5 py-2">
                       <div className="flex flex-wrap items-center gap-2">
@@ -245,16 +245,16 @@ export function ProposalsPage() {
                         </StatusPill>
                         <Link
                           to={`/admin/proposals/${encodeURIComponent(proposal.id)}`}
-                          className="font-mono text-[11px] font-medium text-red-900 underline"
+                          className="font-mono text-[11px] font-medium text-status-red underline"
                         >
                           {shortProposalId(proposal.id)}
                         </Link>
                         <WriterIdentity name={proposal.writer.displayName} kind={proposal.writer.type} />
                       </div>
-                      <div className="mt-1 text-[12px] italic text-red-900">
+                      <div className="mt-1 text-[12px] italic text-status-red">
                         &ldquo;{proposal.intent || "(no intent)"}&rdquo;
                       </div>
-                      <div className="mt-1 text-[11px] text-red-700">
+                      <div className="mt-1 text-[11px] text-status-red">
                         {terminal
                           ? "Terminal corrupt audit record — retained only for investigation."
                           : "Quarantined — cannot lock or commit until repaired."}
@@ -267,7 +267,7 @@ export function ProposalsPage() {
                             return (
                               <span
                                 key={defect}
-                                className="rounded border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-800"
+                                className="rounded border border-status-red/40 bg-status-red-light px-2 py-0.5 text-[11px] font-medium text-status-red"
                               >
                                 <code>{defect}</code>
                               </span>
@@ -279,7 +279,7 @@ export function ProposalsPage() {
                               type="button"
                               disabled={busy}
                               onClick={() => void handleAutofix(proposal.id, defect)}
-                              className="rounded border border-red-300 bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-800 hover:bg-red-200 disabled:opacity-60"
+                              className="rounded border border-status-red/40 bg-status-red-light px-2 py-0.5 text-[11px] font-medium text-status-red hover:bg-status-red/15 disabled:opacity-60"
                             >
                               {busy ? `Autofixing ${defect}…` : `Autofix ${defect}`}
                             </button>
@@ -287,7 +287,7 @@ export function ProposalsPage() {
                         })}
                       </div>
                       {autofixErrors[proposal.id] ? (
-                        <div className="mt-1 text-[11px] text-red-700">{autofixErrors[proposal.id]}</div>
+                        <div className="mt-1 text-[11px] text-status-red">{autofixErrors[proposal.id]}</div>
                       ) : null}
                       <ProposalStoreDirPath status={proposal.status} id={proposal.id} />
                     </div>
@@ -299,21 +299,21 @@ export function ProposalsPage() {
               {undecodable.map((entry) => (
                 <li
                   key={`undecodable:${entry.id}`}
-                  className="flex flex-col rounded border border-red-200 bg-white/70 sm:flex-row"
+                  className="flex flex-col rounded border border-status-red/25 bg-canvas-bg/70 sm:flex-row"
                 >
                   <div className="min-w-0 flex-1 px-2.5 py-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusPill variant="red" showDot>
                         {entry.status}
                       </StatusPill>
-                      <span className="font-mono text-[11px] font-medium text-red-900">
+                      <span className="font-mono text-[11px] font-medium text-status-red">
                         {shortProposalId(entry.id)}
                       </span>
-                      <span className="text-[11px] font-semibold text-red-800">Undecodable</span>
+                      <span className="text-[11px] font-semibold text-status-red">Undecodable</span>
                     </div>
-                    <div className="mt-1 text-[12px] text-red-700">{entry.defect}</div>
+                    <div className="mt-1 text-[12px] text-status-red">{entry.defect}</div>
                     {entry.raw_doc_paths.length > 0 ? (
-                      <div className="mt-1 font-mono text-[11px] text-red-700">
+                      <div className="mt-1 font-mono text-[11px] text-status-red">
                         Paths: {entry.raw_doc_paths.join(", ")}
                       </div>
                     ) : null}
@@ -363,19 +363,15 @@ export function ProposalsPage() {
                   <div
                     key={`undecodable:${entry.id}`}
                     data-testid="proposal-row-undecodable"
-                    className="block border-b border-red-200 bg-red-50"
-                    style={{
-                      padding: "14px 16px",
-                      borderLeft: "3px solid var(--color-status-red, #dc2626)",
-                    }}
+                    className="block border-b border-status-red/25 bg-status-red-light px-4 py-3.5 border-l-[3px] border-l-status-red"
                   >
-                    <div className="mb-2 rounded border border-red-200 bg-white/70 px-2 py-1.5">
-                      <div className="text-[11px] font-semibold text-red-800">
+                    <div className="mb-2 rounded border border-status-red/25 bg-canvas-bg/70 px-2 py-1.5">
+                      <div className="text-[11px] font-semibold text-status-red">
                         Undecodable — corrupt proposal meta
                       </div>
-                      <div className="mt-1 text-[11px] text-red-700">{entry.defect}</div>
+                      <div className="mt-1 text-[11px] text-status-red">{entry.defect}</div>
                       {entry.raw_doc_paths.length > 0 ? (
-                        <div className="mt-1 text-[11px] text-red-700 font-mono">
+                        <div className="mt-1 text-[11px] text-status-red font-mono">
                           {entry.raw_doc_paths.join(", ")}
                         </div>
                       ) : null}
@@ -384,7 +380,7 @@ export function ProposalsPage() {
                       <StatusPill variant="red" showDot>
                         {entry.status}
                       </StatusPill>
-                      <span className="code-inline" style={{ fontSize: "11px", padding: "1px 5px" }}>
+                      <span className="code-inline !text-[11px] !py-px !px-1.5">
                         {shortProposalId(entry.id)}
                       </span>
                     </div>
@@ -398,17 +394,15 @@ export function ProposalsPage() {
                     key={proposal.id}
                     to={`/admin/proposals/${encodeURIComponent(proposal.id)}`}
                     data-testid={isDegraded ? "proposal-row-degraded" : "proposal-row"}
-                    className={`block border-b last:border-b-0 ${isDegraded ? "border-red-200 bg-red-50 hover:bg-red-100" : "border-[#f5f2ed] hover:bg-[#faf8f5]"}`}
-                    style={{
-                      padding: "14px 16px",
-                      textDecoration: "none",
-                      opacity: proposal.status === "withdrawn" ? 0.65 : 1,
-                      ...(isDegraded ? { borderLeft: "3px solid var(--color-status-red, #dc2626)" } : {}),
-                    }}
+                    className={`block px-4 py-3.5 border-b last:border-b-0 no-underline ${
+                      isDegraded
+                        ? "border-status-red/25 bg-status-red-light hover:bg-status-red/15 border-l-[3px] border-l-status-red"
+                        : "border-footer-bg hover:bg-section-hover"
+                    } ${proposal.status === "withdrawn" ? "opacity-65" : ""}`}
                   >
                     {isDegraded ? (
-                      <div className="mb-2 rounded border border-red-200 bg-white/70 px-2 py-1.5">
-                        <div className="text-[11px] font-semibold text-red-800">
+                      <div className="mb-2 rounded border border-status-red/25 bg-canvas-bg/70 px-2 py-1.5">
+                        <div className="text-[11px] font-semibold text-status-red">
                           {isTerminalEmptyCommitted(proposal)
                             ? "Degraded — terminal corrupt audit record"
                             : "Degraded — repair required before lock or commit"}
@@ -421,7 +415,7 @@ export function ProposalsPage() {
                               return (
                                 <span
                                   key={defect}
-                                  className="text-[11px] font-medium px-2 py-0.5 rounded border border-red-300 bg-red-100 text-red-800"
+                                  className="text-[11px] font-medium px-2 py-0.5 rounded border border-status-red/40 bg-status-red-light text-status-red"
                                 >
                                   <code>{defect}</code> — terminal corrupt audit record
                                 </span>
@@ -437,7 +431,7 @@ export function ProposalsPage() {
                                   e.stopPropagation();
                                   void handleAutofix(proposal.id, defect);
                                 }}
-                                className="text-[11px] font-medium px-2 py-0.5 rounded border border-red-300 bg-red-100 text-red-800 hover:bg-red-200 disabled:opacity-60"
+                                className="text-[11px] font-medium px-2 py-0.5 rounded border border-status-red/40 bg-status-red-light text-status-red hover:bg-status-red/15 disabled:opacity-60"
                               >
                                 {busy ? `Autofixing ${defect}…` : `Autofix ${defect}`}
                               </button>
@@ -445,7 +439,7 @@ export function ProposalsPage() {
                           })}
                         </div>
                         {autofixErrors[proposal.id] ? (
-                          <div className="mt-1 text-[11px] text-red-700">{autofixErrors[proposal.id]}</div>
+                          <div className="mt-1 text-[11px] text-status-red">{autofixErrors[proposal.id]}</div>
                         ) : null}
                       </div>
                     ) : null}
@@ -456,10 +450,10 @@ export function ProposalsPage() {
                         {proposal.status}
                       </StatusPill>
                       <WriterIdentity name={proposal.writer.displayName} kind={proposal.writer.type} />
-                      <span className="code-inline" style={{ fontSize: "11px", padding: "1px 5px" }}>
+                      <span className="code-inline !text-[11px] !py-px !px-1.5">
                         {shortProposalId(proposal.id)}
                       </span>
-                      <span className="ml-auto text-[11px] text-[#b8b2a8]">
+                      <span className="ml-auto text-[11px] text-text-faint">
                         {relativeTime(proposal.created_at)}
                       </span>
                     </div>
@@ -484,28 +478,20 @@ export function ProposalsPage() {
                         return Array.from(byDoc.entries()).map(([docName, sections]) => (
                           <span
                             key={docName}
-                            className="inline-flex flex-col gap-0.5"
-                            style={{
-                              fontFamily: "'JetBrains Mono', monospace",
-                              fontSize: 11,
-                              color: "var(--color-text-secondary)",
-                              background: "#f7f5f1",
-                              padding: "4px 8px",
-                              borderRadius: 5,
-                            }}
+                            className="inline-flex flex-col gap-0.5 font-mono text-[11px] text-text-secondary bg-section-hover px-2 py-1 rounded"
                           >
                             <span>{docName}</span>
                             <span className="flex flex-wrap gap-1 mt-0.5">
                               {sections.map((s, i) => (
                                 <span
                                   key={i}
-                                  className="text-[10px] font-medium"
-                                  style={{
-                                    padding: "1px 5px",
-                                    borderRadius: 3,
-                                    background: s.headingPathLength <= 1 ? "#f0ede8" : s.headingPathLength <= 2 ? "#e8e4de" : "#ddd8d0",
-                                    color: "var(--color-text-secondary)",
-                                  }}
+                                  className={`text-[10px] font-medium px-1.5 py-px rounded-sm text-text-secondary ${
+                                    s.headingPathLength <= 1
+                                      ? "bg-footer-bg"
+                                      : s.headingPathLength <= 2
+                                        ? "bg-sidebar-bg"
+                                        : "bg-sidebar-border"
+                                  }`}
                                 >
                                   {s.heading}
                                 </span>
@@ -530,14 +516,14 @@ export function ProposalsPage() {
                             event.stopPropagation();
                             void handleForceCancel(proposal.id);
                           }}
-                          className="ml-auto rounded border border-red-300 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-800 hover:bg-red-100 disabled:opacity-60"
+                          className="ml-auto rounded border border-status-red/40 bg-status-red-light px-2 py-1 text-[11px] font-semibold text-status-red hover:bg-status-red/15 disabled:opacity-60"
                         >
                           {forceCancelling.has(proposal.id) ? "Force cancelling…" : "Force cancel"}
                         </button>
                       ) : null}
                     </div>
                     {forceCancelErrors[proposal.id] ? (
-                      <div className="mt-1 text-[11px] text-red-700">
+                      <div className="mt-1 text-[11px] text-status-red">
                         {forceCancelErrors[proposal.id]}
                       </div>
                     ) : null}

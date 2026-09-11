@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
+import { ContentPanel } from "../components/ContentPanel";
+import { StatusPill } from "../components/StatusPill";
+import { WriterIdentity } from "../components/WriterIdentity";
 import { apiClient } from "../services/api-client";
 import type {
   ProposalDTO,
@@ -22,9 +25,13 @@ import { DocPath } from "../types/shared";
 
 function DocumentLinkWhenDisplayPathIsLiveDocPath({ displayPath }: { displayPath: string }) {
   if (!DocPath.isDocPath(displayPath)) {
-    return <>{displayPath}</>;
+    return <span className="font-mono text-[12px] text-text-primary">{displayPath}</span>;
   }
-  return <Link to={docHref(displayPath)}>{displayPath}</Link>;
+  return (
+    <Link to={docHref(displayPath)} className="font-mono text-[12px] text-accent hover:underline">
+      {displayPath}
+    </Link>
+  );
 }
 
 function involvementColor(score: number): string {
@@ -32,6 +39,15 @@ function involvementColor(score: number): string {
   if (score >= 0.5) return "#2563eb";
   if (score >= 0.3) return "#60a5fa";
   return "#94a3b8";
+}
+
+function statusPillVariant(status: string): "green" | "yellow" | "red" | "muted" {
+  switch (status) {
+    case "draft": case "inprogress": case "committing": return "yellow";
+    case "committed": return "green";
+    case "withdrawn": return "red";
+    default: return "muted";
+  }
 }
 
 /**
@@ -47,26 +63,19 @@ function DegradedBanner({ defects, terminal }: { defects: ProposalDefect[]; term
   return (
     <div
       role="alert"
-      style={{
-        marginTop: "1rem",
-        border: "2px solid #b91c1c",
-        borderRadius: "8px",
-        background: "#fef2f2",
-        padding: "12px 16px",
-        color: "#7f1d1d",
-      }}
+      className="mb-4 rounded-lg border-2 border-status-red bg-status-red-light px-4 py-3 text-status-red"
     >
-      <strong style={{ fontSize: "14px" }}>Degraded proposal</strong>
-      <p style={{ margin: "4px 0 6px" }}>
+      <strong className="text-[14px]">Degraded proposal</strong>
+      <p className="my-1 text-[13px]">
         {terminal
           ? "This is a corrupt terminal proposal record. It is retained only for audit and " +
             "recovery investigation."
           : "This proposal was decoded with one or more defects and is flagged as degraded."}
       </p>
-      <ul style={{ margin: 0 }}>
+      <ul className="m-0">
         {defects.map((defect) => (
-          <li key={defect} style={{ marginBottom: "4px" }}>
-            <code>{defect}</code>
+          <li key={defect} className="mb-1">
+            <code className="font-mono text-[12px]">{defect}</code>
           </li>
         ))}
       </ul>
@@ -84,53 +93,67 @@ function ProposalTruthPanel({ proposal }: { proposal: ProposalDTO }) {
   const deletedSectionFiles = proposal.deleted_section_files ?? [];
 
   return (
-    <div style={{ marginTop: "1.5rem" }}>
-      <h2>Targets ({targets.length})</h2>
-      <p>The authoritative lock / audit / policy claim set for this proposal.</p>
-      {targets.length === 0 ? (
-        <p>No targets.</p>
-      ) : (
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: "0.3rem" }}>Kind</th>
-              <th style={{ textAlign: "left", padding: "0.3rem" }}>Document</th>
-              <th style={{ textAlign: "left", padding: "0.3rem" }}>Target</th>
-            </tr>
-          </thead>
-          <tbody>
-            {targets.map((target, idx) => (
-              <tr key={`${proposalTargetKey(target)}-${idx}`}>
-                <td style={{ padding: "0.3rem" }}>{target.kind}</td>
-                <td style={{ padding: "0.3rem" }}>
-                  <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalTargetDocPathForDisplay(target)} />
-                </td>
-                <td style={{ padding: "0.3rem" }}>{proposalTargetLabel(target)}</td>
+    <ContentPanel>
+      <ContentPanel.Header>
+        <div>
+          <ContentPanel.Title>Targets ({targets.length})</ContentPanel.Title>
+          <ContentPanel.Subtitle>
+            The authoritative lock / audit / policy claim set for this proposal.
+          </ContentPanel.Subtitle>
+        </div>
+      </ContentPanel.Header>
+      <ContentPanel.Body className="p-0">
+        {targets.length === 0 ? (
+          <p className="px-4 py-3 text-[13px] text-text-muted m-0">No targets.</p>
+        ) : (
+          <table className="w-full border-collapse text-[13px]">
+            <thead>
+              <tr className="bg-section-hover">
+                <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Kind</th>
+                <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Document</th>
+                <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Target</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+            </thead>
+            <tbody>
+              {targets.map((target, idx) => (
+                <tr key={`${proposalTargetKey(target)}-${idx}`} className="border-t border-footer-border">
+                  <td className="px-4 py-2 text-text-primary">{target.kind}</td>
+                  <td className="px-4 py-2">
+                    <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalTargetDocPathForDisplay(target)} />
+                  </td>
+                  <td className="px-4 py-2 text-text-secondary">{proposalTargetLabel(target)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
 
-      {deletedSectionFiles.length > 0 ? (
-        <>
-          <h2>Deleted Section Files ({deletedSectionFiles.length})</h2>
-          <p>Canonical section-file ids this proposal has deleted (identity-based delete detection).</p>
-          <ul>
-            {deletedSectionFiles.map((ref, idx) => (
-              <li key={`${proposalDeletedSectionFileDocPathForDisplay(ref)}-${ref.section_file}-${idx}`}>
-                <code>{ref.section_file}</code> in{" "}
-                <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalDeletedSectionFileDocPathForDisplay(ref)} />
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+        {deletedSectionFiles.length > 0 ? (
+          <div className="px-4 py-3 border-t border-footer-border">
+            <h2 className="m-0 text-[13px] font-semibold text-text-primary">
+              Deleted Section Files ({deletedSectionFiles.length})
+            </h2>
+            <p className="mt-1 mb-2 text-[12px] text-text-muted">
+              Canonical section-file ids this proposal has deleted (identity-based delete detection).
+            </p>
+            <ul className="m-0 pl-5 text-[13px] text-text-primary">
+              {deletedSectionFiles.map((ref, idx) => (
+                <li key={`${proposalDeletedSectionFileDocPathForDisplay(ref)}-${ref.section_file}-${idx}`}>
+                  <code className="font-mono text-[12px]">{ref.section_file}</code> in{" "}
+                  <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={proposalDeletedSectionFileDocPathForDisplay(ref)} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
-      {proposal.proposalAdoptionId ? (
-        <p>Proposal adoption ID: <code>{proposal.proposalAdoptionId}</code></p>
-      ) : null}
-    </div>
+        {proposal.proposalAdoptionId ? (
+          <p className="px-4 py-3 border-t border-footer-border text-[13px] text-text-secondary m-0">
+            Proposal adoption ID: <code className="font-mono text-[12px] text-text-primary">{proposal.proposalAdoptionId}</code>
+          </p>
+        ) : null}
+      </ContentPanel.Body>
+    </ContentPanel>
   );
 }
 
@@ -254,224 +277,293 @@ export function ProposalDetailPage() {
     : [];
 
   return (
-    <section>
+    <div className="flex flex-col">
       <SharedPageHeader title="Proposal Detail" backTo="/admin/proposals" />
-      <p>Proposal ID: {id ?? "(unknown)"}</p>
-      {loading ? <p>Loading proposal...</p> : null}
-      {error ? <p className="text-error">{error}</p> : null}
-      {rawFallback ? (
-        <div
-          role="alert"
-          className="mx-4 my-4 overflow-hidden rounded-lg border-2 border-red-600 bg-red-50 shadow-sm"
-        >
-          <div className="bg-red-700 px-4 py-3 text-white">
-            <div className="text-lg font-bold uppercase tracking-wide">
-              Raw diagnostic fallback
+      <div className="p-4 font-ui">
+        <p className="text-[12px] text-text-muted mb-4">
+          Proposal ID: <code className="font-mono text-text-primary">{id ?? "(unknown)"}</code>
+        </p>
+        {loading ? <p className="text-xs text-text-muted">Loading proposal...</p> : null}
+        {error ? <p className="text-error">{error}</p> : null}
+        {rawFallback ? (
+          <div
+            role="alert"
+            className="mb-4 overflow-hidden rounded-lg border-2 border-status-red bg-status-red-light"
+          >
+            <div className="bg-status-red px-4 py-3 text-canvas-bg">
+              <div className="text-lg font-bold uppercase tracking-wide">
+                Raw diagnostic fallback
+              </div>
+              <p className="mt-1 mb-0 text-sm leading-5">
+                The normal proposal view crashed while interpreting this proposal. This is a
+                known, handled fallback: no proposal content was rendered or silently omitted.
+              </p>
             </div>
-            <p className="mt-1 text-sm leading-5">
-              The normal proposal view crashed while interpreting this proposal. This is a
-              known, handled fallback: no proposal content was rendered or silently omitted.
-            </p>
-          </div>
 
-          <div className="space-y-4 p-4">
-            <section>
-              <h2 className="m-0 text-sm font-bold text-red-900">Handled read failure</h2>
-              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded border border-red-300 bg-white p-3 text-xs text-red-950">
-                {rawFallback.read_error}
-              </pre>
-            </section>
-
-            {rawFallback.raw_read_error ? (
+            <div className="space-y-4 p-4">
               <section>
-                <h2 className="m-0 text-sm font-bold text-red-900">
-                  Raw metadata could not be read
-                </h2>
-                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-red-300 bg-white p-3 text-xs text-red-950">
-                  {rawFallback.raw_read_error}
+                <h2 className="m-0 text-sm font-bold text-status-red">Handled read failure</h2>
+                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded border border-status-red/30 bg-canvas-bg p-3 text-xs text-text-primary">
+                  {rawFallback.read_error}
                 </pre>
               </section>
+
+              {rawFallback.raw_read_error ? (
+                <section>
+                  <h2 className="m-0 text-sm font-bold text-status-red">
+                    Raw metadata could not be read
+                  </h2>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-status-red/30 bg-canvas-bg p-3 text-xs text-text-primary">
+                    {rawFallback.raw_read_error}
+                  </pre>
+                </section>
+              ) : null}
+
+              <section>
+                <h2 className="m-0 text-sm font-bold text-text-primary">Uninterpreted metadata</h2>
+                <p className="my-1 text-xs text-text-secondary">
+                  Directory status: <strong>{rawFallback.status ?? "unknown"}</strong>. The text
+                  below is the stored <code className="font-mono">meta.json</code> exactly as read from disk.
+                </p>
+                <pre className="code-block-dark mt-2 max-h-[32rem] overflow-auto whitespace-pre-wrap">
+                  {rawFallback.raw_meta ?? "Raw metadata is unavailable."}
+                </pre>
+              </section>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary disabled:opacity-60"
+                  onClick={() => void loadProposal()}
+                  disabled={actionBusy || loading}
+                >
+                  Retry normal view
+                </button>
+                {(rawFallback.status === "draft"
+                  || rawFallback.status === "pending"
+                  || rawFallback.status === "inprogress") ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleRawForceCancel()}
+                    disabled={actionBusy}
+                    className="btn-danger disabled:opacity-60"
+                  >
+                    {actionBusy ? "Force cancelling…" : "Force cancel proposal"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {proposal ? (
+          <>
+            {proposal.degraded && proposal.degraded.length > 0 ? (
+              <DegradedBanner
+                defects={proposal.degraded}
+                terminal={proposal.status === "committed" || proposal.status === "withdrawn"}
+              />
             ) : null}
 
-            <section>
-              <h2 className="m-0 text-sm font-bold text-slate-900">Uninterpreted metadata</h2>
-              <p className="my-1 text-xs text-slate-700">
-                Directory status: <strong>{rawFallback.status ?? "unknown"}</strong>. The text
-                below is the stored <code>meta.json</code> exactly as read from disk.
-              </p>
-              <pre className="mt-2 max-h-[32rem] overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-950 p-3 text-xs text-slate-100">
-                {rawFallback.raw_meta ?? "Raw metadata is unavailable."}
-              </pre>
-            </section>
+            <ContentPanel>
+              <ContentPanel.Header>
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill variant={statusPillVariant(proposal.status)} showDot>
+                    {proposal.status}
+                  </StatusPill>
+                  <WriterIdentity name={proposal.writer.displayName} kind={proposal.writer.type} />
+                </div>
+              </ContentPanel.Header>
+              <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border">
+                <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">Created</span>
+                <span className="text-[13px] text-text-primary">{new Date(proposal.created_at).toLocaleString()}</span>
+              </div>
+              <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border">
+                <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">Intent</span>
+                <span className="text-[13px] text-text-primary italic">{proposal.intent}</span>
+              </div>
+              {proposal.status === "committed" ? (
+                <div className="flex items-baseline gap-4 px-4 py-2 border-b border-footer-border">
+                  <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">Committed HEAD</span>
+                  <code className="text-[12px] font-mono text-text-primary">
+                    {(proposal as import("../types/shared.js").CommittedProposalDomain).committed_head}
+                  </code>
+                </div>
+              ) : null}
+              {proposal.status === "withdrawn" && "withdrawal_reason" in proposal ? (
+                <div className="flex items-baseline gap-4 px-4 py-2">
+                  <span className="text-[12px] font-medium text-text-muted w-40 shrink-0">Withdrawal reason</span>
+                  <span className="text-[13px] text-text-primary">
+                    {(proposal as import("../types/shared.js").WithdrawnProposalDomain).withdrawal_reason}
+                  </span>
+                </div>
+              ) : null}
+            </ContentPanel>
 
-            <div className="flex gap-2">
+            <ContentPanel>
+              <ContentPanel.Header>
+                <ContentPanel.Title>Sections ({proposal.sections.length})</ContentPanel.Title>
+              </ContentPanel.Header>
+              <ContentPanel.Body className="p-0">
+                {proposal.sections.length === 0 ? (
+                  <p className="px-4 py-3 text-[13px] text-text-muted m-0">No sections.</p>
+                ) : (
+                  <table className="w-full border-collapse text-[13px]">
+                    <thead>
+                      <tr className="bg-section-hover">
+                        <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Document</th>
+                        <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Section</th>
+                        {hasHumanInvolvementScores ? (
+                          <th className="text-center px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Human Involvement</th>
+                        ) : null}
+                        <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Agent writes</th>
+                        <th className="text-left px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Explanation</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proposal.sections.map((section, idx) => {
+                        const sectionDocPath = proposalSectionDocPathForDisplay(section);
+                        const target = agentWritePolicy?.targets.find(
+                          (t) => t.target.kind === "section"
+                            && t.target.doc_path === sectionDocPath
+                            && JSON.stringify(t.target.heading_path) === JSON.stringify(section.heading_path)
+                        );
+                        const details: HumanInvolvementTargetDetails | undefined = target?.details;
+                        const score = details?.score;
+                        // canWrite drives styling/branching; prose `message` is the explanation (Area M).
+                        const canWrite = target ? target.canWrite : true;
+                        return (
+                          <tr key={`${sectionDocPath}-${section.heading_path.join("/")}-${idx}`} className="border-t border-footer-border">
+                            <td className="px-4 py-2">
+                              <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={sectionDocPath} />
+                            </td>
+                            <td className="px-4 py-2 text-text-primary">{headingPathToLabel(section.heading_path)}</td>
+                            {hasHumanInvolvementScores ? (
+                              <td
+                                className="px-4 py-2 text-center font-mono text-[12px]"
+                                style={{ color: typeof score === "number" ? involvementColor(score) : undefined }}
+                              >
+                                {typeof score === "number" ? score.toFixed(2) : "—"}
+                              </td>
+                            ) : null}
+                            <td className="px-4 py-2">
+                              {canWrite ? (
+                                <span className="text-status-green font-medium">Allowed</span>
+                              ) : (
+                                <span className="text-status-red font-medium">Blocked</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2 text-text-secondary">
+                              {target?.message ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </ContentPanel.Body>
+            </ContentPanel>
+
+            {agentWritePolicy ? (
+              <ContentPanel>
+                <ContentPanel.Header>
+                  <ContentPanel.Title>Agent Write Policy</ContentPanel.Title>
+                </ContentPanel.Header>
+                <ContentPanel.Body>
+                  {/* Backend prose is the primary explanation (Area M). */}
+                  <p className="m-0 mb-2 text-[13px] text-text-primary">{agentWritePolicy.message}</p>
+                  <ul className="m-0 pl-5 text-[13px] text-text-secondary">
+                    <li>Agents can write: {agentWritePolicy.canWrite ? "yes" : "no"}</li>
+                    {hasHumanInvolvementScores ? (
+                      <li>
+                        Aggregate impact: {agentWritePolicy.details.aggregateImpact.toFixed(2)} / {agentWritePolicy.details.aggregateThreshold.toFixed(2)}
+                      </li>
+                    ) : null}
+                    <li>Blocked sections: {agentWritePolicy.targets.filter((t) => !t.canWrite).length}</li>
+                    <li>Allowed sections: {agentWritePolicy.targets.filter((t) => t.canWrite).length}</li>
+                  </ul>
+                </ContentPanel.Body>
+              </ContentPanel>
+            ) : null}
+
+            {lockEvaluation && lockEvaluation.conflicts.length > 0 ? (
+              <ContentPanel>
+                <ContentPanel.Header>
+                  <ContentPanel.Title>Lock Conflicts</ContentPanel.Title>
+                </ContentPanel.Header>
+                <ContentPanel.Body>
+                  <p className="m-0 mb-2 text-[13px] text-text-primary">{lockEvaluation.message}</p>
+                  <ul className="m-0 pl-5 text-[13px] text-text-secondary">
+                    {lockEvaluation.conflicts.map((conflict, i) => (
+                      <li key={`${proposalTargetKey(conflict.target)}-${i}`}>
+                        {proposalTargetLabel(conflict.target)}: {conflict.message}
+                      </li>
+                    ))}
+                  </ul>
+                </ContentPanel.Body>
+              </ContentPanel>
+            ) : null}
+
+            <ContentPanel>
+              <ContentPanel.Header>
+                <ContentPanel.Title>Affected Documents</ContentPanel.Title>
+              </ContentPanel.Header>
+              <ContentPanel.Body>
+                {affectedDocs.length === 0 ? (
+                  <p className="m-0 text-[13px] text-text-muted">None</p>
+                ) : (
+                  <ul className="m-0 pl-5">
+                    {affectedDocs.map((docPath) => (
+                      <li key={docPath}>
+                        <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={docPath} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </ContentPanel.Body>
+            </ContentPanel>
+
+            <ProposalTruthPanel proposal={proposal} />
+
+            <div className="flex flex-wrap gap-2 mt-1">
               <button
                 type="button"
+                className="btn-secondary disabled:opacity-60"
                 onClick={() => void loadProposal()}
                 disabled={actionBusy || loading}
               >
-                Retry normal view
+                Refresh
               </button>
-              {(rawFallback.status === "draft"
-                || rawFallback.status === "pending"
-                || rawFallback.status === "inprogress") ? (
+              {proposal.writer.type === "human" && proposal.status === "draft" ? (
                 <button
                   type="button"
-                  onClick={() => void handleRawForceCancel()}
-                  disabled={actionBusy}
-                  className="rounded border border-red-700 bg-red-700 px-3 py-1.5 font-semibold text-white disabled:opacity-60"
+                  className="btn-secondary disabled:opacity-60"
+                  onClick={handleAcquireLocks}
+                  disabled={actionBusy || !proposal.sections.length}
                 >
-                  {actionBusy ? "Force cancelling…" : "Force cancel proposal"}
+                  Lock Sections
                 </button>
               ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {proposal ? (
-        <>
-          {proposal.degraded && proposal.degraded.length > 0 ? (
-            <DegradedBanner
-              defects={proposal.degraded}
-              terminal={proposal.status === "committed" || proposal.status === "withdrawn"}
-            />
-          ) : null}
-          <p>Status: <strong>{proposal.status}</strong></p>
-          <p>Writer: {proposal.writer.displayName} ({proposal.writer.type})</p>
-          <p>Created: {new Date(proposal.created_at).toLocaleString()}</p>
-          <p>Intent: {proposal.intent}</p>
-          {proposal.status === "committed" ? <p>Committed HEAD: <code>{(proposal as import("../types/shared.js").CommittedProposalDomain).committed_head}</code></p> : null}
-          {proposal.status === "withdrawn" && "withdrawal_reason" in proposal ? <p>Withdrawal reason: {(proposal as import("../types/shared.js").WithdrawnProposalDomain).withdrawal_reason}</p> : null}
-
-          <h2>Sections ({proposal.sections.length})</h2>
-          {proposal.sections.length === 0 ? <p>No sections.</p> : (
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Document</th>
-                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Section</th>
-                  {hasHumanInvolvementScores ? (
-                    <th style={{ textAlign: "center", padding: "0.3rem" }}>Human Involvement</th>
-                  ) : null}
-                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Agent writes</th>
-                  <th style={{ textAlign: "left", padding: "0.3rem" }}>Explanation</th>
-                </tr>
-              </thead>
-              <tbody>
-                {proposal.sections.map((section, idx) => {
-                  const sectionDocPath = proposalSectionDocPathForDisplay(section);
-                  const target = agentWritePolicy?.targets.find(
-                    (t) => t.target.kind === "section"
-                      && t.target.doc_path === sectionDocPath
-                      && JSON.stringify(t.target.heading_path) === JSON.stringify(section.heading_path)
-                  );
-                  const details: HumanInvolvementTargetDetails | undefined = target?.details;
-                  const score = details?.score;
-                  // canWrite drives styling/branching; prose `message` is the explanation (Area M).
-                  const canWrite = target ? target.canWrite : true;
-                  return (
-                    <tr key={`${sectionDocPath}-${section.heading_path.join("/")}-${idx}`}>
-                      <td style={{ padding: "0.3rem" }}>
-                        <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={sectionDocPath} />
-                      </td>
-                      <td style={{ padding: "0.3rem" }}>{headingPathToLabel(section.heading_path)}</td>
-                      {hasHumanInvolvementScores ? (
-                        <td style={{ padding: "0.3rem", textAlign: "center", color: typeof score === "number" ? involvementColor(score) : undefined }}>
-                          {typeof score === "number" ? score.toFixed(2) : "—"}
-                        </td>
-                      ) : null}
-                      <td style={{ padding: "0.3rem" }}>
-                        {canWrite ? (
-                          <span style={{ color: "#3a9a5c" }}>Allowed</span>
-                        ) : (
-                          <span style={{ color: "#b91c1c" }}>Blocked</span>
-                        )}
-                      </td>
-                      <td style={{ padding: "0.3rem", color: "#5c564c" }}>
-                        {target?.message ?? "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-
-          {agentWritePolicy ? (
-            <>
-              <h2>Agent Write Policy</h2>
-              {/* Backend prose is the primary explanation (Area M). */}
-              <p>{agentWritePolicy.message}</p>
-              <ul>
-                <li>Agents can write: {agentWritePolicy.canWrite ? "yes" : "no"}</li>
-                {hasHumanInvolvementScores ? (
-                  <li>
-                    Aggregate impact: {agentWritePolicy.details.aggregateImpact.toFixed(2)} / {agentWritePolicy.details.aggregateThreshold.toFixed(2)}
-                  </li>
-                ) : null}
-                <li>Blocked sections: {agentWritePolicy.targets.filter((t) => !t.canWrite).length}</li>
-                <li>Allowed sections: {agentWritePolicy.targets.filter((t) => t.canWrite).length}</li>
-              </ul>
-            </>
-          ) : null}
-
-          {lockEvaluation && lockEvaluation.conflicts.length > 0 ? (
-            <>
-              <h2>Lock Conflicts</h2>
-              <p>{lockEvaluation.message}</p>
-              <ul>
-                {lockEvaluation.conflicts.map((conflict, i) => (
-                  <li key={`${proposalTargetKey(conflict.target)}-${i}`}>
-                    {proposalTargetLabel(conflict.target)}: {conflict.message}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-
-          <h2>Affected Documents</h2>
-          {affectedDocs.length === 0 ? <p>None</p> : (
-            <ul>
-              {affectedDocs.map((docPath) => (
-                <li key={docPath}>
-                  <DocumentLinkWhenDisplayPathIsLiveDocPath displayPath={docPath} />
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <ProposalTruthPanel proposal={proposal} />
-
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-            <button type="button" onClick={() => void loadProposal()} disabled={actionBusy || loading}>
-              Refresh
-            </button>
-            {proposal.writer.type === "human" && proposal.status === "draft" ? (
               <button
                 type="button"
-                onClick={handleAcquireLocks}
-                disabled={actionBusy || !proposal.sections.length}
+                className="btn-primary disabled:opacity-60"
+                onClick={handleCommit}
+                disabled={actionBusy || (proposal.writer.type === "human" ? proposal.status !== "inprogress" : proposal.status !== "draft")}
               >
-                Lock Sections
+                Publish
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={handleCommit}
-              disabled={actionBusy || (proposal.writer.type === "human" ? proposal.status !== "inprogress" : proposal.status !== "draft")}
-            >
-              Publish
-            </button>
-            <button
-              type="button"
-              onClick={handleWithdraw}
-              disabled={actionBusy || (proposal.status !== "draft" && proposal.status !== "inprogress")}
-            >
-              Withdraw
-            </button>
-          </div>
-        </>
-      ) : null}
-    </section>
+              <button
+                type="button"
+                className="btn-danger disabled:opacity-60"
+                onClick={handleWithdraw}
+                disabled={actionBusy || (proposal.status !== "draft" && proposal.status !== "inprogress")}
+              >
+                Withdraw
+              </button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }
