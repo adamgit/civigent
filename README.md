@@ -10,11 +10,26 @@
 
 A modern document-authoring system where humans and AI agents can safely co-author serious structured content, with git-like auditability and proposal governance, but with human-friendly interfaces and live collaborative editing.
 
+<p align="center">
+  <a href="docs/screenshots/example-documentview-optionalsidebar.png"><img src="docs/screenshots/example-documentview-optionalsidebar.png" width="260" alt="Document view with sidebar"></a>
+  &nbsp;
+  <a href="docs/screenshots/example-documentview-focusmode.png"><img src="docs/screenshots/example-documentview-focusmode.png" width="260" alt="Document focus mode"></a>
+  &nbsp;
+  <a href="docs/screenshots/example-folderview.png"><img src="docs/screenshots/example-folderview.png" width="260" alt="Folder view"></a>
+</p>
+<p align="center"><sub>Document with sidebar · Focus mode · Folder view — click for full size</sub></p>
+
 e.g. like Google Docs - but with strong governance and explicit management of "AI input" vs "human input"
 
 e.g. like Notion - but free, open-source, and with AI built-in to the core, instead of bolted-on to the product
 
 e.g. like git - but vastly more user-friendly, and you will never see a "merge conflict" because the system made them impossible by-design
+
+Home is the denser operations view of the same workspace: search, agent activity, active folders, and recent documents. Useful as a snapshot of the whole product — click through if you want to read it.
+
+<p align="center">
+  <a href="docs/screenshots/example-homepage-detailed.png"><img src="docs/screenshots/example-homepage-detailed.png" width="680" alt="Home dashboard"></a>
+</p>
 
 ## Key differentiators
 
@@ -36,6 +51,12 @@ Civigent solves the problem of humans and AI agents editing the same content sim
 
 * It is **AI Native** providing MCP-first access in the backend that gives Agents all the tools they need to operate and collaborate with humans.
 * It is **Human Native** providing a modern UI for humans to collaboratively edit docs together in realtime, and see what the AI Agents are doing/planning/changing.
+
+Agent Pulse is that human view of agent work: who is writing, what they intend, and which documents they are touching.
+
+<p align="center">
+  <a href="docs/screenshots/example-agentpulse-details.png"><img src="docs/screenshots/example-agentpulse-details.png" width="680" alt="Agent Pulse"></a>
+</p>
 
 Power-user examples include:
 

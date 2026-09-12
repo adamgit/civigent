@@ -2135,6 +2135,22 @@ export interface McpLogWorkflowCohort {
 
 export type McpLogErrorOutcome = "recovered" | "unresolved" | "abandoned";
 
+export interface McpLogAgentRef {
+  agent_id: string;
+  agent_display_name: string;
+}
+
+export interface McpLogErrorAgentRow {
+  agent_id: string;
+  agent_display_name: string;
+  instance_count: number;
+  sittings_once: number;
+  sittings_repeated: number;
+  recovered: number;
+  unresolved: number;
+  abandoned: number;
+}
+
 export interface McpLogErrorCohort {
   method: string;
   result: "error" | "blocked";
@@ -2145,6 +2161,7 @@ export interface McpLogErrorCohort {
   recovered: number;
   unresolved: number;
   abandoned: number;
+  agents: McpLogErrorAgentRow[];
 }
 
 export interface McpLogArgShapeCohort {
@@ -2161,15 +2178,36 @@ export interface McpLogToolCount {
   method: string;
   inferred_tier: InferredMcpTier;
   count: number;
+  agents: McpLogAgentRef[];
+}
+
+export interface McpLogSingleCallSitting {
+  method: string;
+  sitting_count: number;
+}
+
+export interface McpLogBigram {
+  from: string;
+  to: string;
+  count: number;
+}
+
+export interface AgentMcpLogFileInfo {
+  path: string;
+  size_bytes: number;
+  exists: boolean;
 }
 
 export interface RunAdminMcpLogAnalysisResponse {
   sitting_count: number;
   duration_ms: number;
-  workflows: McpLogWorkflowCohort[];
+  fragments: McpLogWorkflowCohort[];
+  single_call_sittings: McpLogSingleCallSitting[];
+  bigrams: McpLogBigram[];
   errors: McpLogErrorCohort[];
   arg_shapes: McpLogArgShapeCohort[];
   tool_counts: McpLogToolCount[];
+  log_file: AgentMcpLogFileInfo;
 }
 
 /**
@@ -2797,14 +2835,12 @@ export interface AgentProposalSnapshot {
   readonly section_count: number;
 }
 
-export interface AgentActivitySummary {
+export interface AgentRosterEntry {
   readonly agent_id: string;
   readonly display_name: string;
   readonly connection_status: AgentConnectionStatus;
   readonly last_seen_at: string | null;
   readonly mcp_tool_usage: Readonly<Record<string, number>>;
-  readonly draft_proposals: readonly AgentProposalSnapshot[];
-  readonly recent_proposals: readonly AgentProposalSnapshot[];
   readonly stats: {
     readonly proposals_committed: number;
     readonly proposals_blocked: number;
@@ -2813,8 +2849,8 @@ export interface AgentActivitySummary {
   };
 }
 
-export interface GetAgentsFullSummaryResponse {
-  readonly agents: readonly AgentActivitySummary[];
+export interface GetAgentRosterResponse {
+  readonly agents: readonly AgentRosterEntry[];
   readonly posture: {
     readonly preset: HumanInvolvementPresetName;
     readonly description: string;

@@ -63,6 +63,9 @@ function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/admin/agent-mcp-logs") {
     return "Agent MCP Logs";
   }
+  if (pathname === "/admin/agent-mcp-analysis") {
+    return "Agent MCP Analysis";
+  }
   if (pathname === "/admin/runtime-memory") {
     return "Runtime Memory";
   }

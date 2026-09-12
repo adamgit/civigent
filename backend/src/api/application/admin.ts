@@ -12,6 +12,7 @@ import type {
   DocumentTreeEntry,
   ExportedSkillsAdminConfig,
   GetActivityResponse,
+  GetAgentRosterResponse,
   GetAdminGitBackupStatusResponse,
   GetAdminGitRestoreStatusResponse,
   GetAdminRuntimeMemoryResponse,
@@ -362,11 +363,10 @@ export async function rotateAgent(agentId: string) {
   return { agent_id: agentId, display_name: entry?.displayName ?? "", secret: newSecret };
 }
 
-export async function getAgentsSummary() {
+export async function listAgentRoster(): Promise<GetAgentRosterResponse> {
   const { agentEventLog } = await import("../../mcp/agent-event-log.js");
   const registeredAgents = (await readAgentKeysSkipErrors()).map((e) => ({ id: e.agentId, displayName: e.displayName }));
-  const { proposals: allProposals } = await listProposalsToleratingUndecodable();
-  const agents = agentEventLog.buildFullSummary(registeredAgents, allProposals);
+  const agents = agentEventLog.listRosterEntries(registeredAgents);
   const config = getAdminConfig();
   const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
   return {

@@ -62,6 +62,32 @@ export async function listDegradedProposalsUseCase() {
   return listDegradedProposals();
 }
 
+/** Every open proposal — draft, pending, inprogress, and committing — never
+ *  committed or withdrawn history. Callers that only need "what's live" use
+ *  this instead of the unfiltered list. */
+export async function listLiveProposals() {
+  const [draft, pending, inprogress, committing] = await Promise.all([
+    listProposalsToleratingUndecodable(["draft"]),
+    listProposalsToleratingUndecodable(["pending"]),
+    listProposalsToleratingUndecodable(["inprogress"]),
+    listProposalsToleratingUndecodable(["committing"]),
+  ]);
+  return {
+    proposals: [
+      ...draft.proposals,
+      ...pending.proposals,
+      ...inprogress.proposals,
+      ...committing.proposals,
+    ],
+    undecodable: [
+      ...draft.undecodable,
+      ...pending.undecodable,
+      ...inprogress.undecodable,
+      ...committing.undecodable,
+    ],
+  };
+}
+
 // ─── Create ─────────────────────────────────────────────
 
 export type CreateProposalValidation =

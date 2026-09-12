@@ -6,13 +6,56 @@ import { AgentCardExpanded } from "../components/agents/AgentCardExpanded.js";
 import type { AgentCardViewModel } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
-import type { AgentAuthPolicy, GetAgentsFullSummaryResponse } from "../types/shared.js";
+import { HOME_ACTIVITY_FETCH_DAYS, HOME_ACTIVITY_FETCH_LIMIT } from "./home/home-constants";
+import {
+  proposalSectionDocPathForDisplay,
+  type ActivityItem,
+  type AgentAuthPolicy,
+  type AgentProposalSnapshot,
+  type AgentRosterEntry,
+  type AnyProposal,
+  type GetAgentRosterResponse,
+} from "../types/shared.js";
 import "./agents-page.css";
 
-function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewModel[] {
-  return response.agents.map((agent) => {
+function draftSnapshot(proposal: AnyProposal): AgentProposalSnapshot {
+  return {
+    id: proposal.id,
+    intent: proposal.intent,
+    status: proposal.status,
+    created_at: proposal.created_at,
+    doc_paths: [...new Set(proposal.sections.map((s) => proposalSectionDocPathForDisplay(s)))],
+    section_count: proposal.sections.length,
+  };
+}
+
+function landingSnapshot(item: ActivityItem): AgentProposalSnapshot {
+  return {
+    id: item.id,
+    intent: item.intent ?? "",
+    status: "committed",
+    created_at: item.opened_at,
+    doc_paths: [...new Set([...item.sections.map((s) => s.doc_path), ...item.document_paths])],
+    section_count: item.sections.length,
+  };
+}
+
+interface AgentsPageData {
+  roster: GetAgentRosterResponse;
+  liveProposals: readonly AnyProposal[];
+  activity: readonly ActivityItem[];
+}
+
+function buildViewModels(data: AgentsPageData): AgentCardViewModel[] {
+  return data.roster.agents.map((agent: AgentRosterEntry) => {
     const hue = avatarHueFromId(agent.agent_id);
     const letter = (agent.display_name.trim()[0] ?? "?").toUpperCase();
+    const pendingProposals = data.liveProposals
+      .filter((p) => p.writer.id === agent.agent_id && p.status === "draft")
+      .map(draftSnapshot);
+    const recentProposals = data.activity
+      .filter((item) => item.writer_id === agent.agent_id)
+      .map(landingSnapshot);
     return {
       id: agent.agent_id,
       displayName: agent.display_name,
@@ -23,8 +66,8 @@ function buildViewModels(response: GetAgentsFullSummaryResponse): AgentCardViewM
       currentActivityHtml: "",
       activeDocuments: [],
       mcpToolUsage: agent.mcp_tool_usage,
-      pendingProposals: agent.draft_proposals,
-      recentProposals: agent.recent_proposals,
+      pendingProposals,
+      recentProposals,
       stats: agent.stats,
     };
   });
@@ -64,7 +107,7 @@ function PolicyBadge({ policy }: { policy: AgentAuthPolicy }) {
 // ─── Page ───────────────────────────────────────────────────────
 
 export function AgentsPage() {
-  const [data, setData] = useState<GetAgentsFullSummaryResponse | null>(null);
+  const [data, setData] = useState<AgentsPageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -72,16 +115,20 @@ export function AgentsPage() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    apiClient.getAgentsSummary()
-      .then((res) => {
-        setData(res);
+    Promise.all([
+      apiClient.getAgentRoster(),
+      apiClient.listLiveProposals(),
+      apiClient.getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS),
+    ])
+      .then(([roster, live, activityRes]) => {
+        setData({ roster, liveProposals: live.proposals, activity: activityRes.items });
       })
       .catch((err) => { setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { setLoading(false); });
   }, []);
 
   const viewModels = data ? buildViewModels(data) : [];
-  const policy: AgentAuthPolicy = data?.agent_auth_policy ?? "open";
+  const policy: AgentAuthPolicy = data?.roster.agent_auth_policy ?? "open";
 
   return (
     <section>

@@ -6,7 +6,6 @@ import {
   type AgentMcpLogFileInfo,
   type AgentMcpSessionRecord,
 } from "../services/api-client";
-import type { RunAdminMcpLogAnalysisResponse } from "../types/shared.js";
 
 function formatTs(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -30,18 +29,6 @@ function durationMs(start: string, end: string): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60_000).toFixed(1)}m`;
-}
-
-function formatSlotSequence(slots: RunAdminMcpLogAnalysisResponse["workflows"][number]["slots"]): string {
-  return slots.map((slot) => (slot.multiplicity === "2+" ? `${slot.method} ×2+` : slot.method)).join(" → ");
-}
-
-function formatSlotNs(slotNs: RunAdminMcpLogAnalysisResponse["workflows"][number]["slot_ns"]): string {
-  return slotNs.map((entry) => `${entry.method}×${entry.n}: ${entry.sittings}`).join(", ");
-}
-
-function formatCountBuckets(buckets: RunAdminMcpLogAnalysisResponse["workflows"][number]["errors_per_sitting"]): string {
-  return buckets.map((bucket) => `${bucket.label}: ${bucket.count}`).join(", ");
 }
 
 function SessionRow({
@@ -109,22 +96,6 @@ export function AgentMcpLogsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [analysis, setAnalysis] = useState<RunAdminMcpLogAnalysisResponse | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-
-  const runAnalysis = useCallback(async () => {
-    setAnalyzing(true);
-    setAnalysisError(null);
-    try {
-      const next = await apiClient.runAdminMcpLogAnalysis();
-      setAnalysis(next);
-    } catch (err) {
-      setAnalysisError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAnalyzing(false);
-    }
-  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,178 +172,6 @@ export function AgentMcpLogsPage() {
             ))}
           </div>
         )}
-
-        <div className="mt-8">
-          <div className="flex items-center gap-2 mb-3">
-            <button
-              type="button"
-              onClick={() => void runAnalysis()}
-              disabled={analyzing}
-              className="btn-primary disabled:opacity-50"
-            >
-              {analyzing ? "Analyzing…" : "Run analysis"}
-            </button>
-            {analysis && !analyzing && (
-              <span className="text-[11px] text-text-muted ml-2">
-                {analysis.sitting_count} sittings analyzed in {analysis.duration_ms}ms
-              </span>
-            )}
-          </div>
-
-          {analysisError && <p className="text-status-red text-[13px] mb-3">{analysisError}</p>}
-
-          {analysis && (
-            <div className="space-y-6">
-              <div className="border border-footer-border rounded overflow-x-auto">
-                <div className="px-4 py-2 text-[12px] font-semibold text-text-primary border-b border-footer-border">
-                  Workflows
-                </div>
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-3 py-1.5">Pattern</th>
-                      <th className="text-right px-3 py-1.5">Instances</th>
-                      <th className="text-right px-3 py-1.5">Total errors</th>
-                      <th className="text-left px-3 py-1.5">Errors / sitting</th>
-                      <th className="text-left px-3 py-1.5">2+ slot n</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.workflows.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-2 text-text-muted" colSpan={5}>
-                          No workflow cohorts.
-                        </td>
-                      </tr>
-                    ) : (
-                      analysis.workflows.map((cohort, i) => (
-                        <tr key={i} className="border-b border-footer-border last:border-0">
-                          <td className="px-3 py-1.5 font-mono text-text-primary">{formatSlotSequence(cohort.slots)}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-text-primary">{cohort.instance_count}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-text-primary">{cohort.total_errors}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted">{formatCountBuckets(cohort.errors_per_sitting)}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted">{formatSlotNs(cohort.slot_ns) || "—"}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="border border-footer-border rounded overflow-x-auto">
-                <div className="px-4 py-2 text-[12px] font-semibold text-text-primary border-b border-footer-border">
-                  Errors
-                </div>
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-3 py-1.5">Method</th>
-                      <th className="text-left px-3 py-1.5">Result</th>
-                      <th className="text-left px-3 py-1.5">Cause</th>
-                      <th className="text-right px-3 py-1.5">Instances</th>
-                      <th className="text-right px-3 py-1.5">Once</th>
-                      <th className="text-right px-3 py-1.5">Repeated</th>
-                      <th className="text-right px-3 py-1.5">Recovered</th>
-                      <th className="text-right px-3 py-1.5">Unresolved</th>
-                      <th className="text-right px-3 py-1.5">Abandoned</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.errors.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-2 text-text-muted" colSpan={9}>
-                          No error cohorts.
-                        </td>
-                      </tr>
-                    ) : (
-                      analysis.errors.map((cohort, i) => (
-                        <tr key={i} className="border-b border-footer-border last:border-0">
-                          <td className="px-3 py-1.5 font-mono text-text-primary">{cohort.method}</td>
-                          <td className="px-3 py-1.5">{cohort.result}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted break-words">{cohort.cause_template}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{cohort.instance_count}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{cohort.sittings_once}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{cohort.sittings_repeated}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-status-green">{cohort.recovered}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-status-yellow">{cohort.unresolved}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums text-status-red">{cohort.abandoned}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="border border-footer-border rounded overflow-x-auto">
-                <div className="px-4 py-2 text-[12px] font-semibold text-text-primary border-b border-footer-border">
-                  Argument-shape failures
-                </div>
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-3 py-1.5">Method</th>
-                      <th className="text-left px-3 py-1.5">Cause</th>
-                      <th className="text-left px-3 py-1.5">Doc path</th>
-                      <th className="text-right px-3 py-1.5">Instances</th>
-                      <th className="text-left px-3 py-1.5">Sample</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.arg_shapes.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-2 text-text-muted" colSpan={5}>
-                          No argument-shape failures.
-                        </td>
-                      </tr>
-                    ) : (
-                      analysis.arg_shapes.map((cohort, i) => (
-                        <tr key={i} className="border-b border-footer-border last:border-0">
-                          <td className="px-3 py-1.5 font-mono text-text-primary">{cohort.method}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted break-words">{cohort.cause_template}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted break-all">{cohort.doc_path ?? "—"}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{cohort.instance_count}</td>
-                          <td className="px-3 py-1.5 font-mono text-text-muted break-words">{cohort.sample_error_message}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="border border-footer-border rounded overflow-x-auto">
-                <div className="px-4 py-2 text-[12px] font-semibold text-text-primary border-b border-footer-border">
-                  Tool counts
-                </div>
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-3 py-1.5">Method</th>
-                      <th className="text-left px-3 py-1.5">Tier (inferred)</th>
-                      <th className="text-right px-3 py-1.5">Count</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.tool_counts.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-2 text-text-muted" colSpan={3}>
-                          No tool calls.
-                        </td>
-                      </tr>
-                    ) : (
-                      analysis.tool_counts.map((entry) => (
-                        <tr key={entry.method} className="border-b border-footer-border last:border-0">
-                          <td className="px-3 py-1.5 font-mono text-text-primary">{entry.method}</td>
-                          <td className="px-3 py-1.5 text-text-muted">{entry.inferred_tier}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">{entry.count}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

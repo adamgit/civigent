@@ -4,7 +4,7 @@ import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { type AgentActivitySummary, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
+import { type AgentRosterEntry, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
 import { HomeWideLayout } from "./home/HomeWideLayout";
@@ -56,7 +56,7 @@ export function HomePage() {
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   const [involvementPreset, setInvolvementPreset] = useState<HumanInvolvementPresetName | null>(null);
-  const [agents, setAgents] = useState<readonly AgentActivitySummary[]>([]);
+  const [agents, setAgents] = useState<readonly AgentRosterEntry[]>([]);
   const [agentsError, setAgentsError] = useState<string | null>(null);
 
   const [activity, setActivity] = useState<ActivityItem[]>([]);
@@ -111,7 +111,7 @@ export function HomePage() {
   useEffect(() => {
     let cancelled = false;
     apiClient
-      .getAgentsSummary()
+      .getAgentRoster()
       .then((res) => {
         if (!cancelled) {
           setInvolvementPreset(res.posture.preset);
@@ -206,7 +206,7 @@ export function HomePage() {
           })
           .catch((err) => { setProposalsError(err instanceof Error ? err.message : String(err)); });
         apiClient
-          .getAgentsSummary()
+          .getAgentRoster()
           .then((res) => {
             setInvolvementPreset(res.posture.preset);
             setAgents(res.agents);
@@ -286,8 +286,8 @@ export function HomePage() {
     [activity, recentWindowDays],
   );
   const agentRows = useMemo(
-    () => buildAgentActivityRows(agents, formatHomeTime),
-    [agents],
+    () => buildAgentActivityRows(agents, proposals, activity, formatHomeTime),
+    [agents, proposals, activity],
   );
   const agentTasks = useMemo(
     () => buildAgentTasks(proposals, mcpActions, agents, activity),

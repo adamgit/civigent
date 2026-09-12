@@ -27,7 +27,7 @@ import type {
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
   VerifyAdminGitBackupResponse,
-  GetAgentsFullSummaryResponse,
+  GetAgentRosterResponse,
   GetDocumentResponse,
   GetDocumentSectionsResponse,
   GetProposalSectionsResponse,
@@ -1112,26 +1112,7 @@ export const apiClient = {
   },
 
   async listLiveProposals(): Promise<ListProposalsResponse> {
-    const [draft, pending, inprogress, committing] = await Promise.all([
-      apiClient.listProposals("draft"),
-      apiClient.listProposals("pending"),
-      apiClient.listProposals("inprogress"),
-      apiClient.listProposals("committing"),
-    ]);
-    return {
-      proposals: [
-        ...draft.proposals,
-        ...pending.proposals,
-        ...inprogress.proposals,
-        ...committing.proposals,
-      ],
-      undecodable: [
-        ...draft.undecodable,
-        ...pending.undecodable,
-        ...inprogress.undecodable,
-        ...committing.undecodable,
-      ],
-    };
+    return requestJson<ListProposalsResponse>("/api/proposals/live");
   },
 
   async listAdminProposals(): Promise<ListProposalsResponse> {
@@ -1398,8 +1379,8 @@ export const apiClient = {
 
   // --- Agents ---
 
-  async getAgentsSummary(): Promise<GetAgentsFullSummaryResponse> {
-    return requestJson<GetAgentsFullSummaryResponse>("/api/agents/summary");
+  async getAgentRoster(): Promise<GetAgentRosterResponse> {
+    return requestJson<GetAgentRosterResponse>("/api/agents/roster");
   },
 
   async getAgentMcpPulse(hours = 24): Promise<{ actions: AgentMcpPulseAction[] }> {

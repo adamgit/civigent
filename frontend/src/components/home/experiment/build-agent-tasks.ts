@@ -2,7 +2,7 @@ import {
   proposalSectionDocPathForDisplay,
   proposalTargetDocPathForDisplay,
   type ActivityItem,
-  type AgentActivitySummary,
+  type AgentRosterEntry,
   type AnyProposal,
   DocPath,
 } from "../../../types/shared.js";
@@ -114,7 +114,7 @@ function coveringWindow(windows: ProposalWindow[], ts: number): ProposalWindow |
 }
 
 function draftStatus(
-  agent: AgentActivitySummary | undefined,
+  agent: AgentRosterEntry | undefined,
   lastActionMs: number,
   nowMs: number,
 ): "running" | "waiting" {
@@ -133,7 +133,7 @@ function intentOf(proposal: AnyProposal): string {
 export function buildAgentTasks(
   proposals: readonly AnyProposal[],
   actions: readonly HomeMcpPulseAction[],
-  agents: readonly AgentActivitySummary[],
+  agents: readonly AgentRosterEntry[],
   activity: readonly ActivityItem[],
   nowMs: number = Date.now(),
   limit: number = HOME_AGENT_TASK_LIMIT,

@@ -5,24 +5,53 @@ import { ActivityFeed } from "../components/agents/ActivityFeed.js";
 import type { ActivityFeedEvent } from "../components/agents/types.js";
 import { avatarHueFromId } from "../components/agents/utils.js";
 import { apiClient } from "../services/api-client";
-import type { GetAgentsFullSummaryResponse } from "../types/shared.js";
+import { HOME_ACTIVITY_FETCH_DAYS, HOME_ACTIVITY_FETCH_LIMIT } from "./home/home-constants";
+import {
+  proposalSectionDocPathForDisplay,
+  type ActivityItem,
+  type AnyProposal,
+  type GetAgentRosterResponse,
+} from "../types/shared.js";
 
-function buildFeedEvents(response: GetAgentsFullSummaryResponse): ActivityFeedEvent[] {
+function buildFeedEvents(
+  roster: GetAgentRosterResponse,
+  liveProposals: readonly AnyProposal[],
+  activity: readonly ActivityItem[],
+): ActivityFeedEvent[] {
   const events: ActivityFeedEvent[] = [];
-  for (const agent of response.agents) {
+  for (const agent of roster.agents) {
     const hue = avatarHueFromId(agent.agent_id);
     const letter = (agent.display_name.trim()[0] ?? "?").toUpperCase();
-    for (const proposal of [...agent.draft_proposals, ...agent.recent_proposals]) {
+
+    for (const proposal of liveProposals) {
+      if (proposal.writer.id !== agent.agent_id || proposal.status !== "draft") continue;
+      const docPaths = [...new Set(proposal.sections.map((s) => proposalSectionDocPathForDisplay(s)))];
       events.push({
         id: `${agent.agent_id}-${proposal.id}`,
         agentId: agent.agent_id,
         agentDisplayName: agent.display_name,
         agentAvatarLetter: letter,
         agentAvatarHue: hue,
-        action: proposal.status === "committed" ? "committed" : proposal.status === "withdrawn" ? "withdrew" : "submitted",
+        action: "submitted",
         targetDescription: proposal.intent,
         timestamp: proposal.created_at,
-        documentPreview: proposal.doc_paths.join(", ") || undefined,
+        documentPreview: docPaths.join(", ") || undefined,
+      });
+    }
+
+    for (const item of activity) {
+      if (item.writer_id !== agent.agent_id) continue;
+      const docPaths = [...new Set([...item.sections.map((s) => s.doc_path), ...item.document_paths])];
+      events.push({
+        id: `${agent.agent_id}-${item.id}`,
+        agentId: agent.agent_id,
+        agentDisplayName: agent.display_name,
+        agentAvatarLetter: letter,
+        agentAvatarHue: hue,
+        action: "committed",
+        targetDescription: item.intent ?? "",
+        timestamp: item.opened_at,
+        documentPreview: docPaths.join(", ") || undefined,
       });
     }
   }
@@ -39,9 +68,13 @@ export function AgentFeedPage() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    apiClient.getAgentsSummary()
-      .then((res: GetAgentsFullSummaryResponse) => {
-        setEvents(buildFeedEvents(res));
+    Promise.all([
+      apiClient.getAgentRoster(),
+      apiClient.listLiveProposals(),
+      apiClient.getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS),
+    ])
+      .then(([roster, live, activityRes]) => {
+        setEvents(buildFeedEvents(roster, live.proposals, activityRes.items));
       })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));

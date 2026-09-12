@@ -7,7 +7,7 @@
  * Singleton instance exported for use by MCP tool dispatch and proposal lifecycle.
  */
 
-import type { WriterIdentity, AgentConnectionStatus, AgentActivitySummary, AgentProposalSnapshot, ActiveProposal, AnyProposal, CommittedProposalDomain, ProposalStatus, WithdrawnProposalDomain } from "../types/shared.js";
+import type { WriterIdentity, AgentConnectionStatus, AgentRosterEntry } from "../types/shared.js";
 
 // ─── Event types ─────────────────────────────────────────────────
 
@@ -127,13 +127,13 @@ export class AgentEventLog {
   }
 
   /**
-   * Build full summary for all known agents. Merges registered agents
-   * with transient agents seen in the log.
+   * List roster entries for all known agents. Merges registered agents
+   * with transient agents seen in the log. Presence, process-lifetime
+   * stats, and tool usage only — no proposal data.
    */
-  buildFullSummary(
+  listRosterEntries(
     registeredAgents: Array<{ id: string; displayName: string }>,
-    allProposals: AnyProposal[],
-  ): AgentActivitySummary[] {
+  ): AgentRosterEntry[] {
     // Merge registered + transient agents from log
     const agentMap = new Map<string, { id: string; displayName: string }>();
     for (const agent of registeredAgents) {
@@ -145,53 +145,20 @@ export class AgentEventLog {
       }
     }
 
-    const summaries: AgentActivitySummary[] = [];
+    const entries: AgentRosterEntry[] = [];
 
     for (const { id, displayName } of agentMap.values()) {
-      const status = this.getStatus(id);
-      const lastSeen = this.lastSeenAt(id);
-      const toolUsage = this.toolUsageCounts(id);
-      const stats = this.proposalStats(id);
-
-      // Filter proposals by this agent
-      const agentProposals = allProposals.filter(p => p.writer.id === id);
-
-      const pending: AgentProposalSnapshot[] = agentProposals
-        .filter((p): p is ActiveProposal => p.status === "draft")
-        .map(p => ({
-          id: p.id,
-          intent: p.intent,
-          status: p.status,
-          created_at: p.created_at,
-          doc_paths: [...new Set(p.sections.map(s => s.doc_path as string))],
-          section_count: p.sections.length,
-        }));
-
-      const recent: AgentProposalSnapshot[] = agentProposals
-        .filter((p): p is CommittedProposalDomain | WithdrawnProposalDomain => p.status === "committed" || p.status === "withdrawn")
-        .slice(0, 10)
-        .map(p => ({
-          id: p.id,
-          intent: p.intent,
-          status: p.status,
-          created_at: p.created_at,
-          doc_paths: [...new Set(p.sections.map(s => s.stored_doc_path))],
-          section_count: p.sections.length,
-        }));
-
-      summaries.push({
+      entries.push({
         agent_id: id,
         display_name: displayName,
-        connection_status: status,
-        last_seen_at: lastSeen,
-        mcp_tool_usage: toolUsage,
-        draft_proposals: pending,
-        recent_proposals: recent,
-        stats,
+        connection_status: this.getStatus(id),
+        last_seen_at: this.lastSeenAt(id),
+        mcp_tool_usage: this.toolUsageCounts(id),
+        stats: this.proposalStats(id),
       });
     }
 
-    return summaries;
+    return entries;
   }
 }
 

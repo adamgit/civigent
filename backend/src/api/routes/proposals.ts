@@ -34,6 +34,7 @@ import {
   listProposalsForStatusFilter,
   listMyProposals,
   listDegradedProposalsUseCase,
+  listLiveProposals,
   readProposalDto,
   validateCreateProposal,
   createProposalUseCase,
@@ -161,6 +162,20 @@ export function registerProposalRoutes(
     try {
       if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       const response = await listDegradedProposalsUseCase();
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/proposals/live — List every open proposal (draft, pending,
+  // inprogress, committing). Registered BEFORE /proposals/:id so the literal
+  // path is not captured by the :id param route.
+  router.get("/proposals/live", async (req, res, next) => {
+    try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
+      const { proposals, undecodable } = await listLiveProposals();
+      const response: ListProposalsResponse = { proposals, undecodable };
       res.json(response);
     } catch (error) {
       next(error);

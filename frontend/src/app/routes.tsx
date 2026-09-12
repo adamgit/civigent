@@ -23,6 +23,7 @@ import { ImportsPage } from "../pages/ImportsPage";
 import { AdvancedExportPage } from "../pages/AdvancedExportPage";
 import { SnapshotsPage } from "../pages/SnapshotsPage";
 import { AgentMcpLogsPage } from "../pages/AgentMcpLogsPage";
+import { AgentMcpAnalysisPage } from "../pages/AgentMcpAnalysisPage";
 import { RuntimeMemoryPage } from "../pages/RuntimeMemoryPage";
 import { ContentIntegrityPage } from "../pages/ContentIntegrityPage";
 import { GitBackupPage } from "../pages/GitBackupPage";
@@ -45,6 +46,7 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/permissions", element: <PermissionsPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
+      { path: "admin/agent-mcp-analysis", element: <AgentMcpAnalysisPage /> },
       { path: "admin/runtime-memory", element: <RuntimeMemoryPage /> },
       { path: "admin/content-integrity", element: <ContentIntegrityPage /> },
       { path: "admin/git-backup", element: <GitBackupPage /> },

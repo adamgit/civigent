@@ -31,7 +31,7 @@ import {
   createAgent,
   deleteAgent,
   rotateAgent,
-  getAgentsSummary,
+  listAgentRoster,
   getAgentMcpPulse,
   getAcl,
   setAclDefaults,
@@ -328,11 +328,11 @@ export function registerAdminRoutes(
     }
   });
 
-  // ─── Agent activity summary ───────────────────────────
-  router.get("/agents/summary", async (req, res, next) => {
+  // ─── Agent roster ──────────────────────────────────────
+  router.get("/agents/roster", async (req, res, next) => {
     try {
       if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
-      res.json(await getAgentsSummary());
+      res.json(await listAgentRoster());
     } catch (error) {
       next(error);
     }

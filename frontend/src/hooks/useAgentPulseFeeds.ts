@@ -8,10 +8,10 @@ import {
 } from "../pages/home/home-constants";
 import { apiClient } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import type { ActivityItem, AgentActivitySummary, AnyProposal } from "../types/shared.js";
+import type { ActivityItem, AgentRosterEntry, AnyProposal } from "../types/shared.js";
 
 export function useAgentPulseFeeds() {
-  const [agents, setAgents] = useState<readonly AgentActivitySummary[]>([]);
+  const [agents, setAgents] = useState<readonly AgentRosterEntry[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
@@ -28,7 +28,7 @@ export function useAgentPulseFeeds() {
     };
 
     apiClient
-      .getAgentsSummary()
+      .getAgentRoster()
       .then((res) => {
         if (!cancelled) setAgents(res.agents);
       })
@@ -109,7 +109,7 @@ export function useAgentPulseFeeds() {
             /* keep last proposals */
           });
         apiClient
-          .getAgentsSummary()
+          .getAgentRoster()
           .then((res) => setAgents(res.agents))
           .catch(() => {
             /* keep last agents */
