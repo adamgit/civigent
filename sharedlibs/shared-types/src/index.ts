@@ -2005,6 +2005,7 @@ export interface ActivityItem {
   writer_display_name: string;
   commit_sha: string;
   sections: SectionTargetRef[];
+  document_paths: string[];
   intent?: string;
 }
 
@@ -2099,6 +2100,76 @@ export interface GetRuntimeMemoryResponse {
   sample_interval_ms: number;
   current: RuntimeMemoryRssSample | null;
   samples: RuntimeMemoryRssSample[];
+}
+
+// ─── Admin MCP log analysis ────────────────────────────────────────
+//
+// User-triggered, in-memory cohort analysis of flushed agent MCP sittings.
+// Nothing here is retained server-side after the response is sent.
+
+export type WorkflowRunMultiplicity = "1" | "2+";
+
+export interface WorkflowPatternSlot {
+  method: string;
+  multiplicity: WorkflowRunMultiplicity;
+}
+
+export interface WorkflowSlotNCount {
+  method: string;
+  n: number;
+  sittings: number;
+}
+
+export interface CountBucket {
+  label: string;
+  count: number;
+}
+
+export interface McpLogWorkflowCohort {
+  slots: WorkflowPatternSlot[];
+  instance_count: number;
+  total_errors: number;
+  errors_per_sitting: CountBucket[];
+  slot_ns: WorkflowSlotNCount[];
+}
+
+export type McpLogErrorOutcome = "recovered" | "unresolved" | "abandoned";
+
+export interface McpLogErrorCohort {
+  method: string;
+  result: "error" | "blocked";
+  cause_template: string;
+  instance_count: number;
+  sittings_once: number;
+  sittings_repeated: number;
+  recovered: number;
+  unresolved: number;
+  abandoned: number;
+}
+
+export interface McpLogArgShapeCohort {
+  method: string;
+  cause_template: string;
+  doc_path: string | null;
+  instance_count: number;
+  sample_error_message: string;
+}
+
+export type InferredMcpTier = "1_2" | "3" | "unmatched";
+
+export interface McpLogToolCount {
+  method: string;
+  inferred_tier: InferredMcpTier;
+  count: number;
+}
+
+export interface RunAdminMcpLogAnalysisResponse {
+  sitting_count: number;
+  duration_ms: number;
+  workflows: McpLogWorkflowCohort[];
+  errors: McpLogErrorCohort[];
+  arg_shapes: McpLogArgShapeCohort[];
+  tool_counts: McpLogToolCount[];
 }
 
 /**

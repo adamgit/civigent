@@ -22,6 +22,7 @@ import type {
   RunAdminContentIntegrityScanResponse,
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
+  RunAdminMcpLogAnalysisResponse,
   SetAclDefaultsRequest,
   SetDocumentAclRequest,
   SetUserRolesRequest,
@@ -643,4 +644,9 @@ export async function getAgentMcpPulse(hours = 24): Promise<{ actions: AgentMcpP
 
   actions.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   return { actions };
+}
+
+export async function runAgentMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisResponse> {
+  const { runMcpLogAnalysis } = await import("../../monitoring/mcp-log-analysis.js");
+  return runMcpLogAnalysis();
 }

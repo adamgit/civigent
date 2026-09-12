@@ -48,7 +48,7 @@ export function useAgentPulseFeeds() {
       .finally(settle);
 
     apiClient
-      .listProposals()
+      .listLiveProposals()
       .then((res) => {
         if (!cancelled) setProposals(res.proposals);
       })
@@ -103,7 +103,7 @@ export function useAgentPulseFeeds() {
             /* keep last activity */
           });
         apiClient
-          .listProposals()
+          .listLiveProposals()
           .then((res) => setProposals(res.proposals))
           .catch(() => {
             /* keep last proposals */

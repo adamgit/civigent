@@ -43,6 +43,7 @@ import {
   removeCustomRole,
   getAgentActivity,
   readAgentActivityLogFileInfo,
+  runAgentMcpLogAnalysis,
   getHeatmap,
   getRuntimeMemory,
   getHomeRuntimeMemory,
@@ -509,6 +510,16 @@ export function registerAdminRoutes(
       res.download(logFile.path, "agent-mcp-activity.jsonl", (error) => {
         if (error) next(error);
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/admin/agent-activity/analysis", async (req, res, next) => {
+    try {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      res.json(await runAgentMcpLogAnalysis());
     } catch (error) {
       next(error);
     }

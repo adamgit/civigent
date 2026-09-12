@@ -144,7 +144,7 @@ export function HomePage() {
   useEffect(() => {
     let cancelled = false;
     apiClient
-      .listProposals()
+      .listLiveProposals()
       .then((res) => {
         if (!cancelled) {
           setProposals(res.proposals);
@@ -199,7 +199,7 @@ export function HomePage() {
           })
           .catch((err) => { setActivityError(err instanceof Error ? err.message : String(err)); });
         apiClient
-          .listProposals()
+          .listLiveProposals()
           .then((res) => {
             setProposals(res.proposals);
             setProposalsError(null);
@@ -264,8 +264,8 @@ export function HomePage() {
   const treeTotals = useMemo(() => countTreeTotals(entries), [entries]);
   const folderWindowDays = homeFolderWindowDays(folderWindowId);
   const activeFolders = useMemo(
-    () => buildActiveFolders(entries, activity, proposals, Date.now(), folderWindowDays),
-    [entries, activity, proposals, folderWindowDays],
+    () => buildActiveFolders(entries, activity, Date.now(), folderWindowDays),
+    [entries, activity, folderWindowDays],
   );
   const lastChangeAt = useMemo(() => {
     let latest = "";

@@ -1,5 +1,5 @@
-import type { ActivityItem, AnyProposal, WriterType } from "../../types/shared.js";
-import { DocPath, FolderPath, proposalTargetDocPathForDisplay } from "../../types/shared.js";
+import type { ActivityItem, WriterType } from "../../types/shared.js";
+import { DocPath, FolderPath } from "../../types/shared.js";
 import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { collectExistingDocPaths, countFilesInFolder, findFolderEntry, parentFolderOfDoc } from "./home-tree-stats.js";
 import { getDocDisplayName } from "../document-page-utils.js";
@@ -54,7 +54,6 @@ function changedDocumentNames(docTouched: Map<string, string>): string[] {
 export function buildActiveFolders(
   entries: DocumentTreeEntry[],
   activity: ActivityItem[],
-  proposals: AnyProposal[],
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
 ): HomeActiveFolder[] {
@@ -100,9 +99,7 @@ export function buildActiveFolders(
   };
 
   const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
-  const landedAtByProposalId = new Map<string, string>();
   for (const item of activity) {
-    landedAtByProposalId.set(item.id, item.landed_at);
     if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
     for (const section of item.sections) {
       if (!existingDocs.has(section.doc_path)) continue;
@@ -112,17 +109,12 @@ export function buildActiveFolders(
     }
   }
 
-  for (const proposal of proposals) {
-    if (proposal.status !== "committed") continue;
-    const landedAt = landedAtByProposalId.get(proposal.id);
-    if (!landedAt) continue;
-    if (!pointInWindow(landedAt, windowStartMs, nowMs)) continue;
-    for (const target of proposal.targets) {
-      if (target.kind !== "document") continue;
-      const docPath = proposalTargetDocPathForDisplay(target);
+  for (const item of activity) {
+    if (!pointInWindow(item.landed_at, windowStartMs, nowMs)) continue;
+    for (const docPath of item.document_paths) {
       const folder = parentFolderOfDoc(docPath);
       if (!folder) continue;
-      const row = touchDoc(folder, proposal.writer.type, landedAt, docPath);
+      const row = touchDoc(folder, item.writer_type, item.landed_at, docPath);
       if (existingDocs.has(docPath)) row.added.add(docPath);
       else row.deleted.add(docPath);
     }
@@ -151,7 +143,6 @@ export function buildActiveFolders(
 export function buildAllDocsFolder(
   entries: DocumentTreeEntry[],
   activity: ActivityItem[],
-  proposals: AnyProposal[],
   nowMs: number = Date.now(),
   windowDays: number = HOME_RECENT_WINDOW_DAYS,
 ): HomeActiveFolder {
@@ -170,9 +161,7 @@ export function buildAllDocsFolder(
   };
 
   const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
-  const landedAtByProposalId = new Map<string, string>();
   for (const item of activity) {
-    landedAtByProposalId.set(item.id, item.landed_at);
     if (!activityItemInWindow(item, windowStartMs, nowMs)) continue;
     for (const section of item.sections) {
       if (!existingDocs.has(section.doc_path)) continue;
@@ -181,17 +170,12 @@ export function buildAllDocsFolder(
     }
   }
 
-  for (const proposal of proposals) {
-    if (proposal.status !== "committed") continue;
-    const landedAt = landedAtByProposalId.get(proposal.id);
-    if (!landedAt) continue;
-    if (!pointInWindow(landedAt, windowStartMs, nowMs)) continue;
-    for (const target of proposal.targets) {
-      if (target.kind !== "document") continue;
-      const docPath = proposalTargetDocPathForDisplay(target);
+  for (const item of activity) {
+    if (!pointInWindow(item.landed_at, windowStartMs, nowMs)) continue;
+    for (const docPath of item.document_paths) {
       if (existingDocs.has(docPath)) added.add(docPath);
       else deleted.add(docPath);
-      touchTime(landedAt, docPath);
+      touchTime(item.landed_at, docPath);
     }
   }
 

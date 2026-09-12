@@ -38,6 +38,14 @@ export async function readActivity(limit: number, days: number): Promise<Activit
       });
     }
 
+    const documentPaths: string[] = [];
+    for (const t of proposal.targets) {
+      if (t.kind !== "document") continue;
+      const docPath = DocPath.coerce(t.stored_doc_path);
+      if (!docPath) continue;
+      documentPaths.push(docPath);
+    }
+
     items.push({
       id: proposal.id,
       timestamp: commit.landedAtIso,
@@ -48,6 +56,7 @@ export async function readActivity(limit: number, days: number): Promise<Activit
       writer_display_name: proposal.writer.displayName,
       commit_sha: proposal.committed_head || "",
       sections,
+      document_paths: documentPaths,
       intent: proposal.intent,
     });
 

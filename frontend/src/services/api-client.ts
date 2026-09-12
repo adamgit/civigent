@@ -23,6 +23,7 @@ import type {
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
   RunAdminContentIntegrityScanResponse,
+  RunAdminMcpLogAnalysisResponse,
   RunAdminGitBackupResponse,
   RunAdminGitRestoreResponse,
   VerifyAdminGitBackupResponse,
@@ -1110,6 +1111,29 @@ export const apiClient = {
     return requestJson<ListProposalsResponse>(`/api/proposals${query}`);
   },
 
+  async listLiveProposals(): Promise<ListProposalsResponse> {
+    const [draft, pending, inprogress, committing] = await Promise.all([
+      apiClient.listProposals("draft"),
+      apiClient.listProposals("pending"),
+      apiClient.listProposals("inprogress"),
+      apiClient.listProposals("committing"),
+    ]);
+    return {
+      proposals: [
+        ...draft.proposals,
+        ...pending.proposals,
+        ...inprogress.proposals,
+        ...committing.proposals,
+      ],
+      undecodable: [
+        ...draft.undecodable,
+        ...pending.undecodable,
+        ...inprogress.undecodable,
+        ...committing.undecodable,
+      ],
+    };
+  },
+
   async listAdminProposals(): Promise<ListProposalsResponse> {
     return requestJson<ListProposalsResponse>("/api/admin/proposals");
   },
@@ -1446,6 +1470,12 @@ export const apiClient = {
 
   async getAgentActivity(): Promise<GetAgentActivityResponse> {
     return requestJson<GetAgentActivityResponse>("/api/admin/agent-activity");
+  },
+
+  async runAdminMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisResponse> {
+    return requestJson<RunAdminMcpLogAnalysisResponse>("/api/admin/agent-activity/analysis", {
+      method: "POST",
+    });
   },
 
   // --- Document diagnostics ---
