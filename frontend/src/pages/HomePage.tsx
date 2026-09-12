@@ -33,8 +33,6 @@ import { formatHomeTime } from "./home/home-time";
 export function HomePage() {
   const {
     singleUser,
-    sidebarAutoHide,
-    setSidebarAutoHide,
     setDocLayoutNarrow,
     appName,
     entries,
@@ -415,8 +413,6 @@ export function HomePage() {
         setRecentWindowId(id);
         writeHomeRecentWindow(id);
       }}
-      sidebarAutoHide={sidebarAutoHide}
-      setSidebarAutoHide={setSidebarAutoHide}
       mcpActions={mcpActions}
       pulseActivity={activity}
       agentTasks={agentTasks}

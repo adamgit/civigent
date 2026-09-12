@@ -39,7 +39,6 @@ export const userFeatures = [
   "Large documents show a loading indicator with size estimate and a suggestion to break into smaller files",
   "The system never requires you to take any action to protect your work — publishing is optional, changes are always preserved",
   "Full drag/drop support for reordering and relocating section titles and bodies",
-  "Agent simulator page shows agents what level of protection they'd face when proposing changes",
     "Drag sections to reorder them or move content between sections — a colored border previews the drop target, and drops are blocked if someone else is editing there",
   "Version history panel lists past versions of a document with author, timestamp, and message — click any version to preview its full text or restore the document to that point",
   "Restoring a previous version goes through the same proposal system as any other change — locked sections are respected and nothing is silently overwritten",

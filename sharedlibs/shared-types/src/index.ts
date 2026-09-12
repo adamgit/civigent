@@ -2087,6 +2087,20 @@ export interface GetAdminRuntimeMemoryResponse {
   samples: RuntimeMemorySample[];
 }
 
+// Compact RSS-only window for the home page memory widget — a 60-second
+// slice of `process_rss_bytes` only, no heap/container/high-water/cgroup data.
+
+export interface RuntimeMemoryRssSample {
+  timestamp_ms: number;
+  process_rss_bytes: number;
+}
+
+export interface GetRuntimeMemoryResponse {
+  sample_interval_ms: number;
+  current: RuntimeMemoryRssSample | null;
+  samples: RuntimeMemoryRssSample[];
+}
+
 /**
  * One document that failed an on-demand canonical integrity scan.
  * `error` carries the full message (and stack when available) — never stripped.

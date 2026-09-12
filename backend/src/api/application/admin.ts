@@ -17,6 +17,7 @@ import type {
   GetAdminRuntimeMemoryResponse,
   GetAdminSnapshotHealthResponse,
   GetAdminSnapshotHistoryResponse,
+  GetRuntimeMemoryResponse,
   ReadAdminProposalResponse,
   RunAdminContentIntegrityScanResponse,
   RunAdminGitBackupResponse,
@@ -35,7 +36,7 @@ import {
   getExportedSkillsTreeSha,
   listExportedSkillsContent,
 } from "./exported-skills.js";
-import { getRuntimeMemoryStats } from "../../runtime/memory-stats.js";
+import { getRuntimeMemoryRssWindow, getRuntimeMemoryStats } from "../../runtime/memory-stats.js";
 import { clearImpairment } from "../../runtime/impairment-registry.js";
 import {
   GitBackupOperationError,
@@ -176,6 +177,10 @@ export async function updateAdminConfigWithDescription(
 
 export function getRuntimeMemory(): GetAdminRuntimeMemoryResponse {
   return getRuntimeMemoryStats();
+}
+
+export function getHomeRuntimeMemory(): GetRuntimeMemoryResponse {
+  return getRuntimeMemoryRssWindow();
 }
 
 // ─── Git backup / restore ───────────────────────────────
@@ -574,56 +579,66 @@ export interface AgentMcpPulseAction {
   heading_path: string[] | null;
 }
 
+function collectPulseActionsFromSession(
+  envelope: unknown,
+  sinceMs: number,
+  actions: AgentMcpPulseAction[],
+): void {
+  if (!envelope || typeof envelope !== "object") return;
+  const session = envelope as {
+    agent_id?: unknown;
+    agent_display_name?: unknown;
+    actions?: unknown;
+  };
+  const agentId = typeof session.agent_id === "string" ? session.agent_id : "";
+  const displayName =
+    typeof session.agent_display_name === "string" ? session.agent_display_name : agentId;
+  if (!Array.isArray(session.actions)) return;
+  for (const rawAction of session.actions) {
+    if (!rawAction || typeof rawAction !== "object") continue;
+    const action = rawAction as {
+      method?: unknown;
+      ts?: unknown;
+      metadata?: unknown;
+    };
+    if (typeof action.method !== "string" || typeof action.ts !== "string") continue;
+    const tsMs = Date.parse(action.ts);
+    if (Number.isNaN(tsMs) || tsMs < sinceMs) continue;
+    const metadata =
+      action.metadata && typeof action.metadata === "object"
+        ? (action.metadata as Record<string, unknown>)
+        : {};
+    const headingPath = Array.isArray(metadata.heading_path)
+      ? metadata.heading_path.filter((part): part is string => typeof part === "string")
+      : null;
+    actions.push({
+      agent_id: agentId,
+      agent_display_name: displayName,
+      method: action.method,
+      ts: action.ts,
+      doc_path: typeof metadata.doc_path === "string" ? metadata.doc_path : null,
+      heading_path: headingPath,
+    });
+  }
+}
+
 /**
- * Last-24h MCP tool calls for the home pulse. Merges durable JSONL with
- * in-flight session buffers so an open Cursor/Claude session still counts.
- * Same data as the admin log, stripped to method + time + optional doc.
+ * Last-24h MCP tool calls for the home pulse. Walks the durable JSONL one
+ * flushed sitting at a time, then merges in-flight session buffers so an
+ * open Cursor/Claude session still counts. Same data as the admin log,
+ * stripped to method + time + optional doc.
  */
 export async function getAgentMcpPulse(hours = 24): Promise<{ actions: AgentMcpPulseAction[] }> {
   const windowMs = Math.max(hours, 1) * 60 * 60 * 1000;
   const sinceMs = Date.now() - windowMs;
-  const { sessions } = await getAgentActivity();
-  const { activityLog } = await import("../../monitoring/activity-log.js");
-  const envelopes = [...sessions, ...activityLog.snapshotInFlight()];
+  const { forEachFlushedSession, activityLog } = await import("../../monitoring/activity-log.js");
   const actions: AgentMcpPulseAction[] = [];
 
-  for (const envelope of envelopes) {
-    if (!envelope || typeof envelope !== "object") continue;
-    const session = envelope as {
-      agent_id?: unknown;
-      agent_display_name?: unknown;
-      actions?: unknown;
-    };
-    const agentId = typeof session.agent_id === "string" ? session.agent_id : "";
-    const displayName =
-      typeof session.agent_display_name === "string" ? session.agent_display_name : agentId;
-    if (!Array.isArray(session.actions)) continue;
-    for (const rawAction of session.actions) {
-      if (!rawAction || typeof rawAction !== "object") continue;
-      const action = rawAction as {
-        method?: unknown;
-        ts?: unknown;
-        metadata?: unknown;
-      };
-      if (typeof action.method !== "string" || typeof action.ts !== "string") continue;
-      const tsMs = Date.parse(action.ts);
-      if (Number.isNaN(tsMs) || tsMs < sinceMs) continue;
-      const metadata =
-        action.metadata && typeof action.metadata === "object"
-          ? (action.metadata as Record<string, unknown>)
-          : {};
-      const headingPath = Array.isArray(metadata.heading_path)
-        ? metadata.heading_path.filter((part): part is string => typeof part === "string")
-        : null;
-      actions.push({
-        agent_id: agentId,
-        agent_display_name: displayName,
-        method: action.method,
-        ts: action.ts,
-        doc_path: typeof metadata.doc_path === "string" ? metadata.doc_path : null,
-        heading_path: headingPath,
-      });
-    }
+  await forEachFlushedSession((session) => {
+    collectPulseActionsFromSession(session, sinceMs, actions);
+  });
+  for (const session of activityLog.snapshotInFlight()) {
+    collectPulseActionsFromSession(session, sinceMs, actions);
   }
 
   actions.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));

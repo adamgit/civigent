@@ -7,7 +7,6 @@ import { ProposalDetailPage } from "../pages/ProposalDetailPage";
 import { AdminPage } from "../pages/AdminPage";
 import { AgentKeysPage } from "../pages/AgentKeysPage";
 import { PermissionsPage } from "../pages/PermissionsPage";
-import { AgentSimulatorPage } from "../pages/AgentSimulatorPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { SharePage } from "../pages/SharePage";
 import { LoginPage } from "../pages/LoginPage";
@@ -50,7 +49,6 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/content-integrity", element: <ContentIntegrityPage /> },
       { path: "admin/git-backup", element: <GitBackupPage /> },
       { path: "history", element: <GitHistoryPage /> },
-      { path: "agent-simulator", element: <AgentSimulatorPage /> },
       { path: "coordination", element: <CoordinationPage /> },
       { path: "setup", element: <SetupPage /> },
       { path: "features", element: <FeaturesPage /> },

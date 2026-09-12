@@ -1,27 +1,23 @@
-import type { ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { useCurrentUser } from "../../contexts/CurrentUserContext";
-import type { LoginProvider } from "../../types/shared.js";
+import type { HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import { HomeAdminBadge } from "./HomeAdminBadge";
 import { HomeAuthModeBadge } from "./HomeAuthModeBadge";
+import { HomeInvolvementBadge } from "./HomeInvolvementBadge";
 
 interface HomeAuthPillsProps {
   mode: LoginProvider | null;
-  children?: ReactNode;
+  involvementPreset?: HumanInvolvementPresetName | null;
 }
 
-export function HomeAuthPills({ mode, children }: HomeAuthPillsProps) {
+export function HomeAuthPills({ mode, involvementPreset }: HomeAuthPillsProps) {
   const currentUser = useCurrentUser();
   const showAdmin = currentUser?.is_admin === true;
-  if (!mode && !showAdmin && !children) return null;
+  if (!mode && !showAdmin && !involvementPreset) return null;
   return (
     <div className="home-auth-pills">
       <HomeAuthModeBadge mode={mode} />
-      {showAdmin ? (
-        <Link to="/admin" className="home-auth-badge home-auth-badge--admin">
-          Admin
-        </Link>
-      ) : null}
-      {children}
+      {showAdmin ? <HomeAdminBadge displayName={currentUser.displayName} /> : null}
+      {involvementPreset ? <HomeInvolvementBadge preset={involvementPreset} /> : null}
     </div>
   );
 }

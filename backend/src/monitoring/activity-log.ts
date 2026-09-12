@@ -13,7 +13,9 @@
  *   The envelope includes agent identity, session timing, and aggregate stats.
  */
 
+import { createReadStream } from "node:fs";
 import { appendFile, mkdir, stat } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import path from "node:path";
 import { getMonitoringRoot } from "../storage/data-root.js";
 
@@ -75,6 +77,38 @@ export async function getActivityLogFileInfo(): Promise<ActivityLogFileInfo> {
         exists: false,
       };
     }
+    throw error;
+  }
+}
+
+export async function forEachFlushedSession(
+  onSession: (session: SessionRecord) => void,
+): Promise<void> {
+  const rl = createInterface({
+    input: createReadStream(getActivityLogPath(), "utf-8"),
+    crlfDelay: Infinity,
+  });
+  try {
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        !Array.isArray((parsed as { actions?: unknown }).actions)
+      ) {
+        continue;
+      }
+      onSession(parsed as SessionRecord);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
 }

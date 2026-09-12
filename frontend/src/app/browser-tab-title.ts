@@ -75,9 +75,6 @@ function titleForSpecialRoute(pathname: string): string {
   if (pathname === "/history") {
     return "Git History";
   }
-  if (pathname === "/agent-simulator") {
-    return "Agent Simulator";
-  }
   if (pathname === "/coordination") {
     return "Coordination";
   }

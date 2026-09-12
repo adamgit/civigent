@@ -38,11 +38,6 @@ vi.mock("../../pages/ProposalDetailPage", () => ({
 vi.mock("../../pages/AdminPage", () => ({
   AdminPage: () => <div data-testid="admin-page">AdminPage</div>,
 }));
-vi.mock("../../pages/AgentSimulatorPage", () => ({
-  AgentSimulatorPage: () => (
-    <div data-testid="agent-simulator-page">AgentSimulatorPage</div>
-  ),
-}));
 vi.mock("../../pages/CoordinationPage", () => ({
   CoordinationPage: () => (
     <div data-testid="coordination-page">CoordinationPage</div>
@@ -133,15 +128,6 @@ function buildRoutes() {
           },
         },
         {
-          path: "agent-simulator",
-          lazy: async () => {
-            const { AgentSimulatorPage } = await import(
-              "../../pages/AgentSimulatorPage"
-            );
-            return { element: <AgentSimulatorPage /> };
-          },
-        },
-        {
           path: "coordination",
           lazy: async () => {
             const { CoordinationPage } = await import(
@@ -224,13 +210,6 @@ describe("Route resolution", () => {
     renderRoute("/coordination");
     expect(
       await screen.findByTestId("coordination-page"),
-    ).toBeDefined();
-  });
-
-  it("/agent-simulator renders AgentSimulatorPage", async () => {
-    renderRoute("/agent-simulator");
-    expect(
-      await screen.findByTestId("agent-simulator-page"),
     ).toBeDefined();
   });
 

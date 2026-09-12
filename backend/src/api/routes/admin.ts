@@ -45,6 +45,7 @@ import {
   readAgentActivityLogFileInfo,
   getHeatmap,
   getRuntimeMemory,
+  getHomeRuntimeMemory,
   listAdminProposals,
   readAdminProposal,
   forceCancelProposal,
@@ -80,6 +81,16 @@ export function registerAdminRoutes(
       const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 500);
       const days = Math.max(Number(req.query.days ?? 30), 1);
       res.json(await getActivity(limit, days));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ─── Runtime memory (home widget, not admin-gated) ────
+  router.get("/runtime-memory", async (req, res, next) => {
+    try {
+      if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
+      res.json(getHomeRuntimeMemory());
     } catch (error) {
       next(error);
     }

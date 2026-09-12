@@ -1,5 +1,3 @@
-import { Link } from "react-router-dom";
-import { INVOLVEMENT_PRESET_UI } from "../../../involvement-preset-ui";
 import type { HumanInvolvementPresetName, LoginProvider } from "../../../types/shared.js";
 import { splitHomeHost } from "../../../pages/home/home-title";
 import { formatHomeCount } from "../../../pages/home/home-utils";
@@ -25,7 +23,6 @@ export function SiteMasthead({
   authMode,
 }: SiteMastheadProps) {
   const { subdomain, rest } = splitHomeHost(hostLabel);
-  const wait = involvementPreset ? INVOLVEMENT_PRESET_UI[involvementPreset] : null;
 
   return (
     <div className="masthead-top">
@@ -34,19 +31,7 @@ export function SiteMasthead({
           {subdomain ? <span className="masthead-title__subdomain">{subdomain}.</span> : null}
           {rest}
         </h1>
-        <HomeAuthPills mode={authMode}>
-          {wait ? (
-            <Link
-              to="/admin"
-              className="masthead-wait-link"
-              title={wait.shortDescription}
-              style={{ color: wait.color }}
-            >
-              - <span className="masthead-wait-link__label">{wait.label}</span>
-              <span className="masthead-wait-link__desc">AI waits for humans</span>
-            </Link>
-          ) : null}
-        </HomeAuthPills>
+        <HomeAuthPills mode={authMode} involvementPreset={involvementPreset} />
       </div>
 
       <dl className="masthead-stats">

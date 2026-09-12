@@ -10,13 +10,16 @@
 import { readFileSync } from "node:fs";
 import type {
   GetAdminRuntimeMemoryResponse,
+  GetRuntimeMemoryResponse,
   RuntimeMemoryHighWaterMark,
   RuntimeMemoryProcess,
+  RuntimeMemoryRssSample,
   RuntimeMemorySample,
 } from "../types/shared.js";
 
 export const SAMPLE_INTERVAL_MS = 5000;
 export const MAX_SAMPLES = 100;
+export const HOME_MEMORY_WIDGET_WINDOW_MS = 100_000;
 
 const CGROUP_MEMORY_CURRENT_PATH = "/sys/fs/cgroup/memory.current";
 const CGROUP_PROCS_PATH = "/sys/fs/cgroup/cgroup.procs";
@@ -200,6 +203,27 @@ export function getRuntimeMemoryStats(): GetAdminRuntimeMemoryResponse {
     current,
     high_water_mark: { ...highWaterMark },
     cgroup_processes: readCgroupProcesses(),
+    samples,
+  };
+}
+
+/**
+ * Compact RSS-only window for the home page memory widget: the last
+ * {@link HOME_MEMORY_WIDGET_WINDOW_MS} of `process_rss_bytes` samples, with no
+ * heap/container/high-water/cgroup data.
+ */
+export function getRuntimeMemoryRssWindow(): GetRuntimeMemoryResponse {
+  const cutoffMs = Date.now() - HOME_MEMORY_WIDGET_WINDOW_MS;
+  const samples: RuntimeMemoryRssSample[] = samplesInChronologicalOrder()
+    .filter((sample) => sample.timestamp_ms >= cutoffMs)
+    .map((sample) => ({
+      timestamp_ms: sample.timestamp_ms,
+      process_rss_bytes: sample.process_rss_bytes,
+    }));
+  const current = samples.length > 0 ? samples[samples.length - 1] : null;
+  return {
+    sample_interval_ms: SAMPLE_INTERVAL_MS,
+    current,
     samples,
   };
 }

@@ -1,14 +1,10 @@
-import { useMemo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ActivityItem, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
 import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
-import { HomeCarousel, type HomeCarouselSlide } from "../../components/home/HomeCarousel";
-import { HomeFocusBrowseSlide } from "../../components/home/HomeFocusBrowseSlide";
+import { HomeMemoryWidget } from "../../components/home/HomeMemoryWidget";
 import { HomeSearchBar } from "../../components/home/HomeSearchBar";
-import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
-import { HomeFolderIconsSlide } from "../../components/home/HomeFolderIconsSlide";
-import { HomeSkillsSlide } from "../../components/home/HomeSkillsSlide";
 import { BrowseRootButton } from "../../components/home/wide/BrowseRootButton";
 import { HomeWideActiveFolders } from "../../components/home/wide/HomeWideActiveFolders";
 import { HomeWideAgentPulse } from "../../components/home/wide/HomeWideAgentPulse";
@@ -35,8 +31,6 @@ interface HomeWideLayoutProps {
   alerts: ReactNode;
   singleUser: boolean;
   authMode: LoginProvider | null;
-  sidebarAutoHide: boolean;
-  setSidebarAutoHide: (autoHide: boolean) => void;
   mcpActions: HomeMcpPulseAction[];
   pulseActivity: ActivityItem[];
   agentTasks: HomeAgentTask[];
@@ -61,46 +55,11 @@ export function HomeWideLayout({
   alerts,
   singleUser,
   authMode,
-  sidebarAutoHide,
-  setSidebarAutoHide,
   mcpActions,
   pulseActivity,
   agentTasks,
   pulseError,
 }: HomeWideLayoutProps) {
-  const slides = useMemo<HomeCarouselSlide[]>(() => {
-    const items: HomeCarouselSlide[] = [
-      {
-        id: "layout",
-        title: "Focus or Browse",
-        content: (
-          <HomeFocusBrowseSlide
-            sidebarAutoHide={sidebarAutoHide}
-            setSidebarAutoHide={setSidebarAutoHide}
-          />
-        ),
-      },
-    ];
-    if (singleUser) {
-      items.push({
-        id: "single-user",
-        title: "Single-user mode",
-        content: <HomeSingleUserSlide hideHeading />,
-      });
-    }
-    items.push({
-      id: "folder-icons",
-      title: "How folder icons work",
-      content: <HomeFolderIconsSlide />,
-    });
-    items.push({
-      id: "skills",
-      title: "Turn a folder into agent skills",
-      content: <HomeSkillsSlide />,
-    });
-    return items;
-  }, [singleUser, sidebarAutoHide, setSidebarAutoHide]);
-
   return (
     <div className="home-wide" data-home-layout="wide">
       <div className="home-wide__body sidebar-scroll">
@@ -123,7 +82,7 @@ export function HomeWideLayout({
                   <HomeSearchBar />
                   <BrowseRootButton documentCount={documentCount} folderCount={folderCount} />
                 </div>
-                <HomeCarousel slides={slides} />
+                <HomeMemoryWidget />
               </div>
             </header>
 

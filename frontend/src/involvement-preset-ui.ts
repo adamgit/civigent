@@ -1,5 +1,12 @@
 import type { HumanInvolvementPresetName } from "./types/shared.js";
 
+export const INVOLVEMENT_PRESET_ORDER: readonly HumanInvolvementPresetName[] = [
+  "yolo",
+  "aggressive",
+  "eager",
+  "conservative",
+];
+
 /** Short copy + label shared by Admin and Home (long copy lives in HUMAN_INVOLVEMENT_PRESETS). */
 export const INVOLVEMENT_PRESET_UI: Record<
   HumanInvolvementPresetName,

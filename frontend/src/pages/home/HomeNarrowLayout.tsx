@@ -4,7 +4,6 @@ import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeAgentActivityRowModel } from "./home-agent-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
 import { HomeHeader } from "../../components/home/HomeHeader";
-import { HomeInvolvementWaitLine } from "../../components/home/HomeInvolvementWaitLine";
 import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
 import { HomeDocsSearchRow } from "../../components/home/HomeDocsSearchRow";
 import { HomeActiveFoldersSection } from "../../components/home/HomeActiveFoldersSection";
@@ -46,10 +45,12 @@ export function HomeNarrowLayout({
     <div className="home-narrow" data-home-layout="narrow">
       <div className="home-narrow__chrome">
         <div className="home-narrow__chrome-inner">
-          <HomeHeader title={title} hostLabel={hostLabel} authMode={authMode} />
-          {involvementPreset ? (
-            <HomeInvolvementWaitLine preset={involvementPreset} layoutMode="narrow" />
-          ) : null}
+          <HomeHeader
+            title={title}
+            hostLabel={hostLabel}
+            authMode={authMode}
+            involvementPreset={involvementPreset}
+          />
         </div>
       </div>
       <div className="home-narrow__body sidebar-scroll">

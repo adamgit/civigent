@@ -33,6 +33,8 @@ export type {
   RuntimeMemoryHighWaterMark,
   RuntimeMemoryProcess,
   GetAdminRuntimeMemoryResponse,
+  RuntimeMemoryRssSample,
+  GetRuntimeMemoryResponse,
   ContentIntegrityFailure,
   RunAdminContentIntegrityScanResponse,
   GitBackupAuthMode,
