@@ -13,11 +13,12 @@ import { HomeWideLayout } from "./home/HomeWideLayout";
 import {
   HOME_ACTIVITY_FETCH_DAYS,
   HOME_ACTIVITY_FETCH_LIMIT,
-  HOME_FOLDER_WINDOW_DEFAULT,
   HOME_RECENT_WINDOW_DAYS,
   homeFolderWindowDays,
   homeRecentWindowDays,
+  readHomeFolderWindow,
   readHomeRecentWindow,
+  writeHomeFolderWindow,
   writeHomeRecentWindow,
   type HomeFolderWindowId,
   type HomeRecentWindowId,
@@ -65,7 +66,7 @@ export function HomePage() {
   const [activityError, setActivityError] = useState<string | null>(null);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [recentWindowId, setRecentWindowId] = useState<HomeRecentWindowId>(readHomeRecentWindow);
-  const [folderWindowId, setFolderWindowId] = useState<HomeFolderWindowId>(HOME_FOLDER_WINDOW_DEFAULT);
+  const [folderWindowId, setFolderWindowId] = useState<HomeFolderWindowId>(readHomeFolderWindow);
   const [proposalsError, setProposalsError] = useState<string | null>(null);
   const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
   const [pulseError, setPulseError] = useState<string | null>(null);
@@ -409,7 +410,10 @@ export function HomePage() {
       agentCount={agents.length}
       lastChangeAt={lastChangeAt}
       folderWindowId={folderWindowId}
-      onFolderWindowChange={setFolderWindowId}
+      onFolderWindowChange={(id) => {
+        setFolderWindowId(id);
+        writeHomeFolderWindow(id);
+      }}
       recentWindowId={recentWindowId}
       onRecentWindowChange={(id) => {
         setRecentWindowId(id);

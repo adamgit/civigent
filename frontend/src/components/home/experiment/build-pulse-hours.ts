@@ -17,6 +17,32 @@ export const PULSE_RANGE_OPTIONS = [
 
 export type PulseRangeId = (typeof PULSE_RANGE_OPTIONS)[number]["id"];
 
+export const PULSE_RANGE_DEFAULT: PulseRangeId = "24h";
+export const HOME_PULSE_RANGE_STORAGE_KEY = "ks_home_pulse_range";
+
+export function parsePulseRangeId(value: string | null | undefined): PulseRangeId | null {
+  if (value == null) return null;
+  const match = PULSE_RANGE_OPTIONS.find((option) => option.id === value);
+  return match?.id ?? null;
+}
+
+export function readHomePulseRange(): PulseRangeId {
+  try {
+    return parsePulseRangeId(localStorage.getItem(HOME_PULSE_RANGE_STORAGE_KEY))
+      ?? PULSE_RANGE_DEFAULT;
+  } catch {
+    return PULSE_RANGE_DEFAULT;
+  }
+}
+
+export function writeHomePulseRange(id: PulseRangeId): void {
+  try {
+    localStorage.setItem(HOME_PULSE_RANGE_STORAGE_KEY, id);
+  } catch {
+    /* Ignore localStorage failures in constrained environments. */
+  }
+}
+
 const HOUR_MS = 60 * 60 * 1000;
 
 export function currentHourStartMs(nowMs: number): number {

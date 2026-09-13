@@ -7,6 +7,8 @@ export const HOME_RECENT_PAGE_SIZE_NARROW = 10;
 export const HOME_RECENT_PAGE_SIZE_WIDE = 24;
 /** Wide home folder and recent-document lists. Hide the pager at or below this. */
 export const HOME_WIDE_LIST_PAGE_SIZE = 10;
+/** Redesign active-folders list. */
+export const HOME_WIDE_FOLDER_PAGE_SIZE = 20;
 export const HOME_AGENT_ROW_LIMIT = 8;
 
 /**
@@ -44,6 +46,50 @@ export function homeFolderWindowDays(id: HomeFolderWindowId): number {
   return match?.days ?? HOME_RECENT_WINDOW_DAYS;
 }
 export const HOME_RECENT_WINDOW_STORAGE_KEY = "ks_home_recent_window";
+export const HOME_FOLDER_WINDOW_STORAGE_KEY = "ks_home_folder_window";
+export const HOME_RECENT_EXPANDED_STORAGE_KEY = "ks_home_recent_docs_expanded";
+
+export function parseHomeFolderWindowId(value: string | null | undefined): HomeFolderWindowId | null {
+  if (value == null) return null;
+  const match = HOME_FOLDER_WINDOW_OPTIONS.find((option) => option.id === value);
+  return match?.id ?? null;
+}
+
+export function readHomeFolderWindow(): HomeFolderWindowId {
+  try {
+    return parseHomeFolderWindowId(localStorage.getItem(HOME_FOLDER_WINDOW_STORAGE_KEY))
+      ?? HOME_FOLDER_WINDOW_DEFAULT;
+  } catch {
+    return HOME_FOLDER_WINDOW_DEFAULT;
+  }
+}
+
+export function writeHomeFolderWindow(id: HomeFolderWindowId): void {
+  try {
+    localStorage.setItem(HOME_FOLDER_WINDOW_STORAGE_KEY, id);
+  } catch {
+    /* Ignore localStorage failures in constrained environments. */
+  }
+}
+
+export function readHomeRecentExpanded(): boolean {
+  try {
+    const raw = localStorage.getItem(HOME_RECENT_EXPANDED_STORAGE_KEY);
+    if (raw === "0" || raw === "false") return false;
+    if (raw === "1" || raw === "true") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function writeHomeRecentExpanded(expanded: boolean): void {
+  try {
+    localStorage.setItem(HOME_RECENT_EXPANDED_STORAGE_KEY, expanded ? "1" : "0");
+  } catch {
+    /* Ignore localStorage failures in constrained environments. */
+  }
+}
 
 export function parseHomeRecentWindowId(value: string | null | undefined): HomeRecentWindowId | null {
   if (value == null) return null;

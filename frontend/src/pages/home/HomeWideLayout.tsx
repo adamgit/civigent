@@ -71,7 +71,7 @@ export function HomeWideLayout({
             />
 
             <div className="home-wide-main">
-              <HomeWidePreamble />
+              {/* <HomeWidePreamble /> */}
               <div className="home-wide-columns">
                 <HomeWideAgentPulse
                   actions={mcpActions}

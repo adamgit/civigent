@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   HOME_FOLDER_WINDOW_OPTIONS,
-  HOME_WIDE_LIST_PAGE_SIZE,
+  HOME_WIDE_FOLDER_PAGE_SIZE,
   type HomeFolderWindowId,
 } from "../../../pages/home/home-constants";
 import type { HomeActiveFolder } from "../../../pages/home/home-folder-activity";
@@ -34,15 +34,15 @@ export function HomeWideActiveFolders({
     setPage(0);
   }, [windowId]);
 
-  const pageCount = Math.max(1, Math.ceil(folders.length / HOME_WIDE_LIST_PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(folders.length / HOME_WIDE_FOLDER_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const slice = folders.slice(
-    safePage * HOME_WIDE_LIST_PAGE_SIZE,
-    safePage * HOME_WIDE_LIST_PAGE_SIZE + HOME_WIDE_LIST_PAGE_SIZE,
+    safePage * HOME_WIDE_FOLDER_PAGE_SIZE,
+    safePage * HOME_WIDE_FOLDER_PAGE_SIZE + HOME_WIDE_FOLDER_PAGE_SIZE,
   );
 
   return (
-    <section className="home-panel" aria-labelledby="active-folders-heading">
+    <section className="home-panel" data-home-active-folders aria-labelledby="active-folders-heading">
       <PanelHeader
         id="active-folders-heading"
         title="Active folders"
@@ -85,7 +85,7 @@ export function HomeWideActiveFolders({
         )}
         <HomeWidePager
           page={safePage}
-          pageSize={HOME_WIDE_LIST_PAGE_SIZE}
+          pageSize={HOME_WIDE_FOLDER_PAGE_SIZE}
           total={folders.length}
           setPage={setPage}
           label="Active folders pages"

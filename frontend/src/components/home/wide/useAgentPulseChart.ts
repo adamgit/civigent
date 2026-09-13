@@ -5,6 +5,8 @@ import {
   buildPulse1hBars,
   buildPulseDayBars,
   buildPulseHourBars,
+  readHomePulseRange,
+  writeHomePulseRange,
   type PulseRangeId,
 } from "../experiment/build-pulse-hours";
 import type { HomeAgentTask, HomeMcpPulseAction } from "../experiment/types";
@@ -34,7 +36,7 @@ export function useAgentPulseChart(
   activity: readonly ActivityItem[],
   tasks: readonly HomeAgentTask[],
 ) {
-  const [range, setRange] = useState<PulseRangeId>("24h");
+  const [range, setRange] = useState<PulseRangeId>(readHomePulseRange);
   const [pickedBar, setPickedBar] = useState<number | null>(null);
   const [ignoreHoverAt, setIgnoreHoverAt] = useState<number | null>(null);
 
@@ -69,6 +71,7 @@ export function useAgentPulseChart(
     listTasks,
     setRange: (next: PulseRangeId) => {
       setRange(next);
+      writeHomePulseRange(next);
       setPickedBar(null);
       setIgnoreHoverAt(null);
     },

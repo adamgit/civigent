@@ -1229,6 +1229,7 @@ a.home-auth-badge {
   z-index: 40;
   width: 22rem;
   max-width: calc(100vw - 16px);
+
   max-height: min(70vh, 28rem);
   overflow-y: auto;
   padding: 12px 14px 13px;
@@ -1236,6 +1237,28 @@ a.home-auth-badge {
   border: 1px solid var(--color-folder-card-border);
   background: var(--color-folder-card-bg);
   box-shadow: 0 10px 28px color-mix(in srgb, #1a1612 18%, transparent);
+}
+
+.home-pulse-pane--folder {
+  width: 33rem;
+}
+
+.home-pulse-pane__folder-path {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--color-text-faint);
+}
+
+.home-pulse-pane__folder-name {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--color-folder-link);
+}
+
+.home-pulse-pane__folder-name + .home-pulse-pane__status {
+  margin-top: 6px;
 }
 
 .home-pulse-pane__agent {
@@ -1277,6 +1300,46 @@ a.home-auth-badge {
 
 .home-pulse-pane__heading--out {
   color: #7c3aed;
+}
+
+.home-pulse-pane__heading--add {
+  color: var(--color-status-green);
+}
+
+.home-pulse-pane__heading--mod {
+  color: var(--color-agent2);
+}
+
+.home-pulse-pane__heading--del {
+  color: var(--color-status-red);
+}
+
+.home-pulse-pane__doc {
+  color: var(--color-folder-link);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.home-pulse-pane__doc--deleted {
+  color: var(--color-text-faint);
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
+.home-pulse-pane__file-meta {
+  margin-top: 2px;
+  padding-left: 1.15em;
+  text-indent: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.home-pulse-pane__file-intent {
+  margin-top: 1px;
+  padding-left: 1.15em;
+  text-indent: 0;
+  font-size: 11px;
+  color: var(--color-text-faint);
 }
 
 .home-pulse-pane__files {
@@ -1943,7 +2006,7 @@ a.home-auth-badge {
   display: flex;
   align-items: baseline;
   gap: 11px;
-  padding: 15px 20px 9px;
+  padding: 9px 20px 9px;
 }
 .panel-header__title {
   margin: 0;
@@ -1996,6 +2059,7 @@ a.home-auth-badge {
 }
 
 .folder-row {
+  --folder-row-name-indent: calc(17px * 1.35 + 8px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -2020,6 +2084,7 @@ a.home-auth-badge {
   width: 1.35em;
   height: 1.35em;
   flex-shrink: 0;
+  align-self: center;
   color: var(--color-folder-link);
 }
 .folder-row__main {
@@ -2027,8 +2092,10 @@ a.home-auth-badge {
 }
 .folder-row__name {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-wrap: wrap-reverse;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
   min-width: 0;
   font-size: 17px;
   font-weight: 600;
@@ -2041,12 +2108,17 @@ a.home-auth-badge {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.folder-row__name:has(.folder-row__path) .folder-row__name-text {
+  overflow: visible;
+  text-overflow: clip;
+}
 .folder-row__meta {
   display: flex;
   align-items: center;
   gap: 5px;
   margin-top: 2px;
-  padding-left: calc(1.35em + 8px);
+  padding-left: var(--folder-row-name-indent);
   min-width: 0;
   font-size: 11.5px;
   color: var(--color-text-faint);
@@ -2217,19 +2289,45 @@ a.home-auth-badge {
 
 /* ===== WIDE HOME REDESIGN (classic layout: HomeWideLayoutClassic) ===== */
 
+.home-wide[data-home-wide="redesign"] {
+  /* Definite viewport height. Ancestors are only min-h-dvh (content can grow
+     the page), so flex:1 + overflow on the rail never created a scrollport. */
+  height: 100svh;
+  max-height: 100svh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .home-wide[data-home-wide="redesign"] .home-wide__body {
-  padding: 1.35rem 2.25rem 3rem;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 1.35rem 2.25rem 1.35rem;
+}
+
+.home-wide[data-home-wide="redesign"] .home-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .home-wide[data-home-wide="redesign"] .home-frame {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
   gap: 2.5rem;
 }
 
 .home-wide-main {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   gap: 0.75rem;
 }
 
@@ -2293,6 +2391,7 @@ a.home-auth-badge {
 .home-wide-head {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   align-items: stretch;
   gap: 12px;
 }
@@ -2441,12 +2540,24 @@ a.home-auth-badge {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 2.75rem 3.5rem;
+  gap: 2.75rem 1.75rem;
+}
+
+.home-wide[data-home-wide="redesign"] .home-wide-columns {
+  flex: 1;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  min-height: 0;
 }
 
 .home-wide-columns > .agent-panel {
   flex: 1 1 28rem;
   min-width: min(28rem, 100%);
+}
+
+.home-wide[data-home-wide="redesign"] .home-wide-columns > .agent-panel {
+  min-width: 0;
+  min-height: 0;
 }
 
 .home-wide-rail {
@@ -2457,12 +2568,48 @@ a.home-auth-badge {
   min-width: min(32rem, 100%);
 }
 
+.home-wide[data-home-wide="redesign"] .home-wide-rail {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .home-wide[data-home-wide="redesign"] .home-wide-rail > .home-panel {
   border: 1px solid var(--color-folder-card-border);
 }
 
 .home-recent-compact {
+  flex-shrink: 0;
   background: var(--color-canvas-bg);
+}
+
+.home-recent-compact__toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.home-recent-compact__toggle .panel-header__title {
+  margin: 0;
+}
+
+.home-recent-compact__chevron {
+  font-size: 24px;
+  line-height: 1;
+  color: var(--color-text-faint);
+}
+
+.home-recent-compact--collapsed .panel-header {
+  padding-bottom: 15px;
 }
 
 .home-recent-compact .home-recent__empty {
@@ -2536,15 +2683,15 @@ a.home-auth-badge {
   color: var(--color-text-muted);
 }
 
-.folder-row__path {
-  display: block;
-  margin-bottom: 2px;
-  padding-left: calc(1.35em + 8px);
-  font-size: 11px;
-  line-height: 1.2;
-  color: var(--color-text-faint);
+.folder-row__main:has(.folder-row__path) {
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.folder-row__path {
+  margin-inline-start: 4px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--color-text-faint);
   white-space: nowrap;
 }
 

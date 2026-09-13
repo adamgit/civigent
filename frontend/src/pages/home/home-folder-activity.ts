@@ -2,7 +2,7 @@ import type { ActivityItem, WriterType } from "../../types/shared.js";
 import { DocPath, FolderPath } from "../../types/shared.js";
 import { HOME_RECENT_WINDOW_DAYS } from "./home-constants.js";
 import { collectExistingDocPaths, countFilesInFolder, findFolderEntry, parentFolderOfDoc } from "./home-tree-stats.js";
-import { getDocDisplayName } from "../document-page-utils.js";
+import { getDocDisplayName, headingText } from "../document-page-utils.js";
 import type { DocumentTreeEntry } from "../../types/shared.js";
 import { activityItemInWindow, rangeOverlapsWindow } from "./home-time.js";
 
@@ -12,6 +12,19 @@ export interface HomeFolderChangeCounts {
   deleted: number;
 }
 
+export type HomeFolderDocChangeKind = "added" | "modified" | "deleted";
+
+export interface HomeFolderChangedDocument {
+  path: string;
+  title: string;
+  kinds: HomeFolderDocChangeKind[];
+  lastChangedAt: string;
+  lastWriterName: string;
+  writers: string[];
+  sections: string[];
+  lastIntent?: string;
+}
+
 export interface HomeActiveFolder {
   folderPath: FolderPath;
   name: string;
@@ -19,10 +32,18 @@ export interface HomeActiveFolder {
   counts: HomeFolderChangeCounts;
   lastChangedAt: string;
   writerKind: WriterType;
-  /** Display names of documents that changed in the window, most recent first. */
-  changedDocuments: string[];
+  /** Documents that changed in the window, most recent first. */
+  changedDocuments: HomeFolderChangedDocument[];
   /** Tree used by the folder-details radial graphic; unique per folder. */
   tree: DocumentTreeEntry | null;
+}
+
+interface DocTouchAgg {
+  lastChangedAt: string;
+  lastWriterName: string;
+  writers: Set<string>;
+  sections: string[];
+  lastIntent?: string;
 }
 
 function pointInWindow(iso: string, windowStartMs: number, windowEndMs: number): boolean {
@@ -34,10 +55,72 @@ function displayNameForDoc(docPath: string): string {
   return parsed ? getDocDisplayName(parsed) : docPath;
 }
 
-function changedDocumentNames(docTouched: Map<string, string>): string[] {
-  return [...docTouched.entries()]
-    .sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
-    .map(([path]) => displayNameForDoc(path));
+function sectionLabel(headingPath: string[]): string | null {
+  if (headingPath.length === 0) return null;
+  const text = headingText(headingPath);
+  return text.length > 0 ? text : null;
+}
+
+function recordDocTouch(
+  docs: Map<string, DocTouchAgg>,
+  docPath: string,
+  iso: string,
+  writerName: string,
+  intent: string | undefined,
+  headingPath?: string[],
+): void {
+  let agg = docs.get(docPath);
+  if (!agg) {
+    agg = {
+      lastChangedAt: iso,
+      lastWriterName: writerName,
+      writers: new Set([writerName]),
+      sections: [],
+      lastIntent: intent,
+    };
+    docs.set(docPath, agg);
+  } else {
+    agg.writers.add(writerName);
+    if (Date.parse(iso) >= Date.parse(agg.lastChangedAt)) {
+      agg.lastChangedAt = iso;
+      agg.lastWriterName = writerName;
+      if (intent) agg.lastIntent = intent;
+    } else if (intent && !agg.lastIntent) {
+      agg.lastIntent = intent;
+    }
+  }
+  if (!headingPath) return;
+  const label = sectionLabel(headingPath);
+  if (label && !agg.sections.includes(label)) agg.sections.push(label);
+}
+
+function toChangedDocuments(
+  added: Set<string>,
+  modified: Set<string>,
+  deleted: Set<string>,
+  docs: Map<string, DocTouchAgg>,
+): HomeFolderChangedDocument[] {
+  const paths = new Set([...added, ...modified, ...deleted]);
+  const items: HomeFolderChangedDocument[] = [];
+  for (const path of paths) {
+    const kinds: HomeFolderDocChangeKind[] = [];
+    if (added.has(path)) kinds.push("added");
+    if (modified.has(path)) kinds.push("modified");
+    if (deleted.has(path)) kinds.push("deleted");
+    const agg = docs.get(path);
+    items.push({
+      path,
+      title: displayNameForDoc(path),
+      kinds,
+      lastChangedAt: agg?.lastChangedAt ?? "",
+      lastWriterName: agg?.lastWriterName ?? "",
+      writers: agg ? [...agg.writers] : [],
+      sections: agg?.sections ?? [],
+      lastIntent: agg?.lastIntent,
+    });
+  }
+  items.sort((a, b) => Date.parse(b.lastChangedAt) - Date.parse(a.lastChangedAt));
+  return items;
 }
 
 /**
@@ -67,7 +150,7 @@ export function buildActiveFolders(
       modified: Set<string>;
       deleted: Set<string>;
       lastChangedAt: string;
-      docTouched: Map<string, string>;
+      docs: Map<string, DocTouchAgg>;
     }
   >();
 
@@ -82,19 +165,12 @@ export function buildActiveFolders(
         modified: new Set(),
         deleted: new Set(),
         lastChangedAt: iso,
-        docTouched: new Map(),
+        docs: new Map(),
       };
       byFolderKind.set(key, row);
     } else if (Date.parse(iso) > Date.parse(row.lastChangedAt)) {
       row.lastChangedAt = iso;
     }
-    return row;
-  };
-
-  const touchDoc = (folderPath: FolderPath, writerKind: WriterType, iso: string, docPath: string) => {
-    const row = touch(folderPath, writerKind, iso);
-    const prev = row.docTouched.get(docPath);
-    if (!prev || Date.parse(iso) > Date.parse(prev)) row.docTouched.set(docPath, iso);
     return row;
   };
 
@@ -105,7 +181,16 @@ export function buildActiveFolders(
       if (!existingDocs.has(section.doc_path)) continue;
       const folder = parentFolderOfDoc(section.doc_path);
       if (!folder) continue;
-      touchDoc(folder, item.writer_type, item.timestamp, section.doc_path).modified.add(section.doc_path);
+      const row = touch(folder, item.writer_type, item.timestamp);
+      recordDocTouch(
+        row.docs,
+        section.doc_path,
+        item.timestamp,
+        item.writer_display_name,
+        item.intent,
+        section.heading_path,
+      );
+      row.modified.add(section.doc_path);
     }
   }
 
@@ -114,7 +199,8 @@ export function buildActiveFolders(
     for (const docPath of item.document_paths) {
       const folder = parentFolderOfDoc(docPath);
       if (!folder) continue;
-      const row = touchDoc(folder, item.writer_type, item.landed_at, docPath);
+      const row = touch(folder, item.writer_type, item.landed_at);
+      recordDocTouch(row.docs, docPath, item.landed_at, item.writer_display_name, item.intent);
       if (existingDocs.has(docPath)) row.added.add(docPath);
       else row.deleted.add(docPath);
     }
@@ -130,7 +216,7 @@ export function buildActiveFolders(
       counts: { added: row.added.size, modified: row.modified.size, deleted: row.deleted.size },
       lastChangedAt: row.lastChangedAt,
       writerKind: row.writerKind,
-      changedDocuments: changedDocumentNames(row.docTouched),
+      changedDocuments: toChangedDocuments(row.added, row.modified, row.deleted, row.docs),
       tree: findFolderEntry(entries, row.folderPath),
     });
   }
@@ -150,14 +236,11 @@ export function buildAllDocsFolder(
   const added = new Set<string>();
   const modified = new Set<string>();
   const deleted = new Set<string>();
-  const docTouched = new Map<string, string>();
+  const docs = new Map<string, DocTouchAgg>();
   let lastChangedAt = "";
 
-  const touchTime = (iso: string, docPath?: string) => {
+  const touchTime = (iso: string) => {
     if (!lastChangedAt || Date.parse(iso) > Date.parse(lastChangedAt)) lastChangedAt = iso;
-    if (!docPath) return;
-    const prev = docTouched.get(docPath);
-    if (!prev || Date.parse(iso) > Date.parse(prev)) docTouched.set(docPath, iso);
   };
 
   const windowStartMs = nowMs - windowDays * 24 * 60 * 60 * 1000;
@@ -166,7 +249,15 @@ export function buildAllDocsFolder(
     for (const section of item.sections) {
       if (!existingDocs.has(section.doc_path)) continue;
       modified.add(section.doc_path);
-      touchTime(item.timestamp, section.doc_path);
+      touchTime(item.timestamp);
+      recordDocTouch(
+        docs,
+        section.doc_path,
+        item.timestamp,
+        item.writer_display_name,
+        item.intent,
+        section.heading_path,
+      );
     }
   }
 
@@ -175,7 +266,8 @@ export function buildAllDocsFolder(
     for (const docPath of item.document_paths) {
       if (existingDocs.has(docPath)) added.add(docPath);
       else deleted.add(docPath);
-      touchTime(item.landed_at, docPath);
+      touchTime(item.landed_at);
+      recordDocTouch(docs, docPath, item.landed_at, item.writer_display_name, item.intent);
     }
   }
 
@@ -186,7 +278,7 @@ export function buildAllDocsFolder(
     counts: { added: added.size, modified: modified.size, deleted: deleted.size },
     lastChangedAt: lastChangedAt || new Date(nowMs).toISOString(),
     writerKind: "human",
-    changedDocuments: changedDocumentNames(docTouched),
+    changedDocuments: toChangedDocuments(added, modified, deleted, docs),
     tree: findFolderEntry(entries, FolderPath.root),
   };
 }
