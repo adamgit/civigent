@@ -2107,30 +2107,33 @@ export interface GetRuntimeMemoryResponse {
 // User-triggered, in-memory cohort analysis of flushed agent MCP sittings.
 // Nothing here is retained server-side after the response is sent.
 
-export type WorkflowRunMultiplicity = "1" | "2+";
+export type McpLogWriteOutcomeKind =
+  | "wrote_sections_published"
+  | "structural_only_published"
+  | "withdrew"
+  | "never_closed";
 
-export interface WorkflowPatternSlot {
-  method: string;
-  multiplicity: WorkflowRunMultiplicity;
-}
-
-export interface WorkflowSlotNCount {
-  method: string;
-  n: number;
-  sittings: number;
-}
-
-export interface CountBucket {
-  label: string;
+export interface McpLogWriteOutcome {
+  kind: McpLogWriteOutcomeKind;
   count: number;
 }
 
-export interface McpLogWorkflowCohort {
-  slots: WorkflowPatternSlot[];
-  instance_count: number;
-  total_errors: number;
-  errors_per_sitting: CountBucket[];
-  slot_ns: WorkflowSlotNCount[];
+export type McpLogReadPatternKind =
+  | "read_section"
+  | "read_whole_document"
+  | "listed_documents_then_read_whole"
+  | "listed_sections_then_read_section"
+  | "searched_then_read_whole"
+  | "searched_then_read_section";
+
+export interface McpLogReadPattern {
+  kind: McpLogReadPatternKind;
+  count: number;
+}
+
+export interface McpLogOneToolSession {
+  method: string;
+  session_count: number;
 }
 
 export type McpLogErrorOutcome = "recovered" | "unresolved" | "abandoned";
@@ -2181,17 +2184,6 @@ export interface McpLogToolCount {
   agents: McpLogAgentRef[];
 }
 
-export interface McpLogSingleCallSitting {
-  method: string;
-  sitting_count: number;
-}
-
-export interface McpLogBigram {
-  from: string;
-  to: string;
-  count: number;
-}
-
 export interface AgentMcpLogFileInfo {
   path: string;
   size_bytes: number;
@@ -2199,11 +2191,11 @@ export interface AgentMcpLogFileInfo {
 }
 
 export interface RunAdminMcpLogAnalysisResponse {
-  sitting_count: number;
+  session_count: number;
   duration_ms: number;
-  fragments: McpLogWorkflowCohort[];
-  single_call_sittings: McpLogSingleCallSitting[];
-  bigrams: McpLogBigram[];
+  write_outcomes: McpLogWriteOutcome[];
+  read_patterns: McpLogReadPattern[];
+  one_tool_sessions: McpLogOneToolSession[];
   errors: McpLogErrorCohort[];
   arg_shapes: McpLogArgShapeCohort[];
   tool_counts: McpLogToolCount[];

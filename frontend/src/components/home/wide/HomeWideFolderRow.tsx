@@ -2,21 +2,23 @@ import { Link } from "react-router-dom";
 import { folderHref } from "../../../app/docs-location";
 import { FolderTreeRadialDots } from "../../folder-details/FolderTreeRadialDots";
 import type { HomeActiveFolder } from "../../../pages/home/home-folder-activity";
-import { formatHomeAge } from "../../../pages/home/home-utils";
+import { formatHomeAge, formatHomeFolderParentPath } from "../../../pages/home/home-utils";
 import { FolderChangeBars } from "../HomeActiveFolderCard";
 
 interface HomeWideFolderRowProps {
   folder: HomeActiveFolder;
   now?: Date;
+  showParentPath?: boolean;
 }
 
-export function HomeWideFolderRow({ folder, now }: HomeWideFolderRowProps) {
+export function HomeWideFolderRow({ folder, now, showParentPath = false }: HomeWideFolderRowProps) {
   const tree = folder.tree ?? {
     type: "directory" as const,
     name: folder.name,
     path: folder.folderPath,
     children: [],
   };
+  const parentPath = showParentPath ? formatHomeFolderParentPath(folder.folderPath) : null;
   return (
     <Link
       className={`folder-row${folder.writerKind === "agent" ? " folder-row--agent" : ""}`}
@@ -24,6 +26,7 @@ export function HomeWideFolderRow({ folder, now }: HomeWideFolderRowProps) {
       data-writer-kind={folder.writerKind}
     >
       <span className="folder-row__main">
+        {parentPath ? <span className="folder-row__path">{parentPath}</span> : null}
         <span className="folder-row__name font-body">
           <FolderTreeRadialDots entry={tree} className="folder-row__icon" />
           <span className="folder-row__name-text">{folder.name}</span>

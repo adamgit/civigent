@@ -76,7 +76,7 @@ function MemorySparkline({
   );
 }
 
-function HomeMemoryWidgetBody() {
+function HomeMemoryWidgetBody({ compact }: { compact: boolean }) {
   const [data, setData] = useState<GetRuntimeMemoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -108,30 +108,48 @@ function HomeMemoryWidgetBody() {
   }
 
   const { amount, unit } = formatRss(data?.current?.process_rss_bytes ?? null);
+  const reading = unit ? `${amount} ${unit}` : amount;
 
   return (
     <>
       <span className="home-memory-widget__reading">
-        <span className="home-memory-widget__amount">{amount}</span>
-        {unit ? <span className="home-memory-widget__unit">{unit}</span> : null}
+        {compact ? (
+          <span className="home-memory-widget__amount">{reading}</span>
+        ) : (
+          <>
+            <span className="home-memory-widget__amount">{amount}</span>
+            {unit ? <span className="home-memory-widget__unit">{unit}</span> : null}
+          </>
+        )}
       </span>
       <MemorySparkline samples={data?.samples ?? []} sampleIntervalMs={data?.sample_interval_ms} />
     </>
   );
 }
 
-export function HomeMemoryWidget() {
+interface HomeMemoryWidgetProps {
+  variant?: "card" | "inline";
+}
+
+export function HomeMemoryWidget({ variant = "card" }: HomeMemoryWidgetProps) {
   const currentUser = useCurrentUser();
+  const compact = variant === "inline";
+  const className = compact ? "home-memory-inline" : "home-card home-memory-widget";
+  const body = <HomeMemoryWidgetBody compact={compact} />;
   if (currentUser?.is_admin) {
     return (
-      <Link to="/admin/runtime-memory" className="home-card home-memory-widget" aria-label="Backend memory. Open runtime memory admin page.">
-        <HomeMemoryWidgetBody />
+      <Link
+        to="/admin/runtime-memory"
+        className={className}
+        aria-label="Backend memory. Open runtime memory admin page."
+      >
+        {body}
       </Link>
     );
   }
   return (
-    <div className="home-card home-memory-widget">
-      <HomeMemoryWidgetBody />
+    <div className={className} aria-label="Backend memory">
+      {body}
     </div>
   );
 }

@@ -3,13 +3,11 @@ import type { ActivityItem, HumanInvolvementPresetName, LoginProvider } from "..
 import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
 import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
-import { HomeMemoryWidget } from "../../components/home/HomeMemoryWidget";
-import { HomeSearchBar } from "../../components/home/HomeSearchBar";
-import { BrowseRootButton } from "../../components/home/wide/BrowseRootButton";
 import { HomeWideActiveFolders } from "../../components/home/wide/HomeWideActiveFolders";
 import { HomeWideAgentPulse } from "../../components/home/wide/HomeWideAgentPulse";
-import { HomeWideRecentDocuments } from "../../components/home/wide/HomeWideRecentDocuments";
-import { SiteMasthead } from "../../components/home/wide/SiteMasthead";
+import { HomeWideMasthead } from "../../components/home/wide/HomeWideMasthead";
+import { HomeWidePreamble } from "../../components/home/wide/HomeWidePreamble";
+import { HomeWideRecentDocumentsCompact } from "../../components/home/wide/HomeWideRecentDocumentsCompact";
 import type { HomeAgentTask, HomeMcpPulseAction } from "../../components/home/experiment/types";
 import "./home.css";
 
@@ -39,12 +37,10 @@ interface HomeWideLayoutProps {
 
 export function HomeWideLayout({
   hostLabel,
-  tagline,
   involvementPreset,
   documentCount,
   folderCount,
   agentCount,
-  lastChangeAt,
   folders,
   folderWindowId,
   onFolderWindowChange,
@@ -53,7 +49,6 @@ export function HomeWideLayout({
   recentWindowId,
   onRecentWindowChange,
   alerts,
-  singleUser,
   authMode,
   mcpActions,
   pulseActivity,
@@ -61,52 +56,45 @@ export function HomeWideLayout({
   pulseError,
 }: HomeWideLayoutProps) {
   return (
-    <div className="home-wide" data-home-layout="wide">
+    <div className="home-wide" data-home-layout="wide" data-home-wide="redesign">
       <div className="home-wide__body sidebar-scroll">
         <div className="home-page">
           {alerts}
           <div className="home-frame">
-            <header className="home-welcome">
-              <SiteMasthead
-                hostLabel={hostLabel}
-                tagline={tagline}
-                documentCount={documentCount}
-                folderCount={folderCount}
-                agentCount={agentCount}
-                lastChangeAt={lastChangeAt}
-                involvementPreset={involvementPreset}
-                authMode={authMode}
-              />
-              <div className="home-welcome__actions">
-                <div className="home-welcome__pair">
-                  <HomeSearchBar />
-                  <BrowseRootButton documentCount={documentCount} folderCount={folderCount} />
+            <HomeWideMasthead
+              hostLabel={hostLabel}
+              documentCount={documentCount}
+              folderCount={folderCount}
+              agentCount={agentCount}
+              involvementPreset={involvementPreset}
+              authMode={authMode}
+            />
+
+            <div className="home-wide-main">
+              <HomeWidePreamble />
+              <div className="home-wide-columns">
+                <HomeWideAgentPulse
+                  actions={mcpActions}
+                  activity={pulseActivity}
+                  tasks={agentTasks}
+                  pulseError={pulseError}
+                />
+
+                <div className="home-wide-rail">
+                  <HomeWideRecentDocumentsCompact
+                    documents={recentDocuments}
+                    totalCount={recentDocumentTotal}
+                    windowId={recentWindowId}
+                    onWindowChange={onRecentWindowChange}
+                  />
+                  <HomeWideActiveFolders
+                    folders={folders}
+                    totalFolderCount={folderCount}
+                    windowId={folderWindowId}
+                    onWindowChange={onFolderWindowChange}
+                    showParentPath
+                  />
                 </div>
-                <HomeMemoryWidget />
-              </div>
-            </header>
-
-            <div className="home-wide-flow">
-              <HomeWideAgentPulse
-                actions={mcpActions}
-                activity={pulseActivity}
-                tasks={agentTasks}
-                pulseError={pulseError}
-              />
-
-              <div className="home-human-band">
-                <HomeWideActiveFolders
-                  folders={folders}
-                  totalFolderCount={folderCount}
-                  windowId={folderWindowId}
-                  onWindowChange={onFolderWindowChange}
-                />
-                <HomeWideRecentDocuments
-                  documents={recentDocuments}
-                  totalCount={recentDocumentTotal}
-                  windowId={recentWindowId}
-                  onWindowChange={onRecentWindowChange}
-                />
               </div>
             </div>
           </div>

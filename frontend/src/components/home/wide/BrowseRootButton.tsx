@@ -4,6 +4,7 @@ import { formatHomeCount } from "../../../pages/home/home-utils";
 interface BrowseRootButtonProps {
   documentCount: number;
   folderCount: number;
+  compact?: boolean;
 }
 
 function FolderGlyph() {
@@ -19,9 +20,20 @@ function FolderGlyph() {
   );
 }
 
-export function BrowseRootButton({ documentCount, folderCount }: BrowseRootButtonProps) {
+export function BrowseRootButton({ documentCount, folderCount, compact = false }: BrowseRootButtonProps) {
   const folders = `${formatHomeCount(folderCount)} folder${folderCount === 1 ? "" : "s"}`;
   const documents = `${formatHomeCount(documentCount)} document${documentCount === 1 ? "" : "s"}`;
+  if (compact) {
+    return (
+      <Link
+        to="/docs"
+        className="home-browse-compact font-body"
+        aria-label={`Open docs. ${documents}, ${folders}.`}
+      >
+        docs/
+      </Link>
+    );
+  }
   return (
     <Link to="/docs" className="home-card home-browse-root" aria-label={`Browse everything. ${documents}, ${folders}.`}>
       <FolderGlyph />

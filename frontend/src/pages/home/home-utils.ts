@@ -1,4 +1,13 @@
+import { FolderPath } from "../../types/shared.js";
+
 /** Formatting helpers shared by the wide homepage surfaces. */
+
+/** Parent path for a folder row, with a trailing slash except at root. */
+export function formatHomeFolderParentPath(folderPath: FolderPath): string | null {
+  if (folderPath === FolderPath.root) return null;
+  const parent = FolderPath.parentOf(folderPath);
+  return parent === FolderPath.root ? "/" : `${parent}/`;
+}
 
 export function formatHomeAge(date: Date, now: Date = new Date()): string {
   const minutes = Math.round((now.getTime() - date.getTime()) / 60_000);

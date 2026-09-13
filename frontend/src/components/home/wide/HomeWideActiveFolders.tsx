@@ -18,6 +18,7 @@ interface HomeWideActiveFoldersProps {
   windowId: HomeFolderWindowId;
   onWindowChange: (id: HomeFolderWindowId) => void;
   now?: Date;
+  showParentPath?: boolean;
 }
 
 export function HomeWideActiveFolders({
@@ -26,6 +27,7 @@ export function HomeWideActiveFolders({
   windowId,
   onWindowChange,
   now,
+  showParentPath = false,
 }: HomeWideActiveFoldersProps) {
   const [page, setPage] = useState(0);
   useEffect(() => {
@@ -77,6 +79,7 @@ export function HomeWideActiveFolders({
               key={`${folder.folderPath}\0${folder.writerKind}`}
               folder={folder}
               now={now}
+              showParentPath={showParentPath}
             />
           ))
         )}

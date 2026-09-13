@@ -8,6 +8,8 @@ import { type AgentRosterEntry, type ActivityItem, type AnyProposal, type HumanI
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
 import { HomeWideLayout } from "./home/HomeWideLayout";
+// Restore the previous wide home with:
+// import { HomeWideLayoutClassic as HomeWideLayout } from "./home/HomeWideLayoutClassic";
 import {
   HOME_ACTIVITY_FETCH_DAYS,
   HOME_ACTIVITY_FETCH_LIMIT,
