@@ -291,8 +291,12 @@ export function registerAdminRoutes(
 
       emitProposalWithdrawnEventsByDoc(onWsEvent, result.proposalId, result.targets);
       for (const [docPath, headingPaths] of groupSectionsByDocPath(result.sections)) {
-        await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
-        await refreshLiveSectionsState(docPath);
+        try {
+          await emitSectionBlockState(onWsEvent, docPath, headingPaths, "section:unblocked");
+          await refreshLiveSectionsState(docPath);
+        } catch {
+          // Force-cancel succeeded at withdraw. Live layout/unblock cannot fail it.
+        }
       }
 
       const response: WithdrawProposalResponse = {
