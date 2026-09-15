@@ -8,13 +8,14 @@ import {
 } from "../pages/home/home-constants";
 import { apiClient } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import type { ActivityItem, AgentRosterEntry, AnyProposal } from "../types/shared.js";
+import type { ActivityItem, AgentRead, AgentRosterEntry, AnyProposal } from "../types/shared.js";
 
 export function useAgentPulseFeeds() {
   const [agents, setAgents] = useState<readonly AgentRosterEntry[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
+  const [agentReads, setAgentReads] = useState<AgentRead[]>([]);
   const [pulseError, setPulseError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
@@ -118,17 +119,8 @@ export function useAgentPulseFeeds() {
     };
     wsClient.onEvent((event) => {
       if (event.type === "agent:reading") {
-        setMcpActions((prev) => [
-          ...prev,
-          {
-            agent_id: event.actor_id,
-            agent_display_name: event.actor_display_name,
-            method: "read_doc",
-            ts: new Date().toISOString(),
-            doc_path: event.doc_path,
-            heading_path: event.heading_paths[0] ?? null,
-          },
-        ]);
+        const { type: _type, ...read } = event;
+        setAgentReads((prev) => [...prev, read]);
         return;
       }
       if (
@@ -147,9 +139,9 @@ export function useAgentPulseFeeds() {
   }, [wsClient]);
 
   const agentTasks = useMemo(
-    () => buildAgentTasks(proposals, mcpActions, agents, activity),
-    [proposals, mcpActions, agents, activity],
+    () => buildAgentTasks(proposals, mcpActions, agentReads, agents, activity),
+    [proposals, mcpActions, agentReads, agents, activity],
   );
 
-  return { mcpActions, activity, agentTasks, pulseError, loading };
+  return { mcpActions, agentReads, activity, agentTasks, pulseError, loading };
 }

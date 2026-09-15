@@ -33,6 +33,7 @@ import {
   FolderPath,
   RoleName,
   type AclSnapshot,
+  type ShareTarget,
 } from "../types/shared.js";
 
 export type { AclSnapshot } from "../types/shared.js";
@@ -202,10 +203,28 @@ async function resolveDocPermissionRaw(docPath: string, action: AclAction): Prom
 }
 
 /**
+ * Whether a share target covers a document path: equality for a file share,
+ * equality-or-descendant for a folder share.
+ */
+function scopeTargetCoversDoc(target: ShareTarget, docPath: string): boolean {
+  if (target.kind === "file") return docPath === target.path;
+  return FolderPath.containsDoc(target.path, docPath);
+}
+
+/**
  * Check whether a writer has permission to perform an action on a document.
  *
- * Computes the user's effective roles (magic auto-granted + assigned from roles.json)
- * and checks if the required role for (docPath, action) is among them.
+ * A scoped (share-link) writer is checked against its grant's target FIRST —
+ * an out-of-scope path, or an action beyond the grant's own action, is
+ * rejected before ordinary ACL resolution (roles.json, defaults.json,
+ * acl.json) ever runs for them. A path inside the grant's scope then composes
+ * with ordinary ACL resolution exactly like any other writer: a share grant
+ * only ever narrows access, it never overrides a stricter per-path role
+ * requirement, and (per `getEffectiveRoles`) a scoped writer's effective roles
+ * are always just `public`/`authenticated` — never its roles.json assignments.
+ *
+ * An unscoped writer's effective roles (magic auto-granted + assigned from
+ * roles.json) are checked against the required role for (docPath, action).
  */
 export async function checkDocPermission(
   writer: AuthenticatedWriter | null,
@@ -214,8 +233,8 @@ export async function checkDocPermission(
 ): Promise<boolean> {
   const scope = writer?.scope;
   if (scope) {
-    if (docPath !== scope.docPath) return false;
-    return scope.action === "write" || action === "read";
+    if (!scopeTargetCoversDoc(scope, docPath)) return false;
+    if (scope.action !== "write" && action !== "read") return false;
   }
 
   const requiredRole = await resolveDocPermissionRaw(docPath, action);
@@ -237,6 +256,12 @@ async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<st
 
   roles.push(AUTHENTICATED);
 
+  // Share guests carry a generated per-session identity that never holds a
+  // roles.json assignment of its own — they are scoped by their grant alone
+  // (checkDocPermission already short-circuits scoped writers before this is
+  // reached; this is the defense-in-depth backstop for any other caller).
+  if (writer.scope) return roles;
+
   // In single_user and credentials modes, the env-configured user is always admin
   if ((isSingleUserMode() || isCredentialsMode()) && writer.id === getSingleUserId()) {
     roles.push(ADMIN);
@@ -246,6 +271,9 @@ async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<st
   const assignedRoles = cache.roles[writer.id];
   if (Array.isArray(assignedRoles)) {
     for (const r of assignedRoles) {
+      // Agents never appear in roles.json by design; even if one did, "admin" is
+      // a human-only capability and must never become effective for an agent.
+      if (writer.type === "agent" && r === ADMIN) continue;
       if (!roles.includes(r)) roles.push(r);
     }
   }

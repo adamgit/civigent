@@ -39,7 +39,10 @@ export function docPathOfChangedFile(changedFile: string): DocPath | null {
 /**
  * Unfiltered-log read scoped to the requester: a repo-wide history (writers,
  * messages, changed paths) must not leak documents the requester cannot read.
- * Keeps only commits touching at least one readable document.
+ * A commit entry discloses every document path it touched, so it is kept only
+ * when EVERY disclosed document is readable — one unreadable document changed
+ * by the same commit refuses the whole entry, it is not silently dropped from
+ * the disclosed set.
  */
 export async function getReadableGitLog(
   writer: AuthenticatedWriter | null,
@@ -55,14 +58,14 @@ export async function getReadableGitLog(
           .filter((candidate): candidate is DocPath => candidate !== null),
       ),
     ];
-    let canReadAny = false;
+    let allReadable = true;
     for (const candidate of docPaths) {
-      if (await checkDocPermission(writer, candidate, "read")) {
-        canReadAny = true;
+      if (!(await checkDocPermission(writer, candidate, "read"))) {
+        allReadable = false;
         break;
       }
     }
-    if (canReadAny) readable.push(entry);
+    if (allReadable) readable.push(entry);
   }
   return readable;
 }

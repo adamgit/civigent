@@ -33,6 +33,13 @@ export const HUMAN_ACTIVE_WRITE_WINDOW_MS = 5_000;
 export const AGENT_READ_RECENT_TTL_MS = 10_000;
 
 /**
+ * Detailed agent-read observations retained by the document page. These carry
+ * section/source detail for the paper-note experiment and therefore outlive the
+ * compact header presence trail above.
+ */
+export const AGENT_READ_DETAIL_TTL_MS = 30_000;
+
+/**
  * Agent write trail: a proposal/commit against this doc upserts a SEPARATE
  * `recent` write-lane badge that fades to gone over this span (~20s) — longer
  * than the read trail so a commit stays visible after the read trail expires.

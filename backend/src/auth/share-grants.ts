@@ -1,5 +1,6 @@
 /**
- * Share-link grants — a capability to one document, signed with KS_SHARE_SALT.
+ * Share-link grants — a capability to one document, or to a folder and
+ * everything under it, signed with KS_SHARE_SALT.
  *
  * Same object family as the anonymous agent client_id: payload + HMAC signature,
  * stateless, salt-revocable. Possession of the token IS the credential.
@@ -8,22 +9,21 @@
 import { randomUUID } from "node:crypto";
 import { mintHmacSignedToken, verifyHmacSignedToken } from "./oauth-tokens.js";
 import { getShareSalt } from "./oauth-config.js";
-import { DocPath, type ShareGrantExpiry } from "../types/shared.js";
+import { DocPath, FolderPath, type ShareGrantExpiry, type ShareTarget } from "../types/shared.js";
 
 const NEVER_EXPIRES_DAYS = 3650;
 
-export interface ShareGrantPayload {
-  doc_path: string;
+export type ShareGrantPayload = ShareTarget & {
   action: "read" | "write";
   token_use: "share_grant";
   exp: number;
   iat: number;
   jti: string;
   issued_by: string;
-}
+};
 
 export function mintShareGrant(input: {
-  docPath: DocPath;
+  target: ShareTarget;
   action: "read" | "write";
   expiry: ShareGrantExpiry;
   issuedBy: string;
@@ -32,7 +32,7 @@ export function mintShareGrant(input: {
   const iat = Math.floor(Date.now() / 1000);
   const exp = iat + days * 24 * 60 * 60;
   const data: ShareGrantPayload = {
-    doc_path: input.docPath,
+    ...input.target,
     action: input.action,
     token_use: "share_grant",
     exp,
@@ -48,7 +48,10 @@ export function validateShareGrant(token: string): ShareGrantPayload | null {
   if (!data) return null;
 
   if (data.token_use !== "share_grant") return null;
-  if (typeof data.doc_path !== "string" || DocPath.tryParse(data.doc_path) === null) return null;
+  if (typeof data.path !== "string") return null;
+  if (data.kind !== "file" && data.kind !== "folder") return null;
+  if (data.kind === "file" && DocPath.tryParse(data.path) === null) return null;
+  if (data.kind === "folder" && FolderPath.tryParse(data.path) === null) return null;
   if (data.action !== "read" && data.action !== "write") return null;
   if (typeof data.exp !== "number") return null;
   if (typeof data.iat !== "number") return null;

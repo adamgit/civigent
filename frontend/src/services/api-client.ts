@@ -1,5 +1,6 @@
-import { encodeDocPath, encodeFolderPath } from "../utils/path-encoding.js";
+import { encodeAclPath, encodeDocPath, encodeFolderPath } from "../utils/path-encoding.js";
 import type {
+  AclPath,
   FatalReport,
   AclSnapshot,
   AdminConfig,
@@ -7,8 +8,11 @@ import type {
   AuthUser,
   BlameResponse,
   SetAclDefaultsRequest,
-  SetDocumentAclRequest,
+  SetPathAclRequest,
   SetUserRolesRequest,
+  ShareTarget,
+  RedeemShareGrantResponse,
+  GetShareDiaryResponse,
   CreateCustomRoleRequest,
   CommitProposalResponse,
   CreateDocumentResponse,
@@ -627,25 +631,29 @@ export const apiClient = {
   },
 
   async createShareLink(
-    docPath: DocPath,
+    target: ShareTarget,
     action: "read" | "write",
     expiry: ShareGrantExpiry,
   ): Promise<{ url: string; exp: number }> {
     return requestJson<{ url: string; exp: number }>("/api/auth/share", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doc_path: docPath, action, expires_in_days: expiry }),
+      body: JSON.stringify({ ...target, action, expires_in_days: expiry }),
     });
   },
 
-  async redeemShareGrant(token: string, name: string): Promise<{ doc_path: string; display_name: string }> {
-    const response = await requestJson<{ doc_path: string; display_name: string }>("/api/auth/share/redeem", {
+  async redeemShareGrant(token: string, name: string): Promise<RedeemShareGrantResponse> {
+    const response = await requestJson<RedeemShareGrantResponse>("/api/auth/share/redeem", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, name }),
     }, false);
     broadcastAuthEvent("login");
     return response;
+  },
+
+  async getShareDiary(): Promise<GetShareDiaryResponse> {
+    return requestJson<GetShareDiaryResponse>("/api/auth/shares");
   },
 
   async getAuthMethods(): Promise<AuthMethodsResponse> {
@@ -1407,16 +1415,16 @@ export const apiClient = {
     });
   },
 
-  async setDocAcl(docPath: DocPath, perms: SetDocumentAclRequest): Promise<void> {
-    await requestJson(`/api/admin/acl/doc/${encodeDocPath(docPath)}`, {
+  async setPathAcl(aclPath: AclPath, perms: SetPathAclRequest): Promise<void> {
+    await requestJson(`/api/admin/acl/path/${encodeAclPath(aclPath)}`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(perms),
     });
   },
 
-  async removeDocAcl(docPath: DocPath): Promise<void> {
-    await requestJson(`/api/admin/acl/doc/${encodeDocPath(docPath)}`, {
+  async removePathAcl(aclPath: AclPath): Promise<void> {
+    await requestJson(`/api/admin/acl/path/${encodeAclPath(aclPath)}`, {
       method: "DELETE",
     });
   },

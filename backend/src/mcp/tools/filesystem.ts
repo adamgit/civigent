@@ -13,7 +13,7 @@ import type { DocPath } from "../../types/shared.js";
 import { readAssembledDocument, canonicalDocumentExists, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import { readDocumentStructure, flattenStructureToHeadingPaths } from "../../storage/heading-resolver.js";
+import { recordAgentRead } from "../../ws/agent-read.js";
 import {
   createTransientProposal,
   demoteTransientProposalToDraft,
@@ -61,17 +61,12 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
   try {
     const content = await readAssembledDocument(authorizedRead);
 
-    // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      const structure = await readDocumentStructure(filePath);
-      const headingPaths = flattenStructureToHeadingPaths(structure);
-      ctx.emitEvent({
-        type: "agent:reading",
-        actor_id: ctx.writer.id,
-        actor_display_name: ctx.writer.displayName,
-        doc_path: filePath,
-        heading_paths: headingPaths,
-      });
+      recordAgentRead.canonicalDocument(
+        ctx.writer,
+        filePath,
+        ctx.emitEvent,
+      );
     }
 
     return textToolResult(content);

@@ -370,7 +370,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const {
     recentlyChangedSections,
     recentlyChangedByLabel,
-    agentReadingIndicators,
     pendingProposalIndicatorsRef,
     inProgressProposalsBySectionKey,
   } = useDocumentWebSocket({
@@ -886,18 +885,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                   lastOutcome={forcePublishOutcome}
                   onForcePublish={forcePublish}
                 />
-              </div>
-            ) : null}
-
-            {/* Agent reading indicators */}
-            {agentReadingIndicators.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 mb-3">
-                {agentReadingIndicators.map((indicator) => (
-                  <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
-                    <span className="text-xs">&#128065;</span>
-                    {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
-                  </span>
-                ))}
               </div>
             ) : null}
 

@@ -12,6 +12,10 @@ import { sectionHeadingKey, type DocPath } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
+import {
+  DocumentSectionReadNotes,
+  type AgentSectionRead,
+} from "./DocumentAgentReadNotes";
 
 export type SectionLastEditor = NonNullable<WorkspaceSectionDto["last_editor"]>;
 
@@ -28,6 +32,7 @@ export interface DocumentCanvasProps {
   docPath: DocPath;
   recentlyChangedByLabel: Map<string, unknown>;
   injectedByLabel: Map<string, string>;
+  agentReadsBySectionKey: ReadonlyMap<string, readonly AgentSectionRead[]>;
   dragOverFragmentKey: string | null;
   isSectionBlocked: (fragmentKey: string) => boolean;
   publishPaused: boolean;
@@ -68,6 +73,7 @@ export function DocumentCanvas({
   docPath,
   recentlyChangedByLabel,
   injectedByLabel,
+  agentReadsBySectionKey,
   dragOverFragmentKey,
   isSectionBlocked,
   publishPaused,
@@ -154,6 +160,7 @@ export function DocumentCanvas({
         return (
           <div key={renderKey} className="flex items-stretch">
             <div className="doc-gutter-left relative flex items-stretch justify-end pt-1">
+              <DocumentSectionReadNotes reads={agentReadsBySectionKey.get(sectionKey) ?? []} />
               <SummaryWhoChangedThisSection
                 editorId={lastEditor?.id}
                 editorName={lastEditor?.name}

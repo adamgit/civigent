@@ -143,10 +143,13 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "agent:reading",
+        kind: "section_read",
+        source: "canonical",
+        occurred_at_ms: Date.now(),
         actor_id: "agent-1",
         actor_display_name: "Agent Bot",
         doc_path: "/test.md",
-        heading_paths: [["Overview"]],
+        heading_path: ["Overview"],
       } as WsServerEvent);
     });
 
@@ -167,10 +170,13 @@ describe("DocumentPage presence", () => {
     act(() => {
       capturedWsHandler?.({
         type: "agent:reading",
+        kind: "section_read",
+        source: "canonical",
+        occurred_at_ms: Date.now(),
         actor_id: "agent-1",
         actor_display_name: "Agent Bot",
         doc_path: "/test.md",
-        heading_paths: [["Overview"]],
+        heading_path: ["Overview"],
       } as WsServerEvent);
     });
 

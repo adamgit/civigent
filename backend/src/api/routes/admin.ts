@@ -1,7 +1,7 @@
 import { type Router } from "express";
 import {
   SetAclDefaultsRequest,
-  SetDocumentAclRequest,
+  SetPathAclRequest,
   SetUserRolesRequest,
   CreateCustomRoleRequest,
 } from "../../types/shared.js";
@@ -16,6 +16,7 @@ import {
   refuseScopedWriter,
   getMCPPublicURL,
   docPathParamOf,
+  aclPathParamOf,
 } from "./middleware.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
 import { getAgentAuthPolicy } from "../../auth/oauth-config.js";
@@ -376,27 +377,27 @@ export function registerAdminRoutes(
     }
   });
 
-  router.put("/admin/acl/doc/:docPath(*)", async (req, res, next) => {
+  router.put("/admin/acl/path/:aclPath(*)", async (req, res, next) => {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      const parsed = SetDocumentAclRequest.parse(req.body);
+      const parsed = SetPathAclRequest.parse(req.body);
       if (!parsed.ok) {
         sendApiError(res, 400, parsed.message);
         return;
       }
-      await setDocAclEntry(docPathParamOf(req), parsed.value);
+      await setDocAclEntry(aclPathParamOf(req), parsed.value);
       res.json({ ok: true });
     } catch (error) {
       next(error);
     }
   });
 
-  router.delete("/admin/acl/doc/:docPath(*)", async (req, res, next) => {
+  router.delete("/admin/acl/path/:aclPath(*)", async (req, res, next) => {
     try {
       const admin = await requireAdmin(req, res);
       if (!admin) return;
-      await removeDocAclEntry(docPathParamOf(req));
+      await removeDocAclEntry(aclPathParamOf(req));
       res.json({ ok: true });
     } catch (error) {
       next(error);

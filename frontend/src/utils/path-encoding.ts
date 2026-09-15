@@ -1,4 +1,4 @@
-import type { DocPath, FolderPath } from "../types/shared.js";
+import type { AclPath, DocPath, FolderPath } from "../types/shared.js";
 
 /**
  * Encode a doc path for use in URL paths — encodes each segment
@@ -31,4 +31,12 @@ export function encodeDocPathForWs(docPath: DocPath): string {
  */
 export function encodeFolderPath(folderPath: FolderPath): string {
   return folderPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
+
+/**
+ * Encode a document-or-folder ACL path for use in URL paths — same per-segment
+ * mechanics as encodeDocPath/encodeFolderPath.
+ */
+export function encodeAclPath(aclPath: AclPath): string {
+  return aclPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }

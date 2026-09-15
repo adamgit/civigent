@@ -4,6 +4,7 @@ import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import {
   sectionHeadingKey,
+  type AgentRead,
   type AgentReadingEvent,
   type ContentCommittedEvent,
   type DocumentActivityEvent,
@@ -20,11 +21,11 @@ import {
 import {
   type WorkspaceSectionDto,
   type RecentlyChangedSectionEntry,
-  type AgentReadingIndicator,
   type PendingProposalIndicator,
   headingPathToLabel,
   HIGHLIGHT_DURATION_MS,
 } from "../pages/document-page-utils";
+import { AGENT_READ_DETAIL_TTL_MS } from "../presence/document-presence-constants";
 
 // ─── Hook parameters ─────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ export interface UseDocumentWebSocketReturn {
   recentlyChangedSections: RecentlyChangedSectionEntry[];
   setRecentlyChangedSections: React.Dispatch<React.SetStateAction<RecentlyChangedSectionEntry[]>>;
   recentlyChangedByLabel: Map<string, RecentlyChangedSectionEntry>;
-  agentReadingIndicators: AgentReadingIndicator[];
+  agentReads: AgentRead[];
   pendingProposalIndicators: PendingProposalIndicator[];
   pendingProposalIndicatorsRef: React.MutableRefObject<PendingProposalIndicator[]>;
   proposalsBySectionKey: Map<string, PendingProposalIndicator[]>;
@@ -101,8 +102,8 @@ export function useDocumentWebSocket({
   // ── State ─────────────────────────────────────────────────
   const [recentlyChangedSections, setRecentlyChangedSections] = useState<RecentlyChangedSectionEntry[]>([]);
 
-  // ── v3: Agent reading indicators ─────────────────────────
-  const [agentReadingIndicators, setAgentReadingIndicators] = useState<AgentReadingIndicator[]>([]);
+  // ── Agent read observations (document/section-names/section-body reads) ──
+  const [agentReads, setAgentReads] = useState<AgentRead[]>([]);
 
   // ── v3: Pending proposal indicators ─────────────────────
   const [pendingProposalIndicators, setPendingProposalIndicators] = useState<PendingProposalIndicator[]>([]);
@@ -225,26 +226,16 @@ export function useDocumentWebSocket({
         return;
       }
 
-      // ── agent:reading (v3) ──
+      // ── agent:reading — keep every observation for this doc_path (append,
+      // never overwrite/collapse). Timing is driven entirely by the server's
+      // `occurred_at_ms` + AGENT_READ_DETAIL_TTL_MS, never a receipt-time clock. ──
       if (event.type === "agent:reading") {
         const reading = event as AgentReadingEvent;
         if (reading.doc_path !== docPath) return;
+        if (reading.occurred_at_ms + AGENT_READ_DETAIL_TTL_MS < Date.now()) return;
 
-        const labels = reading.heading_paths.map((hp) => headingPathToLabel(hp));
-        const key = `${reading.actor_id}:${labels.join(",")}`;
-        const expiresAt = Date.now() + 5000;
-
-        setAgentReadingIndicators((prev) => {
-          const next = new Map(prev.map((ind) => [ind.key, ind]));
-          next.set(key, {
-            key,
-            actorId: reading.actor_id,
-            actorDisplayName: reading.actor_display_name,
-            labels,
-            expiresAt,
-          });
-          return Array.from(next.values());
-        });
+        const { type: _eventType, ...read } = reading;
+        setAgentReads((prev) => [...prev, read]);
         return;
       }
 
@@ -397,17 +388,18 @@ export function useDocumentWebSocket({
     return () => clearTimeout(timer);
   }, [recentlyChangedByLabel.size]);
 
-  // ── Auto-expire agent reading indicators ─────────────────
+  // ── Prune agent reads whose occurred_at_ms + AGENT_READ_DETAIL_TTL_MS has
+  // passed. No stored `expiresAt` — recomputed from the server timestamp. ──
   useEffect(() => {
-    if (agentReadingIndicators.length === 0) return;
+    if (agentReads.length === 0) return;
     const timer = window.setInterval(() => {
       const now = Date.now();
-      setAgentReadingIndicators((prev) =>
-        prev.filter((indicator) => indicator.expiresAt > now),
+      setAgentReads((prev) =>
+        prev.filter((read) => read.occurred_at_ms + AGENT_READ_DETAIL_TTL_MS > now),
       );
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [agentReadingIndicators.length]);
+  }, [agentReads.length]);
 
   // Build a lookup of draft proposal indicators by section key
   const proposalsBySectionKey = useMemo(() => {
@@ -435,7 +427,7 @@ export function useDocumentWebSocket({
     recentlyChangedSections,
     setRecentlyChangedSections,
     recentlyChangedByLabel,
-    agentReadingIndicators,
+    agentReads,
     pendingProposalIndicators,
     pendingProposalIndicatorsRef,
     proposalsBySectionKey,

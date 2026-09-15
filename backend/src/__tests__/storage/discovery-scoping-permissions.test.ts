@@ -24,6 +24,20 @@ import type { AuthenticatedWriter } from "../../auth/context.js";
 const DOC_A = "/multi/doc-a.md";
 const DOC_B = "/single/doc-b.md";
 const READER: AuthenticatedWriter = { id: "reader", type: "human", displayName: "Reader" };
+// This is the intended spec-08 scope shape. Keep the cast local until
+// AuthenticatedWriter gains the discriminated file-or-folder scope.
+const FOLDER_GUEST = {
+  id: "human-share-multi",
+  type: "human",
+  displayName: "Shared Folder Guest",
+  scope: {
+    kind: "folder",
+    path: "/multi",
+    action: "read",
+    grantJti: "jti-multi",
+    grantExp: Math.floor(Date.now() / 1000) + 3600,
+  },
+} as unknown as AuthenticatedWriter;
 
 let ctx: TempDataRootContext;
 
@@ -77,6 +91,11 @@ describe("discovery folder scoping + permission behavior (spec 07)", () => {
       const authed = await listReadableDocuments(READER, "/");
       const paths = authed.rows.map((r) => r.doc_path).sort();
       expect(paths).toEqual([DOC_A, DOC_B].sort());
+    });
+
+    it("limits a folder-scoped guest catalog to in-scope, ACL-readable documents", async () => {
+      const shared = await listReadableDocuments(FOLDER_GUEST, "/");
+      expect(shared.rows.map((row) => row.doc_path)).toEqual([DOC_A]);
     });
 
     it("collapses unreadable single-doc scope into the SAME not-found error as a missing doc", async () => {

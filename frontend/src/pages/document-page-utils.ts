@@ -31,15 +31,6 @@ export interface RecentlyChangedSectionEntry {
   changedByType: import("../types/shared").WriterType;
 }
 
-export interface AgentReadingIndicator {
-  key: string;
-  /** Reading agent's canonical id (presence-lane badge identity). */
-  actorId: string;
-  actorDisplayName: string;
-  labels: string[];
-  expiresAt: number;
-}
-
 export interface PendingProposalIndicator {
   proposalId: string;
   sectionKey: string;

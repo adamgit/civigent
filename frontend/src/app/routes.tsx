@@ -9,6 +9,7 @@ import { AgentKeysPage } from "../pages/AgentKeysPage";
 import { PermissionsPage } from "../pages/PermissionsPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { SharePage } from "../pages/SharePage";
+import { ShareDiaryPage } from "../pages/ShareDiaryPage";
 import { LoginPage } from "../pages/LoginPage";
 import { ApproveAgentAccessPage } from "../pages/ApproveAgentAccessPage";
 import { GitHistoryPage } from "../pages/GitHistoryPage";
@@ -64,6 +65,7 @@ export const routeConfig: RouteObject[] = [
       { path: "search-text", element: <SearchTextPage /> },
       { path: "login", element: <LoginPage /> },
       { path: "approve-agent-access", element: <ApproveAgentAccessPage /> },
+      { path: "share-diary", element: <ShareDiaryPage /> },
       { path: "share/*", element: <SharePage /> }
     ]
   }

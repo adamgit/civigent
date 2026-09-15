@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import type { ActivityItem } from "../../../types/shared.js";
+import type { ActivityItem, AgentRead } from "../../../types/shared.js";
 import { PULSE_RANGE_OPTIONS } from "../experiment/build-pulse-hours";
 import type { HomeAgentTask, HomeMcpPulseAction } from "../experiment/types";
 import { AgentActivityBars } from "./AgentActivityBars";
@@ -9,6 +9,7 @@ import { emptyPulseCopy, useAgentPulseChart } from "./useAgentPulseChart";
 
 interface HomeWideAgentPulseProps {
   actions: HomeMcpPulseAction[];
+  reads: AgentRead[];
   activity: ActivityItem[];
   tasks: HomeAgentTask[];
   pulseError: string | null;
@@ -16,11 +17,12 @@ interface HomeWideAgentPulseProps {
 
 export function HomeWideAgentPulse({
   actions,
+  reads,
   activity,
   tasks,
   pulseError,
 }: HomeWideAgentPulseProps) {
-  const chart = useAgentPulseChart(actions, activity, tasks);
+  const chart = useAgentPulseChart(actions, reads, activity, tasks);
 
   return (
     <section

@@ -1,4 +1,4 @@
-import type { ActivityItem } from "../../../types/shared.js";
+import type { ActivityItem, AgentRead } from "../../../types/shared.js";
 import { isReadTool, isWriteTool } from "./mcp-kind.js";
 import type { HomeMcpPulseAction, HomePulseHourBar } from "./types.js";
 
@@ -92,7 +92,11 @@ export function currentSlotStartMs(nowMs: number, slotMs: number): number {
   return Math.floor(nowMs / slotMs) * slotMs;
 }
 
-function countIntoBars(bars: HomePulseHourBar[], actions: readonly HomeMcpPulseAction[]): void {
+function countIntoBars(
+  bars: HomePulseHourBar[],
+  actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
+): void {
   for (const action of actions) {
     const ts = Date.parse(action.ts);
     if (Number.isNaN(ts)) continue;
@@ -101,10 +105,16 @@ function countIntoBars(bars: HomePulseHourBar[], actions: readonly HomeMcpPulseA
     if (isReadTool(action.method)) bar.readCount += 1;
     else if (isWriteTool(action.method)) bar.writeCount += 1;
   }
+  for (const read of reads) {
+    const bar = bars.find((row) => read.occurred_at_ms >= row.startMs && read.occurred_at_ms < row.endMs);
+    if (!bar) continue;
+    bar.readCount += 1;
+  }
 }
 
 export function buildPulse1hBars(
   actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
   activity: readonly ActivityItem[],
   nowMs: number = Date.now(),
 ): HomePulseHourBar[] {
@@ -121,12 +131,13 @@ export function buildPulse1hBars(
     writeCount: 0,
     label: clockLabel(startMs),
   }));
-  countIntoBars(bars, actions);
+  countIntoBars(bars, actions, reads);
   return bars;
 }
 
 export function buildPulseHourBars(
   actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
   activity: readonly ActivityItem[],
   nowMs: number = Date.now(),
 ): HomePulseHourBar[] {
@@ -139,12 +150,13 @@ export function buildPulseHourBars(
     writeCount: 0,
     label: hourLabel(startMs),
   }));
-  countIntoBars(bars, actions);
+  countIntoBars(bars, actions, reads);
   return bars;
 }
 
 export function buildPulseDayBars(
   actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
   activity: readonly ActivityItem[],
   nowMs: number = Date.now(),
 ): HomePulseHourBar[] {
@@ -163,6 +175,6 @@ export function buildPulseDayBars(
     writeCount: 0,
     label: dayLabel(startMs),
   }));
-  countIntoBars(bars, actions);
+  countIntoBars(bars, actions, reads);
   return bars;
 }

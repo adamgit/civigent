@@ -7,6 +7,7 @@ import type {
 import {
   sendApiError,
   requireDocReadPermission,
+  resolveAuthenticatedWriter,
   docPathParamOf,
 } from "./middleware.js";
 import {
@@ -15,7 +16,6 @@ import {
   getHistoryPreview,
   getBlame,
   readCanonicalDocument,
-  broadcastAgentReading,
   isValidSha,
   DirectoryAtDocPathError,
   DocumentNotFoundError,
@@ -26,6 +26,7 @@ import {
   QueryParamError,
   boundedIntParam,
 } from "../helpers/query-params.js";
+import { recordAgentRead } from "../../ws/agent-read.js";
 
 // ─── Canonical (committed, read-only, agent-facing) routes ──────────────
 //
@@ -43,8 +44,15 @@ export function registerCanonicalRoutes(
       const docPath = docPathParamOf(req);
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
-      const { response, headingPaths } = await readCanonicalStructure(access);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+      const { response } = await readCanonicalStructure(access);
+      const writer = resolveAuthenticatedWriter(req);
+      if (writer?.type === "agent" && onWsEvent) {
+        recordAgentRead.canonicalSectionNames(
+          writer,
+          docPath,
+          onWsEvent,
+        );
+      }
       const out: ReadDocStructureResponse = response;
       res.json(out);
     } catch (error) {
@@ -133,8 +141,15 @@ export function registerCanonicalCatchAllRoutes(
       const docPath = docPathParamOf(req);
       const accessResult = await requireDocReadPermission(req, res, docPath);
       if (!accessResult) return;
-      const { response, headingPaths } = await readCanonicalDocument(accessResult);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+      const { response } = await readCanonicalDocument(accessResult);
+      const writer = resolveAuthenticatedWriter(req);
+      if (writer?.type === "agent" && onWsEvent) {
+        recordAgentRead.canonicalDocument(
+          writer,
+          docPath,
+          onWsEvent,
+        );
+      }
       const out: GetDocumentResponse = response;
       res.json(out);
     } catch (error) {

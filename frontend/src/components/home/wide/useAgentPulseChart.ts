@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ActivityItem } from "../../../types/shared.js";
+import type { ActivityItem, AgentRead } from "../../../types/shared.js";
 import { HOME_AGENT_TASK_LIMIT, taskOverlapsRange } from "../experiment/build-agent-tasks";
 import {
   buildPulse1hBars,
@@ -33,6 +33,7 @@ export function emptyPulseCopy(
 
 export function useAgentPulseChart(
   actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
   activity: readonly ActivityItem[],
   tasks: readonly HomeAgentTask[],
 ) {
@@ -41,10 +42,10 @@ export function useAgentPulseChart(
   const [ignoreHoverAt, setIgnoreHoverAt] = useState<number | null>(null);
 
   const bars = useMemo(() => {
-    if (range === "7d") return buildPulseDayBars(actions, activity);
-    if (range === "1h") return buildPulse1hBars(actions, activity);
-    return buildPulseHourBars(actions, activity);
-  }, [actions, activity, range]);
+    if (range === "7d") return buildPulseDayBars(actions, reads, activity);
+    if (range === "1h") return buildPulse1hBars(actions, reads, activity);
+    return buildPulseHourBars(actions, reads, activity);
+  }, [actions, reads, activity, range]);
 
   const selectedIndex = pickedBar;
 

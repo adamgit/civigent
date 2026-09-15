@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { apiClient } from "../services/api-client.js";
-import type { DocPath, ShareGrantExpiry } from "../types/shared.js";
+import type { ShareGrantExpiry, ShareTarget } from "../types/shared.js";
 
-interface ShareDocumentDialogProps {
-  docPath: DocPath;
+interface ShareTargetDialogProps {
+  target: ShareTarget;
   onClose: () => void;
 }
 
@@ -13,7 +13,7 @@ const EXPIRY_CHOICES: Array<{ value: ShareGrantExpiry; label: string }> = [
   { value: "never", label: "Never" },
 ];
 
-export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogProps) {
+export function ShareTargetDialog({ target, onClose }: ShareTargetDialogProps) {
   const [action, setAction] = useState<"read" | "write">("write");
   const [expiry, setExpiry] = useState<ShareGrantExpiry>(7);
   const [creating, setCreating] = useState(false);
@@ -21,11 +21,13 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const noun = target.kind === "file" ? "document" : "folder";
+
   const handleCreate = async () => {
     setCreating(true);
     setError(null);
     try {
-      setLink({ ...(await apiClient.createShareLink(docPath, action, expiry)), expiry });
+      setLink({ ...(await apiClient.createShareLink(target, action, expiry)), expiry });
       setCopied(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -55,8 +57,8 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
           &times;
         </button>
 
-        <h2 className="text-lg font-semibold mb-1">Share this document by link</h2>
-        <p className="text-xs text-gray-500 mb-4 break-all">{docPath}</p>
+        <h2 className="text-lg font-semibold mb-1">Share this {noun} by link</h2>
+        <p className="text-xs text-gray-500 mb-4 break-all">{target.path}</p>
 
         <div className="mb-4">
           <div className="text-sm font-medium mb-1">Anyone with the link</div>
@@ -114,11 +116,12 @@ export function ShareDocumentDialog({ docPath, onClose }: ShareDocumentDialogPro
               </button>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              Anyone with this link can {action === "write" ? "edit" : "read"} this document{" "}
+              Anyone with this link can {action === "write" ? "edit" : "read"} this {noun}
+              {target.kind === "folder" ? " and everything in it" : ""}{" "}
               {link.expiry === "never"
                 ? "until an administrator revokes it"
                 : `until ${new Date(link.exp * 1000).toLocaleString()}`}
-              . They will not see other documents.
+              . They will not see other {target.kind === "file" ? "documents" : "folders"}.
             </p>
           </div>
         ) : (

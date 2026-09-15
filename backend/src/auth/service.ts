@@ -5,12 +5,14 @@ import {
   issueTokenPair,
   issueScopedTokenPair,
   type IssuedAuthTokenPair,
+  type ShareSessionScope,
 } from "./tokens.js";
 import { validateShareGrant } from "./share-grants.js";
 import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { hasAnyAdmin, grantAdmin } from "./acl.js";
 import { isOidcConfigured } from "./oauth-config.js";
 import { readEnvVar } from "../env.js";
+import type { ShareTarget } from "../types/shared.js";
 
 export interface AgentRegistrationInput {
   name: string;
@@ -321,7 +323,8 @@ export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair 
   }
   if (claims.auth_source === "share") {
     if (
-      typeof claims.scope_doc !== "string" ||
+      (claims.scope_kind !== "file" && claims.scope_kind !== "folder") ||
+      typeof claims.scope_path !== "string" ||
       (claims.scope_action !== "read" && claims.scope_action !== "write") ||
       typeof claims.grant_jti !== "string" ||
       typeof claims.grant_exp !== "number"
@@ -340,11 +343,12 @@ export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair 
         ...(claims.email ? { email: claims.email } : {}),
       },
       {
-        docPath: claims.scope_doc,
+        kind: claims.scope_kind,
+        path: claims.scope_path,
         action: claims.scope_action,
         grantJti: claims.grant_jti,
         grantExp: claims.grant_exp,
-      },
+      } as ShareSessionScope,
     );
   }
   return issueTokenPair({
@@ -364,7 +368,7 @@ export function redeemShareGrant(
 ): {
   access_token: string;
   refresh_token: string;
-  doc_path: string;
+  target: ShareTarget;
   display_name: string;
   grant_exp: number;
 } {
@@ -373,6 +377,7 @@ export function redeemShareGrant(
     throw new InvalidShareGrantError("unauthorized: this share link is invalid or has expired.");
   }
   const displayName = (name ?? "").trim() || "Guest";
+  const target: ShareTarget = { kind: grant.kind, path: grant.path } as ShareTarget;
   const pair = issueScopedTokenPair(
     {
       id: `human-share-${randomUUID()}`,
@@ -380,7 +385,7 @@ export function redeemShareGrant(
       displayName,
     },
     {
-      docPath: grant.doc_path,
+      ...target,
       action: grant.action,
       grantJti: grant.jti,
       grantExp: grant.exp,
@@ -389,7 +394,7 @@ export function redeemShareGrant(
   return {
     access_token: pair.access_token,
     refresh_token: pair.refresh_token,
-    doc_path: grant.doc_path,
+    target,
     display_name: displayName,
     grant_exp: grant.exp,
   };

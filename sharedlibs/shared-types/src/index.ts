@@ -1036,9 +1036,41 @@ function asRequestParseResult<T>(build: () => T): RequestParseResult<T> {
 }
 
 /**
+ * A document or non-root folder path — the address an ACL override or a share
+ * grant can target. Never the root folder: overriding `/` would be
+ * indistinguishable from (and redundant with) the system defaults.
+ */
+export type AclPath = DocPath | FolderPath;
+
+export const AclPath = {
+  parse(raw: string, label = "path"): AclPath {
+    const doc = DocPath.tryParse(raw);
+    if (doc) return doc;
+    if (raw === FolderPath.root) {
+      throw new Error(`${label} must not be the root folder.`);
+    }
+    const folder = FolderPath.tryParse(raw);
+    if (folder) return folder;
+    throw new Error(`${label} must be a valid document or non-root folder path, got ${JSON.stringify(raw)}`);
+  },
+  tryParse(raw: string): AclPath | null {
+    const doc = DocPath.tryParse(raw);
+    if (doc) return doc;
+    if (raw === FolderPath.root) return null;
+    return FolderPath.tryParse(raw);
+  },
+  fromSlashStrippedUrlSegment(slashStrippedSegment: string): AclPath {
+    return AclPath.parse(`/${slashStrippedSegment}`);
+  },
+  isFile(path: AclPath): path is DocPath {
+    return DocPath.isDocPath(path);
+  },
+};
+
+/**
  * Full snapshot of the ACL/RBAC state returned by `GET /admin/acl`. `defaults`
- * always resolves both actions; per-document `acl` entries and role assignments
- * are partial maps.
+ * always resolves both actions; per-path `acl` entries (document or folder)
+ * and role assignments are partial maps.
  */
 export interface AclSnapshot {
   defaults: { read: RoleName; write: RoleName };
@@ -1059,14 +1091,14 @@ export const SetAclDefaultsRequest = {
   },
 };
 
-/** Body of `PUT /admin/acl/doc/:docPath` — set the required roles for one document. */
-export interface SetDocumentAclRequest {
+/** Body of `PUT /admin/acl/path/:path` — set the required roles for one document or folder. */
+export interface SetPathAclRequest {
   read?: RoleName;
   write?: RoleName;
 }
 
-export const SetDocumentAclRequest = {
-  parse(value: JsonValue, label = "set document ACL request"): RequestParseResult<SetDocumentAclRequest> {
+export const SetPathAclRequest = {
+  parse(value: JsonValue, label = "set path ACL request"): RequestParseResult<SetPathAclRequest> {
     return asRequestParseResult(() => AclPermissionSet.parse(value, label));
   },
 };
@@ -1541,6 +1573,10 @@ export type DocumentTreePill = "skills" | "public";
 export interface DocumentTreeAccess {
   read: RoleName;
   write: RoleName;
+  /** Whether the REQUESTING writer (not just the role name) can read this directory. */
+  can_read: boolean;
+  /** Whether the REQUESTING writer (not just the role name) can write to this directory. */
+  can_write: boolean;
 }
 
 export interface DocumentTreeEntry {
@@ -2382,6 +2418,75 @@ export interface CreateDocumentResponse {
   doc_path: string;
 }
 
+// ─── Share Targets & Grants ─────────────────────────────────────────
+//
+// What a share link or scoped session covers: exactly one document, or a
+// folder and every document under it. `ShareTarget` is the shared vocabulary
+// for that choice — share minting, redemption, scoped-session claims, and the
+// share diary all carry it instead of a bare doc_path.
+
+export type ShareTarget =
+  | { kind: "file"; path: DocPath }
+  | { kind: "folder"; path: FolderPath };
+
+export const ShareTarget = {
+  parse(value: JsonValue, label = "share target"): ShareTarget {
+    const obj = expectJsonObject(value, label);
+    const kind = obj.kind;
+    if (kind === "file") {
+      return { kind: "file", path: jsonRequireDocPath(obj, "path", label) };
+    }
+    if (kind === "folder") {
+      return { kind: "folder", path: FolderPath.parse(jsonRequireString(obj, "path", label)) };
+    }
+    throw new Error(`${label}.kind must be "file" or "folder", got ${JSON.stringify(kind)}`);
+  },
+};
+
+export type ShareGrantExpiry = 1 | 7 | "never";
+
+/** Body of `POST /api/auth/share` — mint a new share grant for a file or folder. */
+export type MintShareGrantRequest = ShareTarget & {
+  action: "read" | "write";
+  expires_in_days: ShareGrantExpiry;
+};
+
+export const MintShareGrantRequest = {
+  parse(value: JsonValue, label = "mint share grant request"): RequestParseResult<MintShareGrantRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const target = ShareTarget.parse(obj, label);
+      const action = AclAction.parse(obj.action, `${label}.action`);
+      const expiry = obj.expires_in_days;
+      if (expiry !== 1 && expiry !== 7 && expiry !== "never") {
+        throw new Error(`${label}.expires_in_days must be 1, 7, or "never", got ${JSON.stringify(expiry)}`);
+      }
+      return { ...target, action, expires_in_days: expiry };
+    });
+  },
+};
+
+/** Response of `POST /api/auth/share/redeem` — the redeemed target and the guest's chosen name. */
+export type RedeemShareGrantResponse = ShareTarget & { display_name: string };
+
+/**
+ * One immutable entry in the minter's share diary — a record that a grant was
+ * minted, never the bearer token itself (possession of that token, not a
+ * diary row, is the credential; the diary is a non-authoritative audit trail).
+ */
+export type ShareDiaryEntry = ShareTarget & {
+  id: string;
+  action: "read" | "write";
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+};
+
+/** Response of `GET /api/auth/shares` — the authenticated minter's own diary entries. */
+export interface GetShareDiaryResponse {
+  entries: ShareDiaryEntry[];
+}
+
 // ─── Auth ──────────────────────────────────────────────────────────
 
 export type LoginProvider = "single_user" | "credentials" | "oidc";
@@ -2392,8 +2497,6 @@ export interface AuthMethod {
   authUrl?: string; // only present for "oidc"
 }
 
-export type ShareGrantExpiry = 1 | 7 | "never";
-
 export interface AuthUser {
   id: string;
   type: WriterType;
@@ -2401,7 +2504,8 @@ export interface AuthUser {
   email?: string;
   is_admin: boolean;
   auth_source?: "share";
-  scope_doc?: string;
+  scope_kind?: "file" | "folder";
+  scope_path?: string;
   scope_action?: "read" | "write";
 }
 
@@ -2443,13 +2547,47 @@ export interface ContentCommittedEvent {
 // section has uncommitted edits — is now served, per-section and with editor
 // identity, by `SectionPendingStateEvent` (`section:pending`/`section:settled`).
 
-export interface AgentReadingEvent {
-  type: "agent:reading";
+/**
+ * The store an `AgentRead` was served from: the committed/audit-log store,
+ * a live DocSession's working copy, or a stored historical version.
+ */
+export type AgentReadSource = "canonical" | "workspace" | "history";
+
+/** A completed agent read of a whole document's assembled content. */
+export interface AgentDocumentRead {
+  kind: "document_read";
+  source: AgentReadSource;
+  occurred_at_ms: number;
   actor_id: string;
   actor_display_name: string;
-  doc_path: string;
-  heading_paths: string[][];
+  doc_path: DocPath;
 }
+
+/** A completed agent read of a document's section-name inventory (no bodies). */
+export interface AgentSectionNamesRead {
+  kind: "section_names";
+  source: AgentReadSource;
+  occurred_at_ms: number;
+  actor_id: string;
+  actor_display_name: string;
+  doc_path: DocPath;
+}
+
+/** A completed agent read of one section's body. */
+export interface AgentSectionRead {
+  kind: "section_read";
+  source: AgentReadSource;
+  occurred_at_ms: number;
+  actor_id: string;
+  actor_display_name: string;
+  doc_path: DocPath;
+  heading_path: HeadingPath;
+}
+
+/** A completed agent read observation of a document, its section names, or a section's body. */
+export type AgentRead = AgentDocumentRead | AgentSectionNamesRead | AgentSectionRead;
+
+export type AgentReadingEvent = { type: "agent:reading" } & AgentRead;
 
 export interface PresenceEditingEvent {
   type: "presence:editing";

@@ -155,7 +155,7 @@ function narrativeForGroup(
         const age = ageSecondsFor(badge, status, activity);
         if (age !== undefined && (best === undefined || age < best)) best = age;
       }
-      return `${names} read this${formatAgeSuffix(best)}`;
+      return `${names} viewing this${formatAgeSuffix(best)}`;
     }
   }
 }

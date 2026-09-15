@@ -1,6 +1,6 @@
 import { type NextFunction, type Request, type Response, type Router } from "express";
 import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
-import { DocPath } from "../../types/shared.js";
+import { AclPath, DocPath } from "../../types/shared.js";
 import { getSystemState } from "../../startup-state.js";
 import {
   resolveAuthenticatedWriter,
@@ -114,6 +114,18 @@ export function docPathParamOf(req: Request): DocPath {
 export function installSlashStrippedDocPathParamParser(router: Router): void {
   router.param("docPath", (req, _res, next, slashStrippedSegment) => {
     req.params.docPath = DocPath.fromSlashStrippedUrlSegment(slashStrippedSegment);
+    next();
+  });
+}
+
+/** The `:aclPath` route param — a document or non-root folder path. */
+export function aclPathParamOf(req: Request): AclPath {
+  return AclPath.parse(req.params.aclPath);
+}
+
+export function installSlashStrippedAclPathParamParser(router: Router): void {
+  router.param("aclPath", (req, _res, next, slashStrippedSegment) => {
+    req.params.aclPath = AclPath.fromSlashStrippedUrlSegment(slashStrippedSegment);
     next();
   });
 }

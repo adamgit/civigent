@@ -132,7 +132,8 @@ describe("RBAC Core — role-based permission check", () => {
         type: "human",
         displayName: "Guest",
         scope: {
-          docPath: "/shared.md",
+          kind: "file",
+          path: "/shared.md",
           action: "write",
           grantJti: "jti-write",
           grantExp: Math.floor(Date.now() / 1000) + 3600,
@@ -149,6 +150,51 @@ describe("RBAC Core — role-based permission check", () => {
       expect(await checkDocPermission(scopedRead, "/shared.md", "write")).toBe(false);
       expect(await checkDocPermission(scopedWrite, "/other.md", "read")).toBe(false);
       expect(await checkDocPermission(scopedWrite, "/other.md", "write")).toBe(false);
+    });
+
+    it("composes a folder share scope with ordinary ACL and ignores guest role assignments", async () => {
+      await writeAuthFile("defaults.json", { read: "authenticated", write: "authenticated" });
+      await writeAuthFile("acl.json", {
+        "/shared/restricted.md": { read: "admin" },
+        "/shared/role-restricted.md": { read: "legal-team" },
+      });
+      await writeAuthFile("roles.json", {
+        "human-share-folder": ["admin", "legal-team"],
+      });
+      invalidateCache();
+
+      // This is the intended spec-08 scope shape. Keep the cast local until
+      // AuthenticatedWriter gains the discriminated file-or-folder scope.
+      const folderGuest = {
+        id: "human-share-folder",
+        type: "human",
+        displayName: "Folder Guest",
+        scope: {
+          kind: "folder",
+          path: "/shared",
+          action: "read",
+          grantJti: "jti-folder",
+          grantExp: Math.floor(Date.now() / 1000) + 3600,
+        },
+      } as unknown as AuthenticatedWriter;
+
+      const permissions = {
+        descendant: await checkDocPermission(folderGuest, "/shared/open.md", "read"),
+        restrictedChild: await checkDocPermission(folderGuest, "/shared/restricted.md", "read"),
+        assignedRoleIgnored: await checkDocPermission(folderGuest, "/shared/role-restricted.md", "read"),
+        sibling: await checkDocPermission(folderGuest, "/other/doc.md", "read"),
+        prefixCollision: await checkDocPermission(folderGuest, "/shared-copy/doc.md", "read"),
+        writeThroughReadGrant: await checkDocPermission(folderGuest, "/shared/open.md", "write"),
+      };
+
+      expect(permissions).toEqual({
+        descendant: true,
+        restrictedChild: false,
+        assignedRoleIgnored: false,
+        sibling: false,
+        prefixCollision: false,
+        writeThroughReadGrant: false,
+      });
     });
   });
 

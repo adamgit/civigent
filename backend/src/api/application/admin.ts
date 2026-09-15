@@ -5,6 +5,7 @@ import {
 } from "../../admin-config.js";
 import { HUMAN_INVOLVEMENT_PRESETS, RoleName } from "../../types/shared.js";
 import type {
+  AclPath,
   AclSnapshot,
   AdminConfig,
   ContentIntegrityFailure,
@@ -25,7 +26,7 @@ import type {
   RunAdminGitRestoreResponse,
   RunAdminMcpLogAnalysisResponse,
   SetAclDefaultsRequest,
-  SetDocumentAclRequest,
+  SetPathAclRequest,
   SetUserRolesRequest,
   VerifyAdminGitBackupResponse,
 } from "../../types/shared.js";
@@ -389,12 +390,12 @@ export async function setAclDefaults(request: SetAclDefaultsRequest): Promise<vo
   await updateDefaults(request);
 }
 
-export async function setDocAclEntry(docPath: DocPath, request: SetDocumentAclRequest): Promise<void> {
-  await setDocAcl(docPath, request);
+export async function setDocAclEntry(aclPath: AclPath, request: SetPathAclRequest): Promise<void> {
+  await setDocAcl(aclPath, request);
 }
 
-export async function removeDocAclEntry(docPath: DocPath): Promise<void> {
-  await removeDocAcl(docPath);
+export async function removeDocAclEntry(aclPath: AclPath): Promise<void> {
+  await removeDocAcl(aclPath);
 }
 
 export async function setRoles(userId: string, request: SetUserRolesRequest): Promise<void> {

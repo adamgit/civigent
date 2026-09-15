@@ -11,8 +11,8 @@ import "./home/home.css";
 import "./agent-pulse-page.css";
 
 export function AgentPulsePage() {
-  const { mcpActions, activity, agentTasks, pulseError, loading } = useAgentPulseFeeds();
-  const chart = useAgentPulseChart(mcpActions, activity, agentTasks);
+  const { mcpActions, agentReads, activity, agentTasks, pulseError, loading } = useAgentPulseFeeds();
+  const chart = useAgentPulseChart(mcpActions, agentReads, activity, agentTasks);
 
   return (
     <div className="flex flex-col">

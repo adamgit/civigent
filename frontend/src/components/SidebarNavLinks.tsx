@@ -2,7 +2,8 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { SEARCH_MAX_RESULTS } from "../pages/search/search-request-defaults";
-import { docsRouteForStoredPath } from "../app/docs-location";
+import { docsRouteForStoredPath, folderHref } from "../app/docs-location";
+import { FolderPath } from "../types/shared";
 
 const linkClass =
   "flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all";
@@ -182,12 +183,18 @@ export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLink
   const currentUser = useCurrentUser();
   if (currentUser?.auth_source === "share") {
     if (variant !== "primary") return null;
-    const sharedDocRoute = docsRouteForStoredPath(currentUser.scope_doc);
-    if (!sharedDocRoute) return null;
+    const isFolderShare = currentUser.scope_kind === "folder";
+    const sharedRoute = isFolderShare
+      ? (() => {
+          const folderPath = FolderPath.tryParse(currentUser.scope_path ?? "");
+          return folderPath ? folderHref(folderPath) : null;
+        })()
+      : docsRouteForStoredPath(currentUser.scope_path);
+    if (!sharedRoute) return null;
     return (
       <nav className="px-2 pt-1 pb-2 flex flex-col gap-px border-b border-sidebar-border" aria-label="Primary">
-        <NavLink to={sharedDocRoute} icon={<>&#128196;</>}>
-          Shared document
+        <NavLink to={sharedRoute} icon={<>&#128196;</>}>
+          {isFolderShare ? "Shared folder" : "Shared document"}
         </NavLink>
       </nav>
     );
@@ -214,6 +221,9 @@ export function SidebarNavLinks({ variant, onOpenWsDiagnostics }: SidebarNavLink
     <nav className="px-2 pt-2.5 pb-3.5 border-t border-sidebar-border flex flex-col gap-px overflow-visible" aria-label="Footer">
       <NavLink to="/history" icon={<>&#128336;</>}>
         Audit Log
+      </NavLink>
+      <NavLink to="/share-diary" icon={<>&#128279;</>}>
+        Share Diary
       </NavLink>
       <FooterAdminFlyout onOpenWsDiagnostics={onOpenWsDiagnostics} />
       <NavLink to="/help" icon={<>&#10067;</>}>

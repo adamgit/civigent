@@ -42,10 +42,8 @@ import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import type { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
-import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
+import { buildSectionInvolvementMeta } from "../helpers/section-meta-builder.js";
 import { DocPath } from "../../types/shared.js";
-
-export { broadcastAgentReading };
 
 export type SectionWriter = Pick<WriterIdentity, "id" | "type" | "displayName" | "email">;
 

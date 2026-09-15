@@ -4,7 +4,7 @@ import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { type AgentRosterEntry, type ActivityItem, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
+import { type AgentRosterEntry, type ActivityItem, type AgentRead, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
 import { HomeWideLayout } from "./home/HomeWideLayout";
@@ -70,6 +70,7 @@ export function HomePage() {
   const [proposalsError, setProposalsError] = useState<string | null>(null);
   const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
   const [pulseError, setPulseError] = useState<string | null>(null);
+  const [agentReads, setAgentReads] = useState<AgentRead[]>([]);
   const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
   useEffect(() => {
@@ -220,17 +221,8 @@ export function HomePage() {
     };
     wsClient.onEvent((event) => {
       if (event.type === "agent:reading") {
-        setMcpActions((prev) => [
-          ...prev,
-          {
-            agent_id: event.actor_id,
-            agent_display_name: event.actor_display_name,
-            method: "read_doc",
-            ts: new Date().toISOString(),
-            doc_path: event.doc_path,
-            heading_path: event.heading_paths[0] ?? null,
-          },
-        ]);
+        const { type: _type, ...read } = event;
+        setAgentReads((prev) => [...prev, read]);
         return;
       }
       if (
@@ -293,8 +285,8 @@ export function HomePage() {
     [agents, proposals, activity],
   );
   const agentTasks = useMemo(
-    () => buildAgentTasks(proposals, mcpActions, agents, activity),
-    [proposals, mcpActions, agents, activity],
+    () => buildAgentTasks(proposals, mcpActions, agentReads, agents, activity),
+    [proposals, mcpActions, agentReads, agents, activity],
   );
 
   const alerts = (
@@ -420,6 +412,7 @@ export function HomePage() {
         writeHomeRecentWindow(id);
       }}
       mcpActions={mcpActions}
+      agentReads={agentReads}
       pulseActivity={activity}
       agentTasks={agentTasks}
       pulseError={pulseError}

@@ -3,18 +3,20 @@ import type { IncomingHttpHeaders } from "node:http";
 import { decodeAndValidateToken, InvalidAuthTokenError, type AuthTokenClaims } from "./tokens.js";
 import { isAdmin, getDocReadPermission } from "./acl.js";
 import { readEnvVar } from "../env.js";
+import type { ShareTarget } from "../types/shared.js";
+
+export type ShareScope = ShareTarget & {
+  action: "read" | "write";
+  grantJti: string;
+  grantExp: number;
+};
 
 export interface AuthenticatedWriter {
   id: string;
   type: "human" | "agent";
   displayName: string;
   email?: string;
-  scope?: {
-    docPath: string;
-    action: "read" | "write";
-    grantJti: string;
-    grantExp: number;
-  };
+  scope?: ShareScope;
 }
 
 export function isScopedWriter(writer: AuthenticatedWriter | null): boolean {
@@ -56,28 +58,40 @@ function parseCookieTokenFromHeaders(headers: IncomingHttpHeaders): string | nul
   return null;
 }
 
+/**
+ * Decode a share scope from token claims. A token that declares
+ * `auth_source: "share"` but carries malformed scope fields is REJECTED
+ * (throws `InvalidAuthTokenError`, handled by callers as an invalid token) —
+ * never silently downgraded to an unscoped (full-access) writer.
+ */
+function decodeShareScope(claims: AuthTokenClaims): ShareScope | undefined {
+  if (claims.auth_source !== "share") return undefined;
+  if (
+    (claims.scope_kind !== "file" && claims.scope_kind !== "folder") ||
+    typeof claims.scope_path !== "string" ||
+    (claims.scope_action !== "read" && claims.scope_action !== "write") ||
+    typeof claims.grant_jti !== "string" ||
+    typeof claims.grant_exp !== "number"
+  ) {
+    throw new InvalidAuthTokenError("Malformed share scope claims.");
+  }
+  return {
+    kind: claims.scope_kind,
+    path: claims.scope_path,
+    action: claims.scope_action,
+    grantJti: claims.grant_jti,
+    grantExp: claims.grant_exp,
+  } as ShareScope;
+}
+
 function toWriter(claims: AuthTokenClaims): AuthenticatedWriter {
-  const scoped =
-    claims.auth_source === "share" &&
-    typeof claims.scope_doc === "string" &&
-    (claims.scope_action === "read" || claims.scope_action === "write") &&
-    typeof claims.grant_jti === "string" &&
-    typeof claims.grant_exp === "number";
+  const scope = decodeShareScope(claims);
   return {
     id: claims.sub,
     type: claims.type,
     displayName: claims.display_name,
     ...(claims.email ? { email: claims.email } : {}),
-    ...(scoped
-      ? {
-          scope: {
-            docPath: claims.scope_doc as string,
-            action: claims.scope_action as "read" | "write",
-            grantJti: claims.grant_jti as string,
-            grantExp: claims.grant_exp as number,
-          },
-        }
-      : {}),
+    ...(scope ? { scope } : {}),
   };
 }
 

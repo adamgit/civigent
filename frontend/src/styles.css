@@ -139,6 +139,175 @@ a {
   flex-shrink: 1;
 }
 
+.doc-agent-read-stage {
+  position: relative;
+  isolation: isolate;
+}
+
+/* Paper-note experiment. Full-document notes sit at the back, section tabs sit
+ * above them, and the opaque paper cells cover the portion tucked underneath. */
+.doc-agent-read-stage .doc-paper-col {
+  position: relative;
+  z-index: 2;
+}
+
+.agent-read-document-notes {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agent-read-document-gutter {
+  position: relative;
+  width: 200px;
+  min-width: 100px;
+  flex-shrink: 1;
+}
+
+.agent-read-document-paper-spacer {
+  flex: 1 1 0%;
+  min-width: 700px;
+}
+
+.agent-read-document-right-spacer {
+  width: 200px;
+  min-width: 140px;
+  flex-shrink: 1;
+}
+
+.agent-read-document-note {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  width: 72px;
+  overflow: hidden;
+  color: var(--agent-read-note-ink);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.22), transparent 28%),
+    var(--agent-read-note-paper);
+  border: 1px solid color-mix(in srgb, var(--agent-read-note-edge) 72%, transparent);
+  box-shadow:
+    -2px 2px 5px rgba(55, 42, 25, 0.12),
+    inset -5px 0 9px rgba(76, 57, 31, 0.07);
+  clip-path: polygon(1px 0, 100% 2px, calc(100% - 1px) 100%, 0 calc(100% - 3px));
+  transform-origin: top right;
+  animation: agent-read-section-note-life 30s linear forwards;
+}
+
+.agent-read-document-note span {
+  position: absolute;
+  top: 13px;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+}
+
+.agent-read-document-note span {
+  left: 5px;
+  font-weight: 700;
+}
+
+.agent-read-section-notes {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agent-read-section-note {
+  position: absolute;
+  right: -13px;
+  box-sizing: border-box;
+  width: min(132px, calc(100% - 7px));
+  min-height: 38px;
+  padding: 7px 19px 6px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  color: var(--agent-read-note-ink);
+  background:
+    linear-gradient(105deg, rgba(255, 255, 255, 0.28), transparent 34%),
+    var(--agent-read-note-paper);
+  border: 1px solid color-mix(in srgb, var(--agent-read-note-edge) 78%, transparent);
+  border-radius: 1px 2px 2px 1px;
+  box-shadow:
+    -2px 3px 5px rgba(55, 42, 25, 0.16),
+    inset -6px 0 8px rgba(76, 57, 31, 0.07);
+  clip-path: polygon(1px 2px, calc(100% - 2px) 0, 100% calc(100% - 2px), 0 100%);
+  transform-origin: right center;
+  font-family: var(--font-ui);
+  line-height: 1.1;
+  animation: agent-read-section-note-life 30s linear forwards;
+}
+
+.agent-read-section-note strong,
+.agent-read-section-note span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-read-section-note strong {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-read-section-note span {
+  margin-top: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.agent-read-section-note--collapsed {
+  top: 4px;
+  --agent-read-note-paper: #d8d5d0;
+  --agent-read-note-edge: #a5a19a;
+  --agent-read-note-ink: #45413c;
+  --agent-read-note-tilt: -0.35deg;
+}
+
+@keyframes agent-read-section-note-life {
+  0% {
+    opacity: 0;
+    transform: translateX(14px) rotate(var(--agent-read-note-tilt));
+  }
+  3% {
+    opacity: 1;
+    transform: translateX(0) rotate(var(--agent-read-note-tilt));
+  }
+  6% {
+    opacity: 1;
+    transform: translateX(0) rotate(var(--agent-read-note-tilt));
+  }
+  13% {
+    opacity: 0.46;
+    transform: translateX(-1px) rotate(var(--agent-read-note-tilt));
+  }
+  32% {
+    opacity: 0.22;
+    transform: translateX(-2px) rotate(var(--agent-read-note-tilt));
+  }
+  65% {
+    opacity: 0.14;
+    transform: translateX(-3px) rotate(var(--agent-read-note-tilt));
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-3px) rotate(var(--agent-read-note-tilt));
+  }
+}
+
 .doc-gutter-right {
   width: 200px;
   min-width: 140px;
@@ -158,6 +327,40 @@ a {
 [data-doc-layout="narrow"] .doc-gutter-left,
 [data-doc-layout="narrow"] .doc-gutter-right {
   display: none;
+}
+
+[data-doc-layout="narrow"] .agent-read-document-notes {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-read-document-note,
+  .agent-read-section-note {
+    animation-name: agent-read-section-note-life-reduced;
+  }
+}
+
+@keyframes agent-read-section-note-life-reduced {
+  0%, 6% {
+    opacity: 1;
+    transform: rotate(var(--agent-read-note-tilt));
+  }
+  13% {
+    opacity: 0.46;
+    transform: rotate(var(--agent-read-note-tilt));
+  }
+  32% {
+    opacity: 0.22;
+    transform: rotate(var(--agent-read-note-tilt));
+  }
+  65% {
+    opacity: 0.14;
+    transform: rotate(var(--agent-read-note-tilt));
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--agent-read-note-tilt));
+  }
 }
 
 [data-doc-layout="narrow"] .doc-paper-col {
@@ -831,6 +1034,7 @@ a {
 .section-who-changed-anchor {
   position: absolute;
   inset: 0;
+  z-index: 3;
   display: flex;
   align-items: stretch;
   justify-content: flex-end;

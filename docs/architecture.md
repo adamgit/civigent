@@ -340,16 +340,19 @@ When a document is next mounted, its Y.Doc is reconstructed from the current `in
 
 ## Agent-reading detection
 
-The system automatically detects when agents read content (because agents can only read via API) and broadcasts `agent:reading` events.
+The server observes completed agent reads (agents can only read via API) and broadcasts one `agent:reading` event per observation. The event is an `AgentRead`: `document_read`, `section_names`, or `section_read`, with `source`, server-stamped `occurred_at_ms`, actor, and `doc_path` (`heading_path` only on `section_read`).
 
-**Trigger endpoints:**
-- `GET /api/documents/:docPath`
-- `GET /api/documents/:docPath/sections`
-- `GET /api/documents/:docPath/structure`
+**Emitted after a successful agent read of:**
+- Canonical assembled document (`GET /api/canonical/:docPath`, MCP `read_doc` / `read_file`)
+- Canonical section-name inventory (`GET /api/canonical/:docPath/structure`, `GET /api/canonical/:docPath/sections`, MCP `list_sections`)
+- Canonical section body (MCP `read_published_section`)
+- Stored section-history body (MCP `read_section_history`) — `source: "history"`
 
-**Frontend behavior:** Time-decaying indicator per section ("Agent 'writer-bot' reading"), fading after 3-5 seconds. Debounced: max one signal per agent per section per 10-second window.
+Workspace reads, search, proposal reads, and listing section history do not emit.
 
-This is a **courtesy signal only** — it does not block reads, create state, or affect involvement scoring.
+The event is a finished observation, not “currently reading.” It is live-only: opening a document does not replay recent reads. `document:activity` is a separate presence roll-up and is not a transcript of `AgentRead`s.
+
+This is a **courtesy signal only** — it does not block reads, create persistent state, or affect involvement scoring.
 
 ---
 

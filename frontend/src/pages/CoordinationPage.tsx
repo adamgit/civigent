@@ -89,11 +89,11 @@ export function CoordinationPage() {
             lastSeenAt: 0,
           };
           existing.lastSeenAt = Date.now();
-          for (const hp of event.heading_paths) {
-            const key = sectionGlobalKey(event.doc_path, hp);
+          if (event.kind === "section_read") {
+            const key = sectionGlobalKey(event.doc_path, event.heading_path);
             existing.sections.set(key, {
               doc_path: event.doc_path,
-              heading_path: hp,
+              heading_path: event.heading_path,
               lastSeenAt: Date.now(),
             });
           }

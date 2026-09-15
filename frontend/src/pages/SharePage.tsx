@@ -2,7 +2,17 @@ import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ContentPanel } from "../components/ContentPanel";
 import { apiClient } from "../services/api-client";
-import { docsRouteForStoredPath } from "../app/docs-location";
+import { docsRouteForStoredPath, folderHref } from "../app/docs-location";
+import { FolderPath } from "../types/shared";
+import type { RedeemShareGrantResponse } from "../types/shared";
+
+function routeForRedeemedTarget(target: RedeemShareGrantResponse): string | null {
+  if (target.kind === "file") {
+    return docsRouteForStoredPath(target.path);
+  }
+  const folderPath = FolderPath.tryParse(target.path);
+  return folderPath ? folderHref(folderPath) : null;
+}
 
 function grantTokenFromPathname(pathname: string): string {
   const marker = "/share/";
@@ -23,15 +33,19 @@ export function SharePage() {
   const [name, setName] = useState("Guest");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [redeemedKind, setRedeemedKind] = useState<"file" | "folder" | null>(null);
 
   const handleOpen = async () => {
     setSubmitting(true);
     setError(null);
     try {
-      const { doc_path } = await apiClient.redeemShareGrant(token, name.trim() || "Guest");
-      const route = docsRouteForStoredPath(doc_path);
+      const target = await apiClient.redeemShareGrant(token, name.trim() || "Guest");
+      setRedeemedKind(target.kind);
+      const route = routeForRedeemedTarget(target);
       if (!route) {
-        setError(`This share link points at an unreadable document path: ${doc_path}`);
+        setError(
+          `This share link points at an unreadable ${target.kind === "file" ? "document" : "folder"} path: ${target.path}`,
+        );
         return;
       }
       navigate(route, { replace: true });
@@ -42,10 +56,12 @@ export function SharePage() {
     }
   };
 
+  const noun = redeemedKind === "folder" ? "folder" : "document";
+
   return (
     <div className="p-8 max-w-xl mx-auto">
       <ContentPanel>
-        <h1 className="text-lg font-semibold mb-1">A document has been shared with you</h1>
+        <h1 className="text-lg font-semibold mb-1">A {noun} has been shared with you</h1>
         <p className="text-sm text-gray-600 mb-4">
           Choose the name your edits and presence will carry.
         </p>
@@ -65,7 +81,7 @@ export function SharePage() {
             disabled={submitting || token.length === 0}
             className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {submitting ? "Opening…" : "Open document"}
+            {submitting ? "Opening…" : `Open ${noun}`}
           </button>
         </div>
       </ContentPanel>

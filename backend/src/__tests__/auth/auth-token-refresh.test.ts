@@ -115,7 +115,8 @@ describe("POST /api/auth/token/refresh", () => {
     const pair = issueScopedTokenPair(
       { id: "human-share-refresh", type: "human", displayName: "Share Guest" },
       {
-        docPath: "/shared.md",
+        kind: "file",
+        path: "/shared.md",
         action: "write",
         grantJti: "grant-jti-refresh",
         grantExp,
@@ -138,11 +139,13 @@ describe("POST /api/auth/token/refresh", () => {
     const accessClaims = decodeAndValidateToken(access!);
     const refreshClaims = decodeAndValidateToken(refresh!);
     expect(accessClaims.auth_source).toBe("share");
-    expect(accessClaims.scope_doc).toBe("/shared.md");
+    expect(accessClaims.scope_kind).toBe("file");
+    expect(accessClaims.scope_path).toBe("/shared.md");
     expect(accessClaims.scope_action).toBe("write");
     expect(accessClaims.grant_exp).toBe(grantExp);
     expect(refreshClaims.auth_source).toBe("share");
-    expect(refreshClaims.scope_doc).toBe("/shared.md");
+    expect(refreshClaims.scope_kind).toBe("file");
+    expect(refreshClaims.scope_path).toBe("/shared.md");
     expect(refreshClaims.grant_exp).toBe(grantExp);
   });
 

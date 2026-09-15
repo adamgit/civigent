@@ -34,7 +34,7 @@ describe("agent:reading signal (spec 06)", () => {
     else process.env.KS_AUTH_MODE = prevAuthMode;
   });
 
-  it("emits agent:reading with the actor + heading paths when an agent reads sections", async () => {
+  it("emits agent:reading (section_names) with the actor when an agent reads sections", async () => {
     ctx.wsEvents.length = 0;
     const res = await request(ctx.app)
       .get(`/api/canonical${SAMPLE_DOC_PATH}/sections`)
@@ -45,8 +45,10 @@ describe("agent:reading signal (spec 06)", () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
     const ev = events[0];
     expect(ev.doc_path).toBe(SAMPLE_DOC_PATH);
+    expect(ev.kind).toBe("section_names");
+    expect(ev.source).toBe("canonical");
     expect(typeof ev.actor_id).toBe("string");
-    expect(ev.heading_paths).toContainEqual(["Overview"]);
+    expect(typeof ev.occurred_at_ms).toBe("number");
   });
 
   it("emits agent:reading when an agent reads document structure", async () => {

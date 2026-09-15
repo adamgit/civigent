@@ -26,10 +26,6 @@ import {
 } from "./middleware.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
 import {
-  proposalTargetDocPathForDisplay,
-  proposalSectionDocPathForDisplay,
-} from "../../types/shared.js";
-import {
   isProposalStatus,
   listProposalsForStatusFilter,
   listMyProposals,
@@ -51,7 +47,6 @@ import {
   readProposalSectionList,
   readProposalAllSections,
   verifyProposalForRead,
-  broadcastAgentReading,
   SectionsReadForbiddenError,
   DocumentNotFoundError,
   InvalidDocPathError,
@@ -76,6 +71,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const parsed = CreateProposalRequest.parse(req.body);
       if (!parsed.ok) {
@@ -140,6 +136,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const statusFilterRaw = req.query.status;
       if (statusFilterRaw !== undefined && !isProposalStatus(statusFilterRaw)) {
@@ -185,18 +182,11 @@ export function registerProposalRoutes(
   // GET /api/proposals/:id — Read proposal
   router.get("/proposals/:id", async (req, res, next) => {
     try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
+
       const dto = await readProposalDto(req.params.id);
-      const scope = resolveAuthenticatedWriter(req)?.scope;
-      if (scope) {
-        const claimedDocPaths = new Set<string>([
-          ...dto.targets.map(proposalTargetDocPathForDisplay),
-          ...dto.sections.map(proposalSectionDocPathForDisplay),
-        ]);
-        if (!claimedDocPaths.has(scope.docPath)) {
-          sendApiError(res, 403, "This action is not available to shared-link sessions.");
-          return;
-        }
-      }
       const response: ReadProposalResponse = { proposal: dto };
       res.json(response);
     } catch (error) {
@@ -215,6 +205,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const parsed = UpdateProposalManifestRequest.parse(req.body);
       if (!parsed.ok) {
@@ -261,6 +252,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       try {
         await verifyProposalForRead(req.params.id, writer.id);
@@ -303,6 +295,7 @@ export function registerProposalRoutes(
 
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       try {
         await verifyProposalForRead(req.params.id, writer.id);
@@ -314,8 +307,7 @@ export function registerProposalRoutes(
         throw error;
       }
 
-      const { response, headingPaths } = await readProposalSectionList(req.params.id, docPath);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+      const { response } = await readProposalSectionList(req.params.id, docPath);
 
       const out: GetDocumentSectionsResponse = response;
       res.json(out);
@@ -341,6 +333,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const parsed = UpsertProposalSectionsRequest.parse(req.body);
       if (!parsed.ok) {
@@ -371,6 +364,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const parsed = WriteProposalDocumentSectionsRequest.parse(req.body);
       if (!parsed.ok) {
@@ -406,6 +400,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const result = await acquireLocksUseCase(req.params.id, writer.id);
       if (result.kind === "error") {
@@ -464,6 +459,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const result = await commitProposalUseCase(
         req.params.id,
@@ -520,6 +516,7 @@ export function registerProposalRoutes(
     try {
       const writer = requireAuthenticatedWriter(req, res);
       if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
 
       const reason = req.body?.reason as string | undefined;
       const result = await cancelProposalUseCase(req.params.id, writer.id, reason);

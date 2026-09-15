@@ -8,15 +8,13 @@
  */
 
 import path from "node:path";
-import type { Request } from "express";
 import { getDataRoot } from "../../storage/data-root.js";
 import { resolveAllCanonicalSectionPaths } from "../../storage/heading-resolver.js";
 import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-commit-history.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
-import type { WsServerEvent, AttributionWriterType, SectionAgentWritePolicySummary } from "../../types/shared.js";
-import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import type { AttributionWriterType, SectionAgentWritePolicySummary } from "../../types/shared.js";
 import { DocPath } from "../../types/shared.js";
 
 export interface SectionInvolvementMeta {
@@ -96,25 +94,4 @@ export async function buildSectionInvolvementMeta(
   }
 
   return result;
-}
-
-/**
- * Broadcast agent:reading WebSocket event if the request is from an agent.
- */
-export function broadcastAgentReading(
-  req: Request,
-  docPath: DocPath,
-  headingPaths: string[][],
-  onWsEvent?: (event: WsServerEvent) => void,
-): void {
-  const writer = resolveAuthenticatedWriter(req);
-  if (writer?.type === "agent" && onWsEvent) {
-    onWsEvent({
-      type: "agent:reading",
-      actor_id: writer.id,
-      actor_display_name: writer.displayName,
-      doc_path: docPath,
-      heading_paths: headingPaths,
-    });
-  }
 }

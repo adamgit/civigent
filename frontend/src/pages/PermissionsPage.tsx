@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient, type AclSnapshot } from "../services/api-client";
-import { DocPath } from "../types/shared";
+import { AclPath } from "../types/shared";
 import {
   RoleName,
   BuiltinRoleName,
   type SetAclDefaultsRequest,
-  type SetDocumentAclRequest,
+  type SetPathAclRequest,
 } from "../types/shared";
 
 const MAGIC_ROLES: string[] = [...BuiltinRoleName.values];
@@ -88,18 +88,18 @@ export function PermissionsPage() {
     e.preventDefault();
     const raw = newDocPath.trim();
     if (!raw) return;
-    const docPath = DocPath.tryParse(raw);
-    if (!docPath) {
-      setError(`Invalid document path: ${JSON.stringify(raw)}`);
+    const aclPath = AclPath.tryParse(raw);
+    if (!aclPath) {
+      setError(`Invalid document or folder path: ${JSON.stringify(raw)}`);
       return;
     }
-    const perms: SetDocumentAclRequest = {};
+    const perms: SetPathAclRequest = {};
     if (newDocRead) perms.read = RoleName.of(newDocRead);
     if (newDocWrite) perms.write = RoleName.of(newDocWrite);
     if (!perms.read && !perms.write) return;
     setSaving(true);
     try {
-      await apiClient.setDocAcl(docPath, perms);
+      await apiClient.setPathAcl(aclPath, perms);
       setNewDocPath("");
       setNewDocRead("");
       setNewDocWrite("");
@@ -112,10 +112,10 @@ export function PermissionsPage() {
   };
 
   const handleRemoveDocOverride = async (aclKey: string) => {
-    const docPath = DocPath.parse(aclKey);
+    const aclPath = AclPath.parse(aclKey);
     setSaving(true);
     try {
-      await apiClient.removeDocAcl(docPath);
+      await apiClient.removePathAcl(aclPath);
       await reload();
     } catch (err) {
       setError((err as Error).message);
@@ -244,12 +244,13 @@ export function PermissionsPage() {
         </section>
 
         <section className="mb-8">
-          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-3">Document Overrides</h2>
+          <h2 className="text-[15px] font-semibold text-text-primary m-0 mb-3">Path Overrides</h2>
+          <p className="text-text-muted text-[13px] mb-3">Document and folder overrides, shown together.</p>
           <div className="border border-card-border rounded-lg overflow-hidden bg-canvas-bg mb-3">
             <table className="w-full border-collapse text-[13px]">
               <thead>
                 <tr className="bg-section-hover border-b border-footer-border">
-                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Document Path</th>
+                  <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Path</th>
                   <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Read</th>
                   <th className="text-left px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">Write</th>
                   <th className="px-3 py-2"></th>
@@ -280,7 +281,7 @@ export function PermissionsPage() {
             <input
               value={newDocPath}
               onChange={e => setNewDocPath(e.target.value)}
-              placeholder="Document path"
+              placeholder="Document or folder path"
               className="input-field flex-1 min-w-[200px]"
             />
             <select value={newDocRead} onChange={e => setNewDocRead(e.target.value)} className="input-field">

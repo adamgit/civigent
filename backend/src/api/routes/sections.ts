@@ -6,6 +6,7 @@ import {
   requireDocReadPermission,
   requireDocWritePermission,
   agentWritePolicyRouteBody,
+  resolveAuthenticatedWriter,
   docPathParamOf,
 } from "./middleware.js";
 import {
@@ -16,7 +17,6 @@ import {
   renameSectionUseCase,
   liveMoveSectionUseCase,
   hasActiveSession,
-  broadcastAgentReading,
   SectionNotFoundForMoveError,
   InvalidDocPathError,
   DirectoryAtDocPathError,
@@ -24,6 +24,7 @@ import {
   DocumentAssemblyError,
 } from "../application/sections.js";
 import { emitCanonicalStructureChanged, resolveSectionFragmentKey } from "../application/events.js";
+import { recordAgentRead } from "../../ws/agent-read.js";
 
 
 function parseHeadingPathParam(raw: string): string[] {
@@ -42,8 +43,15 @@ export function registerSectionRoutes(
       const access = await requireDocReadPermission(req, res, docPath);
       if (!access) return;
 
-      const { response, headingPaths } = await readCanonicalSectionList(access);
-      broadcastAgentReading(req, docPath, headingPaths, onWsEvent);
+      const { response } = await readCanonicalSectionList(access);
+      const writer = resolveAuthenticatedWriter(req);
+      if (writer?.type === "agent" && onWsEvent) {
+        recordAgentRead.canonicalSectionNames(
+          writer,
+          docPath,
+          onWsEvent,
+        );
+      }
 
       const out: GetDocumentSectionsResponse = response;
       res.json(out);

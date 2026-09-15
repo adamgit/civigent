@@ -2,6 +2,7 @@ import {
   proposalSectionDocPathForDisplay,
   proposalTargetDocPathForDisplay,
   type ActivityItem,
+  type AgentRead,
   type AgentRosterEntry,
   type AnyProposal,
   DocPath,
@@ -74,6 +75,10 @@ function addSection(
   );
 }
 
+function addReadTouch(touches: HomeAgentTaskTouch[], read: AgentRead): HomeAgentTaskTouch[] {
+  return addSection(touches, read.doc_path, read.kind === "section_read" ? read.heading_path : undefined);
+}
+
 function writesFromProposal(
   proposal: AnyProposal,
   mcpWrites: HomeAgentTaskTouch[],
@@ -133,6 +138,7 @@ function intentOf(proposal: AnyProposal): string {
 export function buildAgentTasks(
   proposals: readonly AnyProposal[],
   actions: readonly HomeMcpPulseAction[],
+  reads: readonly AgentRead[],
   agents: readonly AgentRosterEntry[],
   activity: readonly ActivityItem[],
   nowMs: number = Date.now(),
@@ -174,6 +180,17 @@ export function buildAgentTasks(
     actionsByWindow.set(window.proposal, list);
   });
 
+  const readsByWindow = new Map<AnyProposal, AgentRead[]>();
+  for (const read of reads) {
+    const windows = windowsByAgent.get(read.actor_id);
+    if (!windows) continue;
+    const window = coveringWindow(windows, read.occurred_at_ms);
+    if (!window) continue;
+    const list = readsByWindow.get(window.proposal) ?? [];
+    list.push(read);
+    readsByWindow.set(window.proposal, list);
+  }
+
   const landedAtByProposalId = new Map(activity.map((item) => [item.id, item.landed_at]));
 
   const tasks: HomeAgentTask[] = [];
@@ -194,6 +211,9 @@ export function buildAgentTasks(
       }
 
       const windowActions = actionsByWindow.get(proposal) ?? [];
+      const windowReads = readsByWindow.get(proposal) ?? [];
+      let readTouches = collectTouches(windowActions, isReadTool);
+      for (const read of windowReads) readTouches = addReadTouch(readTouches, read);
       const endedAt = isOpen
         ? new Date(lastActionByWindow.get(proposal) ?? nowMs).toISOString()
         : landedAtByProposalId.get(proposal.id) ?? new Date(lastActionMs).toISOString();
@@ -205,7 +225,7 @@ export function buildAgentTasks(
         status: isOpen ? draftStatus(agent, lastActionMs, nowMs) : "finished",
         startedAt: proposal.created_at,
         endedAt,
-        reads: collectTouches(windowActions, isReadTool),
+        reads: readTouches,
         writes: writesFromProposal(proposal, collectTouches(windowActions, isWriteTool)),
       });
     }

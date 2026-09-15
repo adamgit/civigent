@@ -11,6 +11,7 @@ import {
   SectionHistoryVersionNotFoundError,
 } from "../../storage/section-history.js";
 import { buildFragmentContent, fragmentFromBodyHolder } from "../../storage/section-formatting.js";
+import { recordAgentRead } from "../../ws/agent-read.js";
 
 const listSectionHistoryHandler: ToolHandler = async (args, ctx) => {
   const rawDocPath = args.doc_path as string | undefined;
@@ -90,13 +91,12 @@ const readSectionHistoryHandler: ToolHandler = async (args, ctx) => {
     const stored = await readSectionHistoryVersion(authorizedRead, headingPath, version);
 
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "agent:reading",
-        actor_id: ctx.writer.id,
-        actor_display_name: ctx.writer.displayName,
-        doc_path: docPath,
-        heading_paths: [headingPath],
-      });
+      recordAgentRead.historicalSection(
+        ctx.writer,
+        docPath,
+        headingPath,
+        ctx.emitEvent,
+      );
     }
 
     const markdown =

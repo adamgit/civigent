@@ -1,4 +1,4 @@
-import type { ActivityItem } from "../../../types/shared.js";
+import type { ActivityItem, AgentRead } from "../../../types/shared.js";
 import { emptyPulseCopy, useAgentPulseChart } from "../wide/useAgentPulseChart.js";
 import { PULSE_RANGE_OPTIONS } from "./build-pulse-hours.js";
 import { HomePulseTaskCard } from "./HomeAgentTaskRow.js";
@@ -6,6 +6,7 @@ import type { HomeAgentTask, HomeMcpPulseAction } from "./types.js";
 
 interface HomeAgentPulseSectionProps {
   actions: HomeMcpPulseAction[];
+  reads: AgentRead[];
   activity: ActivityItem[];
   tasks: HomeAgentTask[];
   error?: string | null;
@@ -13,11 +14,12 @@ interface HomeAgentPulseSectionProps {
 
 export function HomeAgentPulseSection({
   actions,
+  reads,
   activity,
   tasks,
   error,
 }: HomeAgentPulseSectionProps) {
-  const chart = useAgentPulseChart(actions, activity, tasks);
+  const chart = useAgentPulseChart(actions, reads, activity, tasks);
   const maxCount = Math.max(
     1,
     ...chart.bars.map((bar) => bar.readCount + bar.writeCount),

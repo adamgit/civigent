@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { base64UrlEncode, DEFAULT_AUTH_SECRET } from "./encoding.js";
 import { readEnvVar } from "../env.js";
 import { getShareSalt } from "./oauth-config.js";
+import type { ShareTarget } from "../types/shared.js";
 
 type TokenUse = "access" | "refresh" | "bootstrap";
 
@@ -16,7 +17,8 @@ export interface AuthTokenClaims {
   iat: number;
   jti: string;
   auth_source?: "share";
-  scope_doc?: string;
+  scope_kind?: "file" | "folder";
+  scope_path?: string;
   scope_action?: "read" | "write";
   grant_jti?: string;
   grant_exp?: number;
@@ -108,7 +110,8 @@ function issueToken(
     ...(scope
       ? {
           auth_source: "share" as const,
-          scope_doc: scope.docPath,
+          scope_kind: scope.kind,
+          scope_path: scope.path,
           scope_action: scope.action,
           grant_jti: scope.grantJti,
           grant_exp: scope.grantExp,
@@ -136,12 +139,11 @@ export function issueTokenPair(identity: {
   };
 }
 
-export interface ShareSessionScope {
-  docPath: string;
+export type ShareSessionScope = ShareTarget & {
   action: "read" | "write";
   grantJti: string;
   grantExp: number;
-}
+};
 
 export function issueScopedTokenPair(
   identity: {
@@ -159,7 +161,7 @@ export function issueScopedTokenPair(
     throw new Error("Cannot issue a scoped session for an expired share grant.");
   }
   return {
-    access_token: issueToken(identity, "access", ACCESS_TTL_SECONDS, scope),
+    access_token: issueToken(identity, "access", Math.min(ACCESS_TTL_SECONDS, remainingSeconds), scope),
     refresh_token: issueToken(
       identity,
       "refresh",

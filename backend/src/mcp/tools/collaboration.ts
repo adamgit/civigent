@@ -17,11 +17,8 @@ import { readAssembledDocument, DocumentNotFoundError } from "../../storage/docu
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
-import {
-  readDocumentStructure,
-  flattenStructureToHeadingPaths,
-  HeadingNotFoundError,
-} from "../../storage/heading-resolver.js";
+import { HeadingNotFoundError } from "../../storage/heading-resolver.js";
+import { recordAgentRead } from "../../ws/agent-read.js";
 import {
   createProposal,
   readProposal,
@@ -51,7 +48,8 @@ import {
 import { SectionRef } from "../../domain/section-ref.js";
 import { findProseUnicodeEscapes } from "../../domain/encoding-defect-detection.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
-import type { DocPath, HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
+import { DocPath } from "../../types/shared.js";
+import type { HumanInvolvementPolicyResult, ProposalStatus } from "../../types/shared.js";
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { authorizeDocRead, PermissionError } from "../../auth/authorized-read.js";
@@ -94,27 +92,17 @@ const listSectionsHandler: ToolHandler = async (args, ctx) => {
   try {
     const { rows, failures } = await listReadableSections(ctx.writer, pathScope);
 
-    // Broadcast agent:reading per document whose section inventory was returned
-    // (same signal REST GET /canonical/.../sections emits). Folder/root scopes
-    // fan out one event per touched document.
+    // Emit one AgentRead (section_names) per document whose section inventory
+    // was returned (same signal REST GET /canonical/.../sections emits).
+    // Folder/root scopes fan out one event per touched document.
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      const headingPathsByDoc = new Map<string, string[][]>();
-      for (const row of rows) {
-        let headingPaths = headingPathsByDoc.get(row.doc_path);
-        if (!headingPaths) {
-          headingPaths = [];
-          headingPathsByDoc.set(row.doc_path, headingPaths);
-        }
-        headingPaths.push(row.heading_path);
-      }
-      for (const [docPath, headingPaths] of headingPathsByDoc) {
-        ctx.emitEvent({
-          type: "agent:reading",
-          actor_id: ctx.writer.id,
-          actor_display_name: ctx.writer.displayName,
-          doc_path: docPath,
-          heading_paths: headingPaths,
-        });
+      const touchedDocPaths = new Set(rows.map((row) => row.doc_path));
+      for (const rawDocPath of touchedDocPaths) {
+        recordAgentRead.canonicalSectionNames(
+          ctx.writer,
+          DocPath.parse(rawDocPath),
+          ctx.emitEvent,
+        );
       }
     }
 
@@ -191,18 +179,13 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
 
   try {
     const content = await readAssembledDocument(authorizedRead);
-    const structure = await readDocumentStructure(docPath);
-    const headingPaths = flattenStructureToHeadingPaths(structure);
 
-    // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "agent:reading",
-        actor_id: ctx.writer.id,
-        actor_display_name: ctx.writer.displayName,
-        doc_path: docPath,
-        heading_paths: headingPaths,
-      });
+      recordAgentRead.canonicalDocument(
+        ctx.writer,
+        docPath,
+        ctx.emitEvent,
+      );
     }
 
     return textToolResult(content);
@@ -275,15 +258,13 @@ const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
   try {
     const content = await readSectionWithHeading(authorizedRead, headingPath);
 
-    // Broadcast agent:reading
     if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      ctx.emitEvent({
-        type: "agent:reading",
-        actor_id: ctx.writer.id,
-        actor_display_name: ctx.writer.displayName,
-        doc_path: docPath,
-        heading_paths: [headingPath],
-      });
+      recordAgentRead.canonicalSection(
+        ctx.writer,
+        docPath,
+        headingPath,
+        ctx.emitEvent,
+      );
     }
 
     return textToolResult(content);

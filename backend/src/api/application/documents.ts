@@ -68,11 +68,9 @@ import { RoleName } from "../../types/shared.js";
 import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 
 import type { AuthenticatedWriter } from "../../auth/context.js";
-import { buildSectionInvolvementMeta, broadcastAgentReading } from "../helpers/section-meta-builder.js";
+import { buildSectionInvolvementMeta } from "../helpers/section-meta-builder.js";
 import { openWorkspaceReader } from "./sections.js";
 import { getExportedSkillsConfig } from "../../exported-skills-config.js";
-
-export { broadcastAgentReading };
 
 export {
   DirectoryAtDocPathError,
@@ -125,16 +123,23 @@ function annotateExportedSkillsPills(entries: DocumentTreeEntry[]): DocumentTree
   });
 }
 
-async function annotateDirectoryAccess(entries: DocumentTreeEntry[]): Promise<DocumentTreeEntry[]> {
+async function annotateDirectoryAccess(
+  writer: AuthenticatedWriter,
+  entries: DocumentTreeEntry[],
+): Promise<DocumentTreeEntry[]> {
   return Promise.all(
     entries.map(async (entry) => {
-      const children = entry.children ? await annotateDirectoryAccess(entry.children) : entry.children;
+      const children = entry.children
+        ? await annotateDirectoryAccess(writer, entry.children)
+        : entry.children;
       if (entry.type === "directory") {
-        const [read, write] = await Promise.all([
+        const [read, write, can_read, can_write] = await Promise.all([
           getDocReadPermission(entry.path),
           getDocWritePermission(entry.path),
+          checkDocPermission(writer, entry.path, "read"),
+          checkDocPermission(writer, entry.path, "write"),
         ]);
-        return { ...entry, children, access: { read, write } };
+        return { ...entry, children, access: { read, write, can_read, can_write } };
       }
       if (children !== entry.children) {
         return { ...entry, children };
@@ -183,13 +188,19 @@ export async function readTree(
   if (writer === null) {
     return { tree: await filterTreeToPublic(tree) };
   }
-  return { tree: await annotateDirectoryAccess(await filterTreeToReadable(writer, tree)) };
+  return { tree: await annotateDirectoryAccess(writer, await filterTreeToReadable(writer, tree)) };
 }
 
 export async function readFolderFileAges(
   writer: AuthenticatedWriter | null,
   folder: FolderPath,
 ): Promise<GetFolderFileAgesResponse> {
+  if (writer?.scope) {
+    const inScope = writer.scope.kind === "folder" && FolderPath.contains(writer.scope.path, folder);
+    if (!inScope) {
+      throw new PermissionError(`Read permission denied for folder ${folder}`, false);
+    }
+  }
   const children = (await readDocumentsTreeUnfiltered(folder, false)).filter((entry) => entry.type === "file");
   const readable = writer === null
     ? await filterTreeToPublic(children)

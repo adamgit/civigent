@@ -15,6 +15,8 @@ import {
 import { docHref, folderHref } from "../app/docs-location";
 import { CopyPathButton } from "../components/CopyPathButton";
 import { FolderGlyphIcon, FolderPathBreadcrumb } from "../components/FolderPathBreadcrumb";
+import { ShareTargetDialog } from "../components/ShareTargetDialog";
+import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient } from "../services/api-client";
 import type { DocumentTreeAccess, DocumentTreeEntry, ReadDocStructureResponse } from "../types/shared.js";
 import type { AppLayoutOutletContext, DocSectionHeading } from "../app/AppLayout";
@@ -157,10 +159,12 @@ function FolderOverflowMenu({
   busy,
   onRename,
   onDelete,
+  onShare,
 }: {
   busy: boolean;
   onRename: () => void;
   onDelete: () => void;
+  onShare?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -209,6 +213,20 @@ function FolderOverflowMenu({
           >
             Rename
           </button>
+          {onShare ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full border-none bg-transparent px-3 py-1.5 text-left text-[12px] text-text-secondary hover:bg-section-hover hover:text-text-primary"
+              disabled={busy}
+              onClick={() => {
+                setOpen(false);
+                onShare();
+              }}
+            >
+              Share
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"
@@ -233,8 +251,10 @@ function sectionLabelClassName() {
 
 export function FolderPage({ folderPath }: FolderPageProps) {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
   const { entries, treeLoading, refreshTree, subscribeDocSectionNamesChanged } =
     useOutletContext<AppLayoutOutletContext>();
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
@@ -266,6 +286,13 @@ export function FolderPage({ folderPath }: FolderPageProps) {
   const isRoot = folderPath === FolderPath.root;
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
+  const isShareGuest = currentUser?.auth_source === "share";
+  // Root has no `access` entry of its own (it is the synthesized container of
+  // the top-level entries, not one of them) — treat it as writable, matching
+  // its pre-existing unconditional create/bulk-import behavior. Non-root
+  // folders use the requester-specific `can_write` the tree now annotates.
+  const canWriteHere = isRoot ? true : folderEntry?.access?.can_write === true;
+  const canShareHere = !isRoot && canWriteHere && !isShareGuest && currentUser?.type === "human";
   const stats = useMemo(() => (folderEntry ? getFolderStats(folderEntry) : null), [folderEntry]);
   const childFilesKey = stats === null ? null : stats.childFiles.join("\n");
   const childFiles = useMemo(() => {
@@ -500,6 +527,15 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   return (
     <div className="relative flex min-w-0 flex-col bg-folder-page-bg">
+      {isShareGuest ? (
+        <div
+          className="px-5 py-2 text-xs border-b border-[rgba(0,0,0,0.08)] bg-accent-light text-accent-text"
+          data-testid="shared-folder-banner"
+        >
+          You're viewing a shared folder as {currentUser?.displayName} —{" "}
+          {currentUser?.scope_action === "write" ? "you can edit this folder." : "you can view this folder."}
+        </div>
+      ) : null}
       {folderEntry ? <FolderTreePageWatermark entry={folderEntry} /> : null}
       <div className="px-8 py-7 font-ui max-md:px-4 max-md:py-4">
         {treeLoading ? (
@@ -557,7 +593,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                         />
                       </span>
                     </div>
-                    {!isRoot && renaming ? (
+                    {!isRoot && canWriteHere && renaming ? (
                       <form onSubmit={handleRenameFolder} className="ml-auto flex shrink-0 items-center gap-2">
                         <input
                           type="text"
@@ -583,7 +619,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                         </button>
                       </form>
                     ) : null}
-                    {!isRoot && !renaming ? (
+                    {!isRoot && canWriteHere && !renaming ? (
                       <>
                         <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
                           <button
@@ -598,6 +634,16 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                           >
                             Rename
                           </button>
+                          {canShareHere ? (
+                            <button
+                              type="button"
+                              className="border-none bg-transparent p-0 text-xs text-accent-primary hover:underline"
+                              disabled={folderOpBusy}
+                              onClick={() => setShowShareDialog(true)}
+                            >
+                              Share
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="border-none bg-transparent p-0 text-xs text-folder-danger hover:underline hover:text-folder-danger-hover"
@@ -618,6 +664,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                               setRenaming(true);
                             }}
                             onDelete={handleDeleteFolder}
+                            onShare={canShareHere ? () => setShowShareDialog(true) : undefined}
                           />
                         </div>
                       </>
@@ -695,14 +742,20 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     ))}
                   </ul>
                 )}
-                <div className="mt-3">
-                  <NewFileOrFolder
-                    busy={creating}
-                    error={createError}
-                    onSubmit={handleCreate}
-                    onBulkIntake={() => navigate(`/imports?into=${encodeURIComponent(folderPath)}`)}
-                  />
-                </div>
+                {canWriteHere ? (
+                  <div className="mt-3">
+                    <NewFileOrFolder
+                      busy={creating}
+                      error={createError}
+                      onSubmit={handleCreate}
+                      onBulkIntake={
+                        isShareGuest
+                          ? undefined
+                          : () => navigate(`/imports?into=${encodeURIComponent(folderPath)}`)
+                      }
+                    />
+                  </div>
+                ) : null}
               </section>
               </div>
             </div>
@@ -712,6 +765,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
       <div className="max-md:hidden">
         <PageStatusBar items={["Folder", folderPath]} />
       </div>
+      {showShareDialog && (
+        <ShareTargetDialog target={{ kind: "folder", path: folderPath }} onClose={() => setShowShareDialog(false)} />
+      )}
     </div>
   );
 }

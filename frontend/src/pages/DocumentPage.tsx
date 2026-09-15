@@ -61,12 +61,17 @@ import {
 } from "../contexts/EditorSessionCommandsContext";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
 import type { DocumentAction } from "../components/DocumentActions";
-import { ShareDocumentDialog } from "../components/ShareDocumentDialog";
+import { ShareTargetDialog } from "../components/ShareTargetDialog";
 import { CanonicalWriteFailureDialog } from "../components/CanonicalWriteFailureDialog";
 import {
   DocumentPaperStickyHeader,
   docPaperSectionScrollOffsetPx,
 } from "../components/DocumentPaperStickyHeader";
+import {
+  DocumentWholeReadNotes,
+  type AgentDocumentRead,
+  type AgentSectionRead,
+} from "../components/DocumentAgentReadNotes";
 import { apiClient, resolveWriterId, CanonicalWriteFailedError } from "../services/api-client";
 import type { LiveEditorBinding } from "../services/live-section-replica";
 import {
@@ -452,7 +457,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const {
     recentlyChangedSections,
     recentlyChangedByLabel,
-    agentReadingIndicators,
+    agentReads,
     pendingProposalIndicatorsRef,
     coldPendingByFragmentKey,
     documentActivity: documentActivitySnapshot,
@@ -466,6 +471,29 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     onProposalSectionAvailability: applyProposalSectionAvailabilityEvent,
     onSectionEditRejected,
   });
+  const visibleAgentReads = useMemo(
+    () => [...agentReads].sort(
+      (a, b) => a.occurred_at_ms - b.occurred_at_ms,
+    ),
+    [agentReads],
+  );
+  const documentReadNotes = useMemo(
+    () => visibleAgentReads.filter(
+      (read): read is AgentDocumentRead => read.kind === "document_read",
+    ),
+    [visibleAgentReads],
+  );
+  const agentReadsBySectionKey = useMemo(() => {
+    const bySection = new Map<string, AgentSectionRead[]>();
+    for (const read of visibleAgentReads) {
+      if (read.kind !== "section_read") continue;
+      const key = sectionHeadingKey(read.heading_path);
+      const existing = bySection.get(key);
+      if (existing) existing.push(read);
+      else bySection.set(key, [read]);
+    }
+    return bySection;
+  }, [visibleAgentReads]);
 
   // Document presence model — shared by the narrative activity line in both
   // paper headers. Fed the server's complete `document:activity` snapshot
@@ -1089,7 +1117,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       )}
 
       {showShareDialog && (
-        <ShareDocumentDialog docPath={docPath} onClose={() => setShowShareDialog(false)} />
+        <ShareTargetDialog target={{ kind: "file", path: docPath }} onClose={() => setShowShareDialog(false)} />
       )}
 
       {/* Origin-only CRDT live-edit rejection modal */}
@@ -1105,7 +1133,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           className="px-5 py-2 text-xs border-b border-[rgba(0,0,0,0.08)] bg-accent-light text-accent-text"
           data-testid="shared-document-banner"
         >
-          You're viewing a shared document as {currentUser.displayName}.
+          You're viewing a shared document as {currentUser.displayName} —{" "}
+          {currentUser.scope_action === "write" ? "you can edit this document." : "you can view this document."}
         </div>
       ) : null}
 
@@ -1115,7 +1144,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         className="flex-1 min-h-0 overflow-auto canvas-scroll px-5 pt-8 pb-24"
         style={{ background: "var(--color-page-bg)" }}
       >
-        <div ref={sectionsContainerRef} className="mx-auto" style={{ maxWidth: "1400px" }}>
+        <div ref={sectionsContainerRef} className="doc-agent-read-stage mx-auto" style={{ maxWidth: "1400px" }}>
+          <DocumentWholeReadNotes reads={documentReadNotes} />
 
           {/* Header row */}
           <div className="flex">
@@ -1170,18 +1200,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                     lastOutcome={forcePublishOutcome}
                     onForcePublish={forcePublish}
                   />
-                </div>
-              ) : null}
-
-              {/* Agent reading indicators */}
-              {agentReadingIndicators.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {agentReadingIndicators.map((indicator) => (
-                    <span key={indicator.key} className="inline-flex items-center gap-1 text-[10px] text-agent-text animate-[fade-assemble_3s_ease-in-out_infinite]">
-                      <span className="text-xs">&#128065;</span>
-                      {indicator.actorDisplayName} reading {indicator.labels.join(", ")}
-                    </span>
-                  ))}
                 </div>
               ) : null}
 
@@ -1255,6 +1273,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             docPath={docPath}
             recentlyChangedByLabel={recentlyChangedByLabel}
             injectedByLabel={injectedByLabel}
+            agentReadsBySectionKey={agentReadsBySectionKey}
             dragOverFragmentKey={dragOverFragmentKey}
             isSectionBlocked={isSectionBlocked}
             publishPaused={publishPaused}

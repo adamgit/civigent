@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ActivityItem, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import type { ActivityItem, AgentRead, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
 import type { HomeRecentDocument } from "./home-recent-documents";
 import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
@@ -32,6 +32,7 @@ interface HomeWideLayoutClassicProps {
   singleUser: boolean;
   authMode: LoginProvider | null;
   mcpActions: HomeMcpPulseAction[];
+  agentReads: AgentRead[];
   pulseActivity: ActivityItem[];
   agentTasks: HomeAgentTask[];
   pulseError: string | null;
@@ -57,6 +58,7 @@ export function HomeWideLayoutClassic({
   singleUser,
   authMode,
   mcpActions,
+  agentReads,
   pulseActivity,
   agentTasks,
   pulseError,
@@ -90,6 +92,7 @@ export function HomeWideLayoutClassic({
             <div className="home-wide-flow">
               <HomeWideAgentPulse
                 actions={mcpActions}
+                reads={agentReads}
                 activity={pulseActivity}
                 tasks={agentTasks}
                 pulseError={pulseError}

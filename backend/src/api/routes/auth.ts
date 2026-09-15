@@ -1,12 +1,14 @@
 import { type Request, type Response, type Router } from "express";
-import type { AuthMethod, SessionInfoResponse } from "../../types/shared.js";
-import { DocPath } from "../../types/shared.js";
+import { randomUUID } from "node:crypto";
+import type { AuthMethod, GetShareDiaryResponse, RedeemShareGrantResponse, SessionInfoResponse, ShareTarget } from "../../types/shared.js";
+import { FolderPath } from "../../types/shared.js";
 import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
 import { isAdmin } from "../../auth/acl.js";
 import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken, loginHuman, InvalidCredentialsError, redeemShareGrant, InvalidShareGrantError } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
 import { isOidcConfigured, getOidcDisplayName, getOidcPublicUrl, getPublicUrl } from "../../auth/oauth-config.js";
 import { mintShareGrant } from "../../auth/share-grants.js";
+import { appendShareDiaryEntry, listShareDiaryEntriesForUser } from "../../auth/share-diary.js";
 import { getAppName } from "../../app-name.js";
 import { generateOidcState, generateOidcNonce, storeOidcState, retrieveAndClearOidcState } from "../../auth/oidc-state.js";
 import { buildOidcRedirectUrl, redeemOidcCode } from "../../auth/oidc-provider.js";
@@ -16,9 +18,12 @@ import {
   refuseScopedWriter,
   requireDocWritePermission,
 } from "./middleware.js";
+import { MintShareGrantRequest } from "../../types/shared.js";
 import { QueryParamError, optionalStringParam } from "../helpers/query-params.js";
 import { fileURLToPath } from "node:url";
 import { readFileIfExists } from "../../storage/fs-primitives.js";
+import { canonicalDocumentExists } from "../../storage/document-reader.js";
+import { browseFolderExistsOnDisk } from "../../storage/documents-tree.js";
 
 const BUILD_INFO_FILE_URL = new URL("../../../build-info.json", import.meta.url);
 
@@ -214,11 +219,12 @@ export function registerAuthRoutes(router: Router): void {
               type: writer.type,
               displayName: writer.displayName,
               email: writer.email,
-              is_admin: writer.type !== "agent" && (await isAdmin(writer.id)),
+              is_admin: writer.type !== "agent" && !writer.scope && (await isAdmin(writer.id)),
               ...(writer.scope
                 ? {
                     auth_source: "share" as const,
-                    scope_doc: writer.scope.docPath,
+                    scope_kind: writer.scope.kind,
+                    scope_path: writer.scope.path,
                     scope_action: writer.scope.action,
                   }
                 : {}),
@@ -272,35 +278,50 @@ export function registerAuthRoutes(router: Router): void {
         sendApiError(res, 400, "Share links are not available in single-user mode.");
         return;
       }
-      const { doc_path, action, expires_in_days } = req.body ?? {};
-      if (typeof doc_path !== "string" || doc_path.length === 0) {
-        sendApiError(res, 400, "doc_path is required.");
+      const parsed = MintShareGrantRequest.parse(req.body ?? {});
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
         return;
       }
-      if (action !== "read" && action !== "write") {
-        sendApiError(res, 400, 'action must be "read" or "write".');
+      const { action, expires_in_days } = parsed.value;
+      const target: ShareTarget =
+        parsed.value.kind === "file"
+          ? { kind: "file", path: parsed.value.path }
+          : { kind: "folder", path: parsed.value.path };
+
+      if (target.kind === "folder" && target.path === FolderPath.root) {
+        sendApiError(res, 400, "Cannot share the root folder.");
         return;
       }
-      if (expires_in_days !== 1 && expires_in_days !== 7 && expires_in_days !== "never") {
-        sendApiError(res, 400, 'expires_in_days must be 1, 7, or "never".');
-        return;
-      }
-      let docPath: DocPath;
-      try {
-        docPath = DocPath.parse(doc_path);
-      } catch (error) {
-        sendApiError(res, 400, error instanceof Error ? error.message : String(error));
-        return;
-      }
-      const permitted = await requireDocWritePermission(req, res, docPath);
+
+      const permitted = await requireDocWritePermission(req, res, target.path);
       if (!permitted) return;
 
+      const exists =
+        target.kind === "file"
+          ? await canonicalDocumentExists(target.path)
+          : await browseFolderExistsOnDisk(target.path);
+      if (!exists) {
+        sendApiError(res, 404, `Cannot share ${target.kind === "file" ? "document" : "folder"} "${target.path}": it does not exist.`);
+        return;
+      }
+
       const { token, exp } = mintShareGrant({
-        docPath,
+        target,
         action,
         expiry: expires_in_days,
         issuedBy: writer.id,
       });
+
+      await appendShareDiaryEntry({
+        id: randomUUID(),
+        ...target,
+        action,
+        created_by: writer.id,
+        created_at: new Date().toISOString(),
+        expires_at: new Date(exp * 1000).toISOString(),
+      });
+
       res.json({ url: `${getPublicUrl()}/share/${token}`, exp });
     } catch (error) {
       next(error);
@@ -317,12 +338,30 @@ export function registerAuthRoutes(router: Router): void {
       const result = redeemShareGrant(token, typeof name === "string" ? name : undefined);
       const refreshMaxAge = Math.max(0, result.grant_exp - Math.floor(Date.now() / 1000));
       setAuthCookies(req, res, result.access_token, result.refresh_token, refreshMaxAge);
-      res.json({ doc_path: result.doc_path, display_name: result.display_name });
+      const response: RedeemShareGrantResponse = { ...result.target, display_name: result.display_name };
+      res.json(response);
     } catch (error) {
       if (error instanceof InvalidShareGrantError) {
         sendApiError(res, 401, error.message);
         return;
       }
+      next(error);
+    }
+  });
+
+  router.get("/auth/shares", async (req, res, next) => {
+    try {
+      const writer = requireAuthenticatedWriter(req, res);
+      if (!writer) return;
+      if (refuseScopedWriter(writer, res)) return;
+      if (writer.type === "agent") {
+        sendApiError(res, 403, "The share diary is not available to agents.");
+        return;
+      }
+      const entries = await listShareDiaryEntriesForUser(writer.id);
+      const response: GetShareDiaryResponse = { entries };
+      res.json(response);
+    } catch (error) {
       next(error);
     }
   });
