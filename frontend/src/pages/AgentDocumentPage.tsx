@@ -297,6 +297,7 @@ export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPa
               docPath={docPath}
               recentlyChangedByLabel={EMPTY_CHANGED_MAP}
               injectedByLabel={EMPTY_INJECTED_MAP}
+              agentReadsBySectionKey={EMPTY_AGENT_READS_MAP}
               dragOverFragmentKey={null}
               isSectionBlocked={returnFalse}
               publishPaused={true}
@@ -337,5 +338,6 @@ const EMPTY_KEY_SET: Set<string> = new Set();
 const EMPTY_CONFLICT_MAP: Map<string, string> = new Map();
 const EMPTY_CHANGED_MAP: Map<string, unknown> = new Map();
 const EMPTY_INJECTED_MAP: Map<string, string> = new Map();
+const EMPTY_AGENT_READS_MAP: Map<string, readonly never[]> = new Map();
 const returnFalse = (): boolean => false;
 const returnZero = (): number => 0;
