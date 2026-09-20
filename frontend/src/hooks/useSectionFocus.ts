@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type MilkdownEditorHandle } from "../components/MilkdownEditor";
 import { SectionId, type RenderSectionRef } from "../types/live-sections";
-import { resolveRetargetPmPos, type RetargetCaretPlacement } from "../pages/caret-recovery";
+import {
+  insertBodyBlockIfMissing,
+  pmPosForPlacement,
+  type SplitCaretPlacement,
+} from "../pages/split-caret";
 
 export interface UseSectionFocusParams {
   sections: readonly RenderSectionRef[];
@@ -20,7 +24,7 @@ export type PendingFragmentCaretTarget =
   | {
       fragmentKey: string;
       position: "retarget";
-      placement: RetargetCaretPlacement;
+      placement: SplitCaretPlacement;
     };
 
 export interface UseSectionFocusReturn {
@@ -84,26 +88,40 @@ export function useSectionFocus({
     const target = pendingCaretTargetRef.current;
     if (!readyEditors.has(target.fragmentKey)) return;
 
+    let cancelled = false;
     const raf = requestAnimationFrame(() => {
-      const handle = editorRefs.current.get(target.fragmentKey);
-      if (handle) {
+      const apply = () => {
+        if (cancelled) return;
+        const handle = editorRefs.current.get(target.fragmentKey);
         if (target.position === "retarget") {
-          const view = handle.getView();
-          if (view) {
-            handle.focusAtPos(resolveRetargetPmPos(view.state.doc, target.placement));
-          } else {
-            handle.focus("start");
+          const view = handle?.getView() ?? null;
+          if (handle && !view) {
+            requestAnimationFrame(apply);
+            return;
           }
-        } else if (target.coords) {
-          handle.focusAtCoords(target.coords.x, target.coords.y);
-        } else {
-          handle.focus(target.position);
+          if (handle && view) {
+            insertBodyBlockIfMissing(view);
+            handle.focusAtPos(pmPosForPlacement(view.state.doc, target.placement));
+          }
+          pendingCaretTargetRef.current = null;
+          return;
         }
-      }
-      pendingCaretTargetRef.current = null;
+        if (handle) {
+          if (target.coords) {
+            handle.focusAtCoords(target.coords.x, target.coords.y);
+          } else {
+            handle.focus(target.position);
+          }
+        }
+        pendingCaretTargetRef.current = null;
+      };
+      apply();
     });
 
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
   }, [bootstrapFocusedSectionIndex, caretTargetVersion, readyEditors, editorRefs]);
 
   return {

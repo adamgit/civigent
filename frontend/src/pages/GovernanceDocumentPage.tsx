@@ -60,7 +60,7 @@ import {
   dtoToRenderRef,
 } from "./cold-bootstrap";
 import { resolveFocusAfterTopologyChange } from "./resolve-focus-after-topology-change";
-import { useCaretRecoveryGlue } from "../hooks/useCaretRecoveryGlue";
+import { useSplitCaretHandoff } from "../hooks/useSplitCaretHandoff";
 import { useDocumentWebSocket } from "../hooks/useDocumentWebSocket";
 import { useGovernanceData } from "../hooks/useGovernanceData";
 import { useBlameData } from "../hooks/useBlameData";
@@ -172,7 +172,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const handleSuperseded = useCallback(() => {
     setStatusMessage("Editing moved to another tab. This tab is now read-only.");
   }, []);
-  const caretGlue = useCaretRecoveryGlue();
+  const caretHandoff = useSplitCaretHandoff();
   const liveReplica = useLiveSectionReplica({
     docPath,
     onSessionEnded: handleLiveSessionEnded,
@@ -180,7 +180,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     // reseed canonical so cold previews reflect the replaced content.
     onSessionReinit: handleLiveSessionReinit,
     onSuperseded: handleSuperseded,
-    caretFrameHooks: caretGlue.caretFrameHooks,
+    caretFrameHooks: caretHandoff.caretFrameHooks,
   });
   const liveReplicaReadyRef = useRef(false);
   useEffect(() => { liveReplicaReadyRef.current = liveReplica.isCurrentlyLiveAuthority; }, [liveReplica.isCurrentlyLiveAuthority]);
@@ -212,10 +212,10 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     const next = liveReplica.topology;
     if (prev === next) return;
     prevTopologyRef.current = next;
-    const caretOwningId = caretGlue.lastCaretRecoveryRef.current?.sectionId ?? null;
-    caretGlue.lastCaretRecoveryRef.current = null;
+    const caretOwningId = caretHandoff.lastCaretRecoveryRef.current?.sectionId ?? null;
+    caretHandoff.lastCaretRecoveryRef.current = null;
     setFocusedSectionId((cur) => resolveFocusAfterTopologyChange(prev, next, cur, caretOwningId));
-  }, [liveReplica.isCurrentlyLiveAuthority, liveReplica.topology, caretGlue]);
+  }, [liveReplica.isCurrentlyLiveAuthority, liveReplica.topology, caretHandoff]);
 
   const workspaceSeeds = useMemo(() => deriveWorkspaceBootstrap(sections), [sections]);
   const sectionLockSignals = useMemo(() => deriveWorkspaceSectionLockSignals(govMetaSections), [govMetaSections]);
@@ -354,15 +354,16 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   // Evict ready editors outside the mount window around the focused FRAGMENT.
   useEditorWindowEviction(renderSections, focusedFragmentKey, setReadyEditors);
 
-  caretGlue.configRef.current = {
+  caretHandoff.configRef.current = {
     editorMode: liveReplica.mode === "editor",
     focusedFragmentKey,
+    topology: liveReplica.topology,
     getView: (fk) => editorRefs.current.get(fk)?.getView() ?? null,
-    onRetarget: (recovery) =>
+    onRetarget: (plan) =>
       setRetargetCaretTarget({
-        fragmentKey: recovery.fragmentKey,
+        fragmentKey: plan.fragmentKey,
         position: "retarget",
-        placement: { offsetInBlock: recovery.offsetInBlock, fingerprint: recovery.fingerprint },
+        placement: { slot: plan.slot, offset: plan.offset, fingerprint: plan.fingerprint },
       }),
   };
 

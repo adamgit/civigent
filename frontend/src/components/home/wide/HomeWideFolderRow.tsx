@@ -78,11 +78,13 @@ export function HomeWideFolderRow({
           </span>
         ) : null}
       </span>
-      <span className="folder-row__peek" data-folder-pane-toggle>
-        <FolderChangeBars counts={folder.counts} />
-        <span className="folder-row__age">{formatHomeAge(new Date(folder.lastChangedAt), now)}</span>
-        <span className="folder-row__peek-mark" aria-hidden="true">
-          i
+      <span className="folder-row__peek">
+        <span className="folder-row__peek-hit" data-folder-pane-toggle>
+          <FolderChangeBars counts={folder.counts} />
+          <span className="folder-row__age">{formatHomeAge(new Date(folder.lastChangedAt), now)}</span>
+          <span className="folder-row__peek-mark" aria-hidden="true">
+            i
+          </span>
         </span>
       </span>
     </Link>

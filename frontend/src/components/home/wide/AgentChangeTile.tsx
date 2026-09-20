@@ -1,3 +1,4 @@
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { docsRouteForStoredPath } from "../../../app/docs-location";
 import { formatHomeClock } from "../../../pages/home/home-utils";
@@ -14,6 +15,10 @@ function tileHref(task: HomeAgentTask): string {
 }
 
 export function AgentChangeTile({ task, visibleFiles = 5 }: AgentChangeTileProps) {
+  const tileRef = useRef<HTMLAnchorElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [lensPlacement, setLensPlacement] = useState<"above" | "below">("below");
   const lines: Array<{ kind: "wrote" | "read"; touch: HomeAgentTaskTouch }> = [
     ...task.writes.map((touch) => ({ kind: "wrote" as const, touch })),
     ...task.reads.map((touch) => ({ kind: "read" as const, touch })),
@@ -23,11 +28,46 @@ export function AgentChangeTile({ task, visibleFiles = 5 }: AgentChangeTileProps
   const at = new Date(task.endedAt ?? task.startedAt);
   const clock = formatHomeClock(at);
 
+  const updateLensPlacement = useCallback(() => {
+    const tile = tileRef.current;
+    if (!tile) return;
+
+    const tileRect = tile.getBoundingClientRect();
+    const scrollViewport = tile.closest<HTMLElement>(".agent-panel__body");
+    const viewportRect = scrollViewport?.getBoundingClientRect();
+    const visibleTop = Math.max(0, viewportRect?.top ?? 0);
+    const visibleBottom = Math.min(window.innerHeight, viewportRect?.bottom ?? window.innerHeight);
+    const viewportMiddle = visibleBottom > visibleTop
+      ? (visibleTop + visibleBottom) / 2
+      : window.innerHeight / 2;
+    const tileMiddle = (tileRect.top + tileRect.bottom) / 2;
+
+    setLensPlacement(tileMiddle < viewportMiddle ? "below" : "above");
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!hovered && !focused) return;
+
+    updateLensPlacement();
+    window.addEventListener("scroll", updateLensPlacement, true);
+    window.addEventListener("resize", updateLensPlacement);
+    return () => {
+      window.removeEventListener("scroll", updateLensPlacement, true);
+      window.removeEventListener("resize", updateLensPlacement);
+    };
+  }, [focused, hovered, updateLensPlacement]);
+
   return (
     <Link
+      ref={tileRef}
       className="mosaic-tile"
       to={tileHref(task)}
+      data-lens-placement={lensPlacement}
       aria-label={`${clock}, ${task.displayName}: ${task.intent}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
     >
       <span className="mosaic-tile__time font-mono" aria-hidden="true">
         {clock}

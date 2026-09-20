@@ -27,9 +27,8 @@ function folderRowKey(folder: HomeActiveFolder): string {
 }
 
 /**
- * Experiment: the row is the folder-details link. The file-name subtitle and
- * the full-height right-hand block toggle the pane. Revert
- * HomeWideActiveFolders + HomeWideFolderRow + peek CSS if this doesn't feel right.
+ * The row is the folder-details link. The file-name subtitle (icon + text)
+ * and the full-height bars/age/i cluster toggle the pane.
  */
 export function HomeWideActiveFolders({
   folders,

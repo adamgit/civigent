@@ -1,24 +1,24 @@
 /**
- * Caret capture/recover across split shapes (fix-caret-loss):
- *  - promoted-address math (split boundary, heading ordinal, in-block offset)
- *  - recoverCaret classification: survivor untouched, promoted retargets,
- *    BFH dissolve retargets, multi-seed maps by ordinal, merge defers to
- *    removal-handoff, never silently stays on the survivor
- *  - resolveRetargetPmPos: offset resolution, fingerprint drift correction,
- *    start-of-body fallback
+ * Locate / plan / place across split shapes:
+ *  - locateCaretInSplit (split boundary, heading ordinal, slot-local offset)
+ *  - planCaretAfterSplit: stay on kept-prefix, follow-promotion on promoted,
+ *    BFH dissolve follows, multi-seed maps by ordinal, merge defers to
+ *    removal-handoff
+ *  - pmPosForPlacement: slot-local offset, fingerprint slide inside the slot,
+ *    first-body-block fallback
  */
 
 import { describe, it, expect } from "vitest";
-import * as Y from "yjs";
 import { Schema, type Node as PmNode } from "@milkdown/prose/model";
 import {
-  computePromotedAddress,
   splitBoundaryChildIndex,
   captureFingerprint,
-  recoverCaret,
-  resolveRetargetPmPos,
+  locateCaretInSplit,
+  planCaretAfterSplit,
+  pmPosForPlacement,
+  ensureBodyBlock,
   type CaretCapture,
-} from "../../pages/caret-recovery";
+} from "../../pages/split-caret";
 import {
   SectionId,
   BEFORE_FIRST_HEADING_SECTION_ID,
@@ -63,12 +63,20 @@ const PROMOTED_2 = ref("section::third", ["Third"]);
 function makeCapture(overrides: Partial<CaretCapture>): CaretCapture {
   return {
     sourceFragmentKey: SectionId.text(SURVIVOR.id),
-    relSel: { type: "text", anchor: {}, head: {} },
-    promotedAddress: null,
+    location: { kind: "kept-prefix" },
     fingerprint: { before: "", after: "" },
-    binding: { type: new Y.Doc().getXmlFragment("x"), mapping: new Map() },
     ...overrides,
   };
+}
+
+function planFrom(capture: CaretCapture, prev: readonly LiveSectionRef[], next: readonly LiveSectionRef[]) {
+  return planCaretAfterSplit({
+    location: capture.location,
+    sourceFragmentKey: capture.sourceFragmentKey,
+    fingerprint: capture.fingerprint,
+    prevTopology: prev,
+    nextTopology: next,
+  });
 }
 
 describe("promoted-address math", () => {
@@ -86,17 +94,19 @@ describe("promoted-address math", () => {
     expect(splitBoundaryChildIndex(doc(heading(2, "Only"), para("body")), false)).toBeNull();
   });
 
-  it("caret before the boundary → no promoted address (survivor region)", () => {
+  it("caret before the boundary → kept-prefix", () => {
     const caret = posInChild(survivorDoc, 1, 4);
-    expect(computePromotedAddress(survivorDoc, caret, false)).toBeNull();
+    expect(locateCaretInSplit(survivorDoc, caret, false)).toEqual({ kind: "kept-prefix" });
   });
 
-  it("caret in the promoted block → ordinal 0 and an in-block text offset", () => {
+  it("caret in the promoted body → ordinal 0, body slot, offset from the body start", () => {
     const caret = posInChild(survivorDoc, 3, 9);
-    const address = computePromotedAddress(survivorDoc, caret, false);
-    expect(address).not.toBeNull();
-    expect(address!.headingOrdinalInPromoted).toBe(0);
-    expect(address!.offsetInBlock).toBe("Second\npromoted ".length);
+    expect(locateCaretInSplit(survivorDoc, caret, false)).toEqual({
+      kind: "promoted",
+      headingOrdinal: 0,
+      slot: "body",
+      offset: "promoted ".length,
+    });
   });
 
   it("multi-seed: caret in the SECOND promoted block maps to ordinal 1", () => {
@@ -109,208 +119,221 @@ describe("promoted-address math", () => {
       para("third body"),
     );
     const caret = posInChild(multi, 5, 6);
-    const address = computePromotedAddress(multi, caret, false);
-    expect(address!.headingOrdinalInPromoted).toBe(1);
-    expect(address!.offsetInBlock).toBe("Third\nthird ".length);
+    expect(locateCaretInSplit(multi, caret, false)).toEqual({
+      kind: "promoted",
+      headingOrdinal: 1,
+      slot: "body",
+      offset: "third ".length,
+    });
   });
 
   it("BFH root-split: caret in the promoted region addresses from the 1st heading", () => {
     const bfhDoc = doc(para("adding texxt"), heading(2, "h3 added"), para("promoted body"));
     const caret = posInChild(bfhDoc, 2, 9);
-    const address = computePromotedAddress(bfhDoc, caret, true);
-    expect(address!.headingOrdinalInPromoted).toBe(0);
-    expect(address!.offsetInBlock).toBe("h3 added\npromoted ".length);
+    expect(locateCaretInSplit(bfhDoc, caret, true)).toEqual({
+      kind: "promoted",
+      headingOrdinal: 0,
+      slot: "body",
+      offset: "promoted ".length,
+    });
   });
 });
 
-describe("recoverCaret classification", () => {
-  const ydoc = new Y.Doc();
-
+describe("planCaretAfterSplit", () => {
   it("returns null when the topology is unchanged (content-only frame)", () => {
-    const capture = makeCapture({});
-    expect(
-      recoverCaret({
-        capture,
-        prevTopology: [SURVIVOR, OTHER],
-        nextTopology: [SURVIVOR, OTHER],
-        ydoc,
-        classify: () => true,
-      }),
-    ).toBeNull();
+    expect(planFrom(makeCapture({}), [SURVIVOR, OTHER], [SURVIVOR, OTHER])).toBeNull();
   });
 
-  it("survivor-prefix caret (RelPos resolves) → survivor; y-prosemirror restore stands", () => {
-    const capture = makeCapture({});
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR, OTHER],
-      nextTopology: [SURVIVOR, PROMOTED_1, OTHER],
-      ydoc,
-      classify: () => true,
-    });
-    expect(recovery).toEqual({
-      kind: "survivor",
+  it("kept-prefix caret → stay; y-prosemirror restore stands", () => {
+    expect(planFrom(makeCapture({}), [SURVIVOR, OTHER], [SURVIVOR, PROMOTED_1, OTHER])).toEqual({
+      action: "stay",
       sectionId: SURVIVOR.id,
       fragmentKey: SectionId.text(SURVIVOR.id),
     });
   });
 
-  it("promoted caret (RelPos dead) → retarget to the new section with the captured offset", () => {
+  it("promoted caret → follow-promotion onto the new section with slot-local offset", () => {
     const capture = makeCapture({
-      promotedAddress: { headingOrdinalInPromoted: 0, offsetInBlock: 16 },
+      location: { kind: "promoted", headingOrdinal: 0, slot: "body", offset: 9 },
       fingerprint: { before: "promoted ", after: "body" },
     });
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR, OTHER],
-      nextTopology: [SURVIVOR, PROMOTED_1, OTHER],
-      ydoc,
-      classify: () => false,
-    });
-    expect(recovery).toEqual({
-      kind: "retarget",
+    expect(planFrom(capture, [SURVIVOR, OTHER], [SURVIVOR, PROMOTED_1, OTHER])).toEqual({
+      action: "follow-promotion",
       sectionId: PROMOTED_1.id,
       fragmentKey: SectionId.text(PROMOTED_1.id),
-      offsetInBlock: 16,
+      slot: "body",
+      offset: 9,
       fingerprint: { before: "promoted ", after: "body" },
     });
   });
 
-  it("multi-seed split maps by headingOrdinalInPromoted, not 'always first new key'", () => {
+  it("multi-seed split maps by headingOrdinal, not 'always first new key'", () => {
     const capture = makeCapture({
-      promotedAddress: { headingOrdinalInPromoted: 1, offsetInBlock: 12 },
+      location: { kind: "promoted", headingOrdinal: 1, slot: "body", offset: 6 },
     });
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR],
-      nextTopology: [SURVIVOR, PROMOTED_1, PROMOTED_2],
-      ydoc,
-      classify: () => false,
-    });
-    expect(recovery?.kind).toBe("retarget");
-    expect(recovery && "sectionId" in recovery ? recovery.sectionId : null).toBe(PROMOTED_2.id);
+    const plan = planFrom(capture, [SURVIVOR], [SURVIVOR, PROMOTED_1, PROMOTED_2]);
+    expect(plan?.action).toBe("follow-promotion");
+    expect(plan && "sectionId" in plan ? plan.sectionId : null).toBe(PROMOTED_2.id);
   });
 
   it("ordinal beyond the new-key count clamps to the last new section", () => {
     const capture = makeCapture({
-      promotedAddress: { headingOrdinalInPromoted: 5, offsetInBlock: 0 },
+      location: { kind: "promoted", headingOrdinal: 5, slot: "heading", offset: 0 },
     });
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR],
-      nextTopology: [SURVIVOR, PROMOTED_1],
-      ydoc,
-      classify: () => false,
-    });
-    expect(recovery?.kind).toBe("retarget");
-    expect(recovery && "fragmentKey" in recovery ? recovery.fragmentKey : null).toBe(
+    const plan = planFrom(capture, [SURVIVOR], [SURVIVOR, PROMOTED_1]);
+    expect(plan?.action).toBe("follow-promotion");
+    expect(plan && "fragmentKey" in plan ? plan.fragmentKey : null).toBe(
       SectionId.text(PROMOTED_1.id),
     );
   });
 
-  it("BFH dissolve: source gone → retarget to the promoted section (never null-drop the caret)", () => {
+  it("BFH dissolve: source gone → follow-promotion onto the promoted section", () => {
     const capture = makeCapture({
       sourceFragmentKey: SectionId.text(BFH_REF.id),
-      promotedAddress: { headingOrdinalInPromoted: 0, offsetInBlock: 4 },
+      location: { kind: "promoted", headingOrdinal: 0, slot: "body", offset: 4 },
     });
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [BFH_REF, OTHER],
-      nextTopology: [PROMOTED_1, OTHER],
-      ydoc,
-      classify: () => false,
-    });
-    expect(recovery?.kind).toBe("retarget");
-    expect(recovery && "sectionId" in recovery ? recovery.sectionId : null).toBe(PROMOTED_1.id);
+    const plan = planFrom(capture, [BFH_REF, OTHER], [PROMOTED_1, OTHER]);
+    expect(plan?.action).toBe("follow-promotion");
+    expect(plan && "sectionId" in plan ? plan.sectionId : null).toBe(PROMOTED_1.id);
   });
 
-  it("promoted caret with NO address still retargets (start of destination), never stays silently", () => {
-    const capture = makeCapture({ promotedAddress: null });
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR],
-      nextTopology: [SURVIVOR, PROMOTED_1],
-      ydoc,
-      classify: () => false,
+  it("source vanished with a kept-prefix location still follows onto the first new section", () => {
+    const capture = makeCapture({
+      sourceFragmentKey: SectionId.text(BFH_REF.id),
+      location: { kind: "kept-prefix" },
     });
-    expect(recovery).toEqual({
-      kind: "retarget",
+    const plan = planFrom(capture, [BFH_REF], [PROMOTED_1]);
+    expect(plan).toEqual({
+      action: "follow-promotion",
       sectionId: PROMOTED_1.id,
       fragmentKey: SectionId.text(PROMOTED_1.id),
-      offsetInBlock: 0,
+      slot: "body",
+      offset: 0,
       fingerprint: capture.fingerprint,
     });
   });
 
   it("merge/deletion (source gone, no new keys) defers to the removal-handoff rules", () => {
-    const capture = makeCapture({});
-    expect(
-      recoverCaret({
-        capture,
-        prevTopology: [SURVIVOR, OTHER],
-        nextTopology: [OTHER],
-        ydoc,
-        classify: () => false,
-      }),
-    ).toBeNull();
+    expect(planFrom(makeCapture({}), [SURVIVOR, OTHER], [OTHER])).toBeNull();
   });
 
-  it("source present, classify fails, no new keys → survivor focus (best remaining anchor)", () => {
-    const capture = makeCapture({});
-    const recovery = recoverCaret({
-      capture,
-      prevTopology: [SURVIVOR, OTHER],
-      nextTopology: [SURVIVOR],
-      ydoc,
-      classify: () => false,
-    });
-    expect(recovery?.kind).toBe("survivor");
-  });
-
-  it("null capture → null (no focused editor at frame time)", () => {
-    expect(
-      recoverCaret({
-        capture: null,
-        prevTopology: [SURVIVOR],
-        nextTopology: [SURVIVOR, PROMOTED_1],
-        ydoc,
-      }),
-    ).toBeNull();
+  it("source present, kept-prefix, no new keys → stay", () => {
+    const plan = planFrom(makeCapture({}), [SURVIVOR, OTHER], [SURVIVOR]);
+    expect(plan?.action).toBe("stay");
   });
 });
 
-describe("resolveRetargetPmPos", () => {
+describe("pmPosForPlacement", () => {
   const destDoc = doc(heading(2, "Second"), para("promoted body"));
 
-  it("resolves the captured in-block text offset against the destination doc", () => {
-    const fingerprint = captureFingerprint(destDoc, posInChild(destDoc, 1, 9));
-    const pos = resolveRetargetPmPos(destDoc, {
-      offsetInBlock: "Second\npromoted ".length,
-      fingerprint,
+  it("resolves the captured body-slot text offset against the destination doc", () => {
+    const pos = pmPosForPlacement(destDoc, {
+      slot: "body",
+      offset: "promoted ".length,
+      fingerprint: { before: "promoted ", after: "body" },
     });
     expect(pos).toBe(posInChild(destDoc, 1, 9));
   });
 
   it("fingerprint corrects a drifted offset (remint drift)", () => {
-    const targetPos = posInChild(destDoc, 1, 9);
-    const fingerprint = captureFingerprint(destDoc, targetPos);
-    const pos = resolveRetargetPmPos(destDoc, { offsetInBlock: 2, fingerprint });
-    expect(pos).toBe(targetPos);
+    const pos = pmPosForPlacement(destDoc, {
+      slot: "body",
+      offset: 2,
+      fingerprint: { before: "promoted ", after: "body" },
+    });
+    expect(pos).toBe(posInChild(destDoc, 1, 9));
   });
 
   it("no offset match and no fingerprint match → start of destination body", () => {
-    const pos = resolveRetargetPmPos(destDoc, {
-      offsetInBlock: 999,
+    const pos = pmPosForPlacement(destDoc, {
+      slot: "body",
+      offset: 999,
       fingerprint: { before: "text that exists nowhere", after: "in this document at all" },
     });
     expect(pos).toBe(posInChild(destDoc, 1, 0));
   });
 
-  it("offset 0 lands at the start of the destination content", () => {
-    const pos = resolveRetargetPmPos(destDoc, {
-      offsetInBlock: 0,
+  it("heading slot offset 0 lands at the start of the heading text", () => {
+    const pos = pmPosForPlacement(destDoc, {
+      slot: "heading",
+      offset: 0,
       fingerprint: { before: "", after: "" },
     });
     expect(pos).toBe(posInChild(destDoc, 0, 0));
+  });
+});
+
+/**
+ * Desired behavior of the live locate→place / recover pipeline.
+ * Pointed at locateCaretInSplit / pmPosForPlacement / planCaretAfterSplit.
+ * Canary 1 stays red until a body caret on a heading-only remint lands in a
+ * paragraph (not the heading, and not a doc-end hack). Canary 2 is the RelPos
+ * veto: a promoted location must follow-promotion even if RelPos would stay.
+ */
+describe("split-caret canaries", () => {
+  it("# heading + Enter + heading-only remint does not place inside the heading", () => {
+    const source = doc(
+      heading(2, "Overview"),
+      para("base body"),
+      heading(2, "Second"),
+      para(""),
+    );
+    const caret = posInChild(source, 3, 0);
+    const location = locateCaretInSplit(source, caret, false);
+    expect(location.kind).toBe("promoted");
+    if (location.kind !== "promoted") return;
+    expect(location.slot).toBe("body");
+    const dest = ensureBodyBlock(doc(heading(2, "Second")));
+    const pos = pmPosForPlacement(dest, {
+      slot: location.slot,
+      offset: location.offset,
+      fingerprint: captureFingerprint(source, caret),
+    });
+    const clamped = Math.max(0, Math.min(pos, dest.content.size));
+    const $pos = dest.resolve(clamped);
+    expect($pos.parent.type.name).toBe("paragraph");
+  });
+
+  it("promoted caret retargets even when RelPos still resolves", () => {
+    const plan = planCaretAfterSplit({
+      location: { kind: "promoted", headingOrdinal: 0, slot: "body", offset: 16 },
+      sourceFragmentKey: SectionId.text(SURVIVOR.id),
+      fingerprint: { before: "", after: "" },
+      prevTopology: [SURVIVOR, OTHER],
+      nextTopology: [SURVIVOR, PROMOTED_1, OTHER],
+    });
+    expect(plan?.action).toBe("follow-promotion");
+    expect(plan && "sectionId" in plan ? plan.sectionId : null).toBe(PROMOTED_1.id);
+  });
+
+  it("insert-before at the start of heading two follows the new section, not stay", () => {
+    const headingTwo = ref("section::heading-two", ["heading two"]);
+    const heading15 = ref("section::heading-1-5", ["heading 1.5"]);
+    const source = doc(
+      heading(2, "heading 1.5"),
+      para("body 1.5"),
+      heading(2, "heading two"),
+      para("body two"),
+    );
+    const caret = posInChild(source, 1, "body 1.5".length);
+    const location = locateCaretInSplit(source, caret, false, {
+      heading: "heading two",
+      headingLevel: 2,
+    });
+    expect(location).toEqual({
+      kind: "promoted",
+      headingOrdinal: 0,
+      slot: "body",
+      offset: "body 1.5".length,
+    });
+    const plan = planCaretAfterSplit({
+      location,
+      sourceFragmentKey: SectionId.text(headingTwo.id),
+      fingerprint: { before: "", after: "" },
+      prevTopology: [headingTwo],
+      nextTopology: [heading15, headingTwo],
+    });
+    expect(plan?.action).toBe("follow-promotion");
+    expect(plan && "sectionId" in plan ? plan.sectionId : null).toBe(heading15.id);
   });
 });

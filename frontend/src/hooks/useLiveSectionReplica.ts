@@ -26,7 +26,7 @@ import {
   decodeLiveSectionsUpdate,
   routeLiveSectionFrame,
 } from "../services/live-section-frames";
-import type { CaretFrameHooks } from "../pages/caret-recovery";
+import type { CaretFrameHooks } from "../pages/split-caret";
 import type { SectionId, LiveSectionRef } from "../types/live-sections";
 import type { DocPath, DocumentReplacementNoticePayload } from "../types/shared";
 import { WS_CLOSE_REASON_DOCUMENT_REPLACED } from "../services/crdt-close-codes";
@@ -239,7 +239,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         const capture = hooks.beforeApply();
         const prevTopology = replica.getTopology();
         replica.ingestUpdate(input);
-        hooks.afterApply(capture, prevTopology, replica.getTopology(), doc);
+        hooks.afterApply(capture, prevTopology, replica.getTopology());
       } else {
         replica.ingestUpdate(input);
       }

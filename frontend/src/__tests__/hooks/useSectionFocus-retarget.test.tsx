@@ -81,7 +81,8 @@ describe("useSectionFocus retarget caret target", () => {
         fragmentKey: "section::second",
         position: "retarget",
         placement: {
-          offsetInBlock: "Second\npromoted ".length,
+          slot: "body",
+          offset: "promoted ".length,
           fingerprint: { before: "", after: "" },
         },
       });
