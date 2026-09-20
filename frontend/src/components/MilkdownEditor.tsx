@@ -40,7 +40,7 @@ import "@milkdown/crepe/theme/frame.css";
 
 import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
 import type { SectionTransfer, DropVerdict } from "../services/section-transfer";
-import { crossSectionDropPlugin, setDragSourceInfo } from "./crossSectionDropPlugin";
+import { crossSectionDropPlugin } from "./crossSectionDropPlugin";
 import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
 import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
@@ -53,6 +53,12 @@ import { installAttachEchoGuard } from "../services/ysync-attach-echo-guard";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { installLinkPicker } from "./link-picker/install-link-picker";
 import { installLinkHrefBridge } from "./install-link-href-bridge";
+import { bindEditorOwnerMarkdown, unbindEditorOwnerMarkdown } from "../services/block-drag-pm-owner-resolver";
+import {
+  registerDragSessionEditor,
+  unregisterDragSessionEditor,
+} from "../services/block-drag-editor-registry";
+import { installGripDraggableGuard } from "../services/block-drag-grip-guard";
 
 /**
  * Custom cursor builder for yCursorPlugin.
@@ -126,6 +132,10 @@ export interface MilkdownEditorCommonProps {
   onReady?: () => void;
   /** Called when the editor is being destroyed (cleanup). */
   onUnready?: () => void;
+  /** This fragment's display markdown (`getDisplayMarkdown`). Owner-tree
+   *  addresses on the live view are built from this string, not from a
+   *  ProseMirror serialize. Required for grip/hover owner resolution. */
+  ownerTreeMarkdown?: string;
 }
 
 export interface MilkdownEditorColdProps extends MilkdownEditorCommonProps {
@@ -175,6 +185,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     onUnready,
     expectsCrdt = false,
     binding,
+    ownerTreeMarkdown,
   } = props;
 
   const attach = binding ? unwrapLiveEditorBindingForMilkdown(binding) : null;
@@ -469,6 +480,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // contributes no layout and two editors can never stack in the container.
     const editorRoot = document.createElement("div");
     container.appendChild(editorRoot);
+    const teardownGripDraggableGuard = installGripDraggableGuard(editorRoot);
 
     const crepe = new Crepe({
       root: editorRoot,
@@ -555,6 +567,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // ── Cross-section drag/drop plugin ──────────────────
 
     const fragmentKeyCapture = effectiveFragmentKey;
+    const liveFragmentKeyCapture = attach ? effectiveFragmentKey : null;
     crepe.editor.use(crossSectionDropPlugin({
       fragmentKey: fragmentKeyCapture,
       canDropRef,
@@ -603,28 +616,16 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
     deferredFocusRef.current = null;
 
-    let cleanupDragListeners: (() => void) | null = null;
-
     const createPromise = crepe.create();
     createPromise.then(() => {
       if (controllerRef.current !== ctrl) return;
       ctrl.send("crepe_created");
 
-      // Native dragstart/dragend on container for BlockEdit handle
       const view = crepe.editor.ctx.get(editorViewCtx);
-      const onDragStart = (e: Event) => {
-        const target = (e as DragEvent).target as HTMLElement;
-        if (!target.closest?.(".milkdown-block-handle")) return;
-        const { from, to } = view.state.selection;
-        setDragSourceInfo({ fragmentKey: fragmentKeyCapture, from, to, view });
-      };
-      const onDragEnd = () => { setDragSourceInfo(null); };
-      container.addEventListener("dragstart", onDragStart as EventListener);
-      container.addEventListener("dragend", onDragEnd);
-      cleanupDragListeners = () => {
-        container.removeEventListener("dragstart", onDragStart as EventListener);
-        container.removeEventListener("dragend", onDragEnd);
-      };
+
+      if (liveFragmentKeyCapture) {
+        registerDragSessionEditor(editorRoot, liveFragmentKeyCapture, view);
+      }
 
       // Catch up with state that arrived while Crepe was creating.
       // Effects B/C may have fired while state was "creating" and were no-ops.
@@ -649,7 +650,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     });
 
     return () => {
-      cleanupDragListeners?.();
+      teardownGripDraggableGuard();
+      unregisterDragSessionEditor(editorRoot);
       detachCrdt(ctrl);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
 
@@ -764,6 +766,22 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       }
     }
   }, [readOnly]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const crepe = controllerRef.current?.getCrepe();
+    if (!crepe) return;
+    let view: import("@milkdown/prose/view").EditorView;
+    try {
+      view = crepe.editor.ctx.get(editorViewCtx);
+    } catch {
+      return;
+    }
+    const bound = ownerTreeMarkdown ?? (expectsCrdt ? null : markdown);
+    if (bound == null) return;
+    bindEditorOwnerMarkdown(view, bound);
+    return () => { unbindEditorOwnerMarkdown(view); };
+  }, [ready, ownerTreeMarkdown, markdown, expectsCrdt]);
 
   // ── Render ─────────────────────────────────────────────
 

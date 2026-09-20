@@ -3,6 +3,7 @@ import { Plugin } from "@milkdown/prose/state";
 import type { EditorView } from "@milkdown/prose/view";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import { pmPosToMarkdownOffset } from "../services/drop-position";
+import { isHostGripSessionActive } from "../services/block-drag-commits";
 import {
   applyDragOverVerdict,
   type SectionTransfer,
@@ -17,10 +18,6 @@ export interface DragSourceInfo {
 }
 
 export let dragSourceInfo: DragSourceInfo | null = null;
-
-export function setDragSourceInfo(info: DragSourceInfo | null): void {
-  dragSourceInfo = info;
-}
 
 export interface CrossSectionDropPluginOptions {
   fragmentKey: string;
@@ -48,6 +45,7 @@ export function crossSectionDropPlugin({
           return false;
         },
         dragover(_view, event) {
+          if (isHostGripSessionActive()) return true;
           if (!dragSourceInfo || dragSourceInfo.fragmentKey === fragmentKey) return false;
 
           const canDropFn = canDropRef.current;
@@ -59,6 +57,10 @@ export function crossSectionDropPlugin({
         },
       },
       handleDrop(view, event) {
+        if (isHostGripSessionActive()) {
+          event?.preventDefault();
+          return true;
+        }
         const dropCb = onCrossSectionDropRef.current;
         if (!dropCb || !event) return false;
 

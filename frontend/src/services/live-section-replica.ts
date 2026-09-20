@@ -325,6 +325,7 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
 
   ingestUpdate(input: LiveUpdateInput): void {
     if (this.destroyed) return;
+    const pendingBefore = new Set(this.pending.keys());
     let serverApplyChangedFragments = false;
     if (input.yjsUpdate) {
       this.fragmentKeysChangedThisApply.clear();
@@ -334,7 +335,12 @@ class LiveSectionReplicaImpl implements LiveSectionReplica {
       this.fragmentKeysChangedThisApply.clear();
     }
     if (input.state) this.adoptState(input.state);
-    if (serverApplyChangedFragments || input.state) this.notify();
+    for (const id of this.pending.keys()) {
+      if (pendingBefore.has(id)) continue;
+      const key = SectionId.text(id);
+      this.fragmentVersionByKey.set(key, this.getFragmentVersion(key) + 1);
+    }
+    if (serverApplyChangedFragments || input.state || input.yjsUpdate) this.notify();
   }
 
   destroy(): void {

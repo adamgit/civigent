@@ -1,5 +1,5 @@
 import { type Router } from "express";
-import { LiveMoveSectionRequest } from "../../types/shared.js";
+import { LiveBodyMoveRequest, LiveMoveSectionRequest } from "../../types/shared.js";
 import type { GetDocumentSectionsResponse, WsServerEvent } from "../../types/shared.js";
 import {
   sendApiError,
@@ -16,6 +16,7 @@ import {
   moveSectionUseCase,
   renameSectionUseCase,
   liveMoveSectionUseCase,
+  liveMoveBodyUseCase,
   hasActiveSession,
   SectionNotFoundForMoveError,
   InvalidDocPathError,
@@ -190,6 +191,33 @@ export function registerSectionRoutes(
       if (!result.ok) {
         
         sendApiError(res, 409, result.message ?? "The section move was refused.");
+        return;
+      }
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      if (error instanceof InvalidDocPathError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/workspace/:docPath(*)/live-body-move", async (req, res, next) => {
+    try {
+      const docPath = docPathParamOf(req);
+      const writer = await requireDocWritePermission(req, res, docPath);
+      if (!writer) return;
+
+      const parsed = LiveBodyMoveRequest.parse(req.body);
+      if (!parsed.ok) {
+        sendApiError(res, 400, parsed.message);
+        return;
+      }
+
+      const result = await liveMoveBodyUseCase(docPath, parsed.value, writer.id);
+      if (!result.ok) {
+        sendApiError(res, 409, result.message ?? "The body move was refused.");
         return;
       }
       res.status(200).json({ ok: true });

@@ -7,6 +7,7 @@ import {
 } from "./document-tab-edit-state";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
+import { useDocumentGripDragSession } from "../hooks/useDocumentGripDragSession";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar } from "../components/DocumentTopbar";
@@ -115,6 +116,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -421,6 +423,10 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       const s = sectionsRef.current.find((row) => SectionId.text(row.id) === fk);
       return s ? getDisplayMarkdown(s) : null;
     },
+    onTransferComplete: (result) => {
+      if (!result.success && result.error) setMoveError(result.error);
+      else if (result.success) setMoveError(null);
+    },
   });
 
   // ── Cross-section copy (clean markdown clipboard) ────────
@@ -524,6 +530,16 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   // two segregated ports.
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;
+  useDocumentGripDragSession({
+    canvasScrollRef: scrollContainerRef,
+    sectionListRef: sectionsContainerRef,
+    sections: renderSections,
+    editorRefs,
+    transferService: transferServiceRef.current,
+    readyEditors,
+    recordLocalEdit: (fragmentKey) => localEditSink.recordLocalEdit(fragmentKey),
+    onMoveRefused: (message) => setMoveError(message),
+  });
   const authorshipView: SessionAuthorshipView = authorshipLedger;
   // Honest save-status inputs with YOUR work split from inbound/remote activity
   // (shared with DocumentPage via the same hook).
@@ -761,7 +777,11 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       SectionId.text(s.id) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = [...srcSection.headingPath];
-    void transferServiceRef.current?.execute(transfer);
+    void transferServiceRef.current?.execute(transfer).then((result) => {
+      if (!result) return;
+      if (!result.success && result.error) setMoveError(result.error);
+      else if (result.success) setMoveError(null);
+    });
   }, []);
 
   // ── Render ───────────────────────────────────────────────
@@ -902,6 +922,11 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
             {/* Status / error */}
             {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
+            {moveError ? (
+              <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
+                {moveError}
+              </pre>
+            ) : null}
             {error ? (
               <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                 {error}

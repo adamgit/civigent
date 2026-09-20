@@ -1000,6 +1000,39 @@ a {
   opacity: 0.6;
 }
 
+.grip-drop-line {
+  position: fixed;
+  pointer-events: none;
+  z-index: 80;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--color-accent);
+}
+.grip-drop-line--outline {
+  height: 4px;
+  margin-top: -2px;
+  background: var(--color-agent);
+  box-shadow: inset 0 0 0 1px var(--color-page-bg);
+}
+.grip-drop-nodrop {
+  position: fixed;
+  pointer-events: none;
+  z-index: 81;
+  max-width: 16rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--color-status-red);
+  background: var(--color-canvas-bg);
+  border: 1px solid var(--color-status-red);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+html.grip-drag-active .prosemirror-dropcursor-block,
+html.grip-drag-active .prosemirror-dropcursor-inline {
+  display: none !important;
+}
+
 @keyframes tree-row-flash-agent {
   0% { background: var(--color-agent-light); color: var(--color-agent-text); }
   60% { background: var(--color-agent-light); color: var(--color-agent-text); }

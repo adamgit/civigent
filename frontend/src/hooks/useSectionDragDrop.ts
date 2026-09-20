@@ -25,6 +25,7 @@
 import { useEffect, useState, useCallback, useRef, type RefObject } from "react";
 import { dragSourceInfo } from "../components/crossSectionDropPlugin";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
+import { isHostGripSessionActive } from "../services/block-drag-commits";
 import { domPosToMarkdownOffset } from "../services/drop-position";
 import {
   applyDragOverVerdict,
@@ -95,6 +96,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
   }, [hasEditor]);
 
   const handleDragOver = useCallback((e: DragEvent) => {
+    if (isHostGripSessionActive()) return;
     if (!transferService) return;
 
     // Let native text-selection drags pass through unmolested
@@ -134,6 +136,7 @@ export function useSectionDragDrop(opts: UseSectionDragDropOptions): UseSectionD
   }, [transferService, hasEditor]);
 
   const handleDrop = useCallback(async (e: DragEvent) => {
+    if (isHostGripSessionActive()) return;
     if (!transferService) return;
 
     // Let native text-selection drags pass through unmolested

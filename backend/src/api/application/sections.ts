@@ -41,7 +41,8 @@ import { fragmentKeyFromSectionFile } from "../../crdt/ydoc-fragments.js";
 import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
 import type { LiveFragmentStringsStore } from "../../crdt/live-fragment-strings-store.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
-import { requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
+import { requestDocSessionBodyMove, requestDocSessionMove, type MoveSectionResult } from "../../ws/crdt-ws-coordinator.js";
+import type { LiveBodyMoveRequest } from "../../types/shared.js";
 import { buildSectionInvolvementMeta } from "../helpers/section-meta-builder.js";
 import { DocPath } from "../../types/shared.js";
 
@@ -293,6 +294,14 @@ export async function liveMoveSectionUseCase(
   position: "before" | "after",
 ): Promise<MoveSectionResult> {
   return requestDocSessionMove(docPath, { sourceHeadingPath, targetHeadingPath, position });
+}
+
+export async function liveMoveBodyUseCase(
+  docPath: DocPath,
+  req: LiveBodyMoveRequest,
+  writerId: string,
+): Promise<MoveSectionResult> {
+  return requestDocSessionBodyMove(docPath, req, writerId);
 }
 
 export async function deleteSectionUseCase(

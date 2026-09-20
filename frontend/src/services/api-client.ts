@@ -957,6 +957,43 @@ export const apiClient = {
     return { ok: false, message };
   },
 
+  async liveMoveBody(
+    docPath: DocPath,
+    req: {
+      sourceFragmentKey: string;
+      targetFragmentKey: string;
+      sourceAddress: { path: readonly number[]; kind: string; fingerprint: string };
+      targetAddress: { path: readonly number[]; kind: string; fingerprint: string };
+      edge: "before" | "after";
+      serializedNode: string;
+    },
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    await tryBootstrapSingleUserSession();
+    const encoded = encodeDocPath(docPath);
+    const response = await fetch(`/api/workspace/${encoded}/live-body-move`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Requested-With": "fetch" },
+      credentials: "include",
+      body: JSON.stringify({
+        source_fragment_key: req.sourceFragmentKey,
+        target_fragment_key: req.targetFragmentKey,
+        source_address: req.sourceAddress,
+        target_address: req.targetAddress,
+        edge: req.edge,
+        serialized_node: req.serializedNode,
+      }),
+    });
+    if (response.ok) return { ok: true };
+    const text = await response.text();
+    let message = `The body move was refused (${response.status}).`;
+    try {
+      const parsed = JSON.parse(text) as { message?: string };
+      if (typeof parsed.message === "string" && parsed.message.trim().length > 0) message = parsed.message;
+    } catch {
+    }
+    return { ok: false, message };
+  },
+
   async getWorkspaceTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
     const params = new URLSearchParams();
     if (options?.path != null) {

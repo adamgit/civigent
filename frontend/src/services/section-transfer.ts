@@ -184,6 +184,12 @@ export class SectionTransferService {
     return { allowed: true };
   }
 
+  fragmentBlockState(fragmentKey: string): boolean | null {
+    const section = this.deps.getSections().find((s) => s.fragment_key === fragmentKey);
+    if (!section) return null;
+    return section.blockState === true;
+  }
+
   /**
    * Execute a cross-section move.
    *
@@ -252,6 +258,104 @@ export class SectionTransferService {
 
       // The backend reorder moved the section atomically; no separate source
       // deletion is needed (the move is structural, not copy+delete).
+      return { success: true, sourceModified: true, targetModified: true };
+    } finally {
+      this._executing = false;
+    }
+  }
+
+  async executeOutlineMove(req: {
+    sourceHeadingPath: string[];
+    targetHeadingPath: string[];
+    targetFragmentKey: string;
+    position: "before" | "after";
+  }): Promise<TransferResult> {
+    if (this._executing) {
+      return { success: false, error: "Transfer already in progress", sourceModified: false, targetModified: false };
+    }
+    this._executing = true;
+    this._aborted = false;
+    try {
+      if (this.deps.transport.state !== "connected") {
+        return { success: false, error: "CRDT session disconnected — drop cancelled", sourceModified: false, targetModified: false };
+      }
+      const verdict = this.canDrop(req.targetFragmentKey);
+      if (!verdict.allowed) {
+        return {
+          success: false,
+          error: verdict.message ?? "Drop is not allowed here.",
+          sourceModified: false,
+          targetModified: false,
+        };
+      }
+      if (this._aborted) {
+        return { success: false, error: "Transfer aborted", sourceModified: false, targetModified: false };
+      }
+      await this.deps.transport.flushAndAwaitSync();
+      const result = await apiClient.liveMoveSection(this.deps.transport.documentPath, {
+        sourceHeadingPath: req.sourceHeadingPath,
+        targetHeadingPath: req.targetHeadingPath,
+        position: req.position,
+      });
+      if (!result.ok) {
+        return { success: false, error: result.message, sourceModified: false, targetModified: false };
+      }
+      return { success: true, sourceModified: true, targetModified: true };
+    } finally {
+      this._executing = false;
+    }
+  }
+
+  async executeBodyMove(req: {
+    sourceFragmentKey: string;
+    targetFragmentKey: string;
+    sourceAddress: { path: readonly number[]; kind: string; fingerprint: string };
+    targetAddress: { path: readonly number[]; kind: string; fingerprint: string };
+    edge: "before" | "after";
+    serializedNode: string;
+  }): Promise<TransferResult> {
+    if (this._executing) {
+      return { success: false, error: "Transfer already in progress", sourceModified: false, targetModified: false };
+    }
+    this._executing = true;
+    this._aborted = false;
+    try {
+      if (this.deps.transport.state !== "connected") {
+        return { success: false, error: "CRDT session disconnected — drop cancelled", sourceModified: false, targetModified: false };
+      }
+      const sourceVerdict = this.canDrop(req.sourceFragmentKey);
+      if (!sourceVerdict.allowed) {
+        return {
+          success: false,
+          error: sourceVerdict.message ?? "Drop is not allowed here.",
+          sourceModified: false,
+          targetModified: false,
+        };
+      }
+      const targetVerdict = this.canDrop(req.targetFragmentKey);
+      if (!targetVerdict.allowed) {
+        return {
+          success: false,
+          error: targetVerdict.message ?? "Drop is not allowed here.",
+          sourceModified: false,
+          targetModified: false,
+        };
+      }
+      if (this._aborted) {
+        return { success: false, error: "Transfer aborted", sourceModified: false, targetModified: false };
+      }
+      await this.deps.transport.flushAndAwaitSync();
+      const result = await apiClient.liveMoveBody(this.deps.transport.documentPath, {
+        sourceFragmentKey: req.sourceFragmentKey,
+        targetFragmentKey: req.targetFragmentKey,
+        sourceAddress: req.sourceAddress,
+        targetAddress: req.targetAddress,
+        edge: req.edge,
+        serializedNode: req.serializedNode,
+      });
+      if (!result.ok) {
+        return { success: false, error: result.message, sourceModified: false, targetModified: false };
+      }
       return { success: true, sourceModified: true, targetModified: true };
     } finally {
       this._executing = false;

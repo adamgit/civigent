@@ -1,6 +1,7 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { PluggableList } from "unified";
 import { Link } from "react-router-dom";
 import { MilkdownEditor, type MilkdownEditorHandle } from "./MilkdownEditor";
 import type { CrdtConnectionState } from "../services/crdt-provider";
@@ -12,8 +13,7 @@ import type { LocalEditOriginSink } from "../status/sessionAuthorship";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import { useSetHoveredFragmentKey } from "../contexts/sectionHoverUtils";
 import { rewriteMarkdownContentHref } from "../app/docs-location";
-
-const REMARK_PLUGINS = [remarkGfm];
+import { remarkStampBlockOwnerAddresses } from "../services/block-drag-static-bind";
 
 function MarkdownContentLink({
   node: _node,
@@ -40,14 +40,20 @@ const markdownComponents = { a: MarkdownContentLink };
 
 const StaticSectionMarkdown = React.memo(function StaticSectionMarkdown({
   markdown,
+  fragmentVersion,
   className = "doc-prose",
 }: {
   markdown: string;
+  fragmentVersion: number;
   className?: string;
 }) {
+  const remarkPlugins: PluggableList = React.useMemo(
+    () => [remarkGfm, [remarkStampBlockOwnerAddresses, { fragmentVersion }]],
+    [fragmentVersion],
+  );
   return (
     <div className={className}>
-      <ReactMarkdown components={markdownComponents} remarkPlugins={REMARK_PLUGINS}>
+      <ReactMarkdown components={markdownComponents} remarkPlugins={remarkPlugins}>
         {markdown}
       </ReactMarkdown>
     </div>
@@ -74,8 +80,9 @@ export interface DocumentSectionRendererProps {
   canEditProposalContent: boolean;
   proposalScopeMutationInFlight: boolean;
   isReady: boolean;
-  /** Changes exactly when this row's live fragment changes. Its only job is to
-   *  let the shallow memo below skip rows whose content did not move. */
+  /** Changes exactly when this row's live fragment changes. Lets the shallow memo
+   *  below skip rows whose content did not move, and is stamped onto this row's
+   *  static block-owner binds so a drag session can detect a stale target. */
   replicaFragmentVersion: number;
   getDisplayMarkdown: (section: RenderSectionRef) => string;
   getLiveBinding?: (fragmentKey: string) => import("../services/live-section-replica").LiveEditorBinding | undefined;
@@ -153,7 +160,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
   canEditProposalContent,
   proposalScopeMutationInFlight,
   isReady,
-  replicaFragmentVersion: _replicaFragmentVersion,
+  replicaFragmentVersion,
   getDisplayMarkdown,
   getLiveBinding,
   localEditSink,
@@ -268,7 +275,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
 
       {mountEditor ? (
         crdtDegraded && !isFocused ? (
-          <StaticSectionMarkdown markdown={displayMarkdown} className="doc-prose opacity-50" />
+          <StaticSectionMarkdown markdown={displayMarkdown} fragmentVersion={replicaFragmentVersion} className="doc-prose opacity-50" />
         ) : (
           <>
             {crdtPaused ? (
@@ -282,7 +289,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
             ) : null}
             <div className={`relative${crdtDegraded ? " opacity-50" : ""}`}>
               {!isReady && (
-                <StaticSectionMarkdown markdown={displayMarkdown} />
+                <StaticSectionMarkdown markdown={displayMarkdown} fragmentVersion={replicaFragmentVersion} />
               )}
               <div
                 className={isReady ? "" : "absolute inset-0"}
@@ -301,6 +308,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
                   <MilkdownEditor
                     ref={(handle) => { onSetEditorRef(fk, handle); }}
                     markdown={displayMarkdown}
+                    ownerTreeMarkdown={displayMarkdown}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded || !canEditProposalContent}
                     onChange={canEditProposalContent && onProposalSectionChange
@@ -318,6 +326,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
                   <MilkdownEditor
                     ref={(handle) => { onSetEditorRef(fk, handle); }}
                     binding={liveBinding}
+                    ownerTreeMarkdown={displayMarkdown}
                     userName={resolveWriterId()}
                     readOnly={!isFocused || unavailableForEdit || publishPaused || crdtDegraded}
                     expectsCrdt
@@ -335,7 +344,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
           </>
         )
       ) : (
-        <StaticSectionMarkdown markdown={displayMarkdown} />
+        <StaticSectionMarkdown markdown={displayMarkdown} fragmentVersion={replicaFragmentVersion} />
       )}
     </div>
   );

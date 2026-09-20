@@ -218,6 +218,7 @@ export {
   UpsertProposalSectionsRequest,
   WriteProposalDocumentSectionsRequest,
   LiveMoveSectionRequest,
+  LiveBodyMoveRequest,
   HUMAN_INVOLVEMENT_PRESETS,
   expectJsonObject,
   sectionHeadingKey,

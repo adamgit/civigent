@@ -47,7 +47,7 @@ import {
   type FragmentStringDelta,
 } from "../crdt/live-section-deltas.js";
 import { captureLiveFragments } from "../crdt/live-fragment-capture.js";
-import { EMPTY_FRAGMENT, type FragmentContent } from "../storage/section-formatting.js";
+import { EMPTY_FRAGMENT, fragmentFromStructuralAssembly, type FragmentContent } from "../storage/section-formatting.js";
 import { validateLiveEditForDuplicateSiblingHeadings } from "../crdt/live-edit-structural-validation.js";
 import {
   computeStructuralSplitPlan,
@@ -58,10 +58,12 @@ import {
   computeStructuralHeadingEditPlan,
   applyStructuralHeadingEditPlan,
   reflectHeadingEditIntoProposal,
+  updateFragmentPreservingIdentity,
   type StructuralSplitPlan,
   type HeadingRemovalPlan,
   type StructuralHeadingEditPlan,
 } from "../crdt/structural-appliers.js";
+import { applyBodyMoveToMarkdown } from "../crdt/body-move-markdown.js";
 import { removeProposalHeading } from "../storage/proposal-heading-removal.js";
 import { mutateProposalContent } from "../storage/mutate-proposal-content.js";
 import { publishWholesaleToCanonicalDetailed } from "../storage/commit-pipeline.js";
@@ -78,7 +80,7 @@ import type { PublishTriggerDecision, PublishResult } from "../crdt/crdt-proposa
 import type { SectionRefReceipt } from "../storage/canonical-store.js";
 import type { PublishPauseResult } from "../crdt/docsession-publish-pause.js";
 import { SectionRef } from "../domain/section-ref.js";
-import type { WsServerEvent, WirePendingSection, WriterIdentity } from "../types/shared.js";
+import type { LiveBodyMoveRequest, WsServerEvent, WirePendingSection, WriterIdentity } from "../types/shared.js";
 import type { ClientInstanceId, DocSessionId, RemoteParticipant, ModeTransitionRequest, ModeTransitionResult, ProposalId } from "../types/shared.js";
 import { DocPath, parseJson } from "../types/shared.js";
 import {
@@ -1720,6 +1722,24 @@ interface PendingWriterInfo {
 const pendingFragmentsByDoc = new Map<string, Map<string, PendingWriterInfo>>();
 
 /** The doc's live pending-writer set as `WirePendingSection[]` for the wire state. */
+function announcePendingFragments(session: DocSession, writerId: string, fragmentKeys: readonly string[]): void {
+  const announced = pendingFragmentsByDoc.get(session.docPath) ?? new Map<string, PendingWriterInfo>();
+  const editor = session.holders.get(writerId)?.identity;
+  const writerDisplayName = editor?.displayName ?? writerId;
+  for (const fragmentKey of fragmentKeys) {
+    if (announced.has(fragmentKey)) continue;
+    announced.set(fragmentKey, { writerId, writerDisplayName });
+    onWsEvent?.({
+      type: "section:pending",
+      doc_path: session.docPath,
+      fragment_key: fragmentKey,
+      writer_id: writerId,
+      writer_display_name: writerDisplayName,
+    });
+  }
+  pendingFragmentsByDoc.set(session.docPath, announced);
+}
+
 function pendingSectionsForDoc(docPath: DocPath): WirePendingSection[] {
   const pending = pendingFragmentsByDoc.get(docPath);
   if (!pending) return [];
@@ -2775,4 +2795,106 @@ export async function requestDocSessionMove(
     return { ok: false, message: "This document isn't being edited live right now — open it for editing and try again." };
   }
   return session.enqueue(() => moveLiveSection(session, req));
+}
+
+export async function requestDocSessionBodyMove(
+  docPath: DocPath,
+  req: LiveBodyMoveRequest,
+  writerId: string,
+): Promise<MoveSectionResult> {
+  const session = lookupDocSession(docPath);
+  if (!session) {
+    return { ok: false, message: "This document isn't being edited live right now — open it for editing and try again." };
+  }
+  return session.enqueue(() => moveLiveBody(session, req, writerId));
+}
+
+export async function moveLiveBody(
+  session: DocSession,
+  req: LiveBodyMoveRequest,
+  writerId: string,
+): Promise<MoveSectionResult> {
+  if (session.state !== "active") {
+    return { ok: false, message: "This document isn't ready for editing right now — try again in a moment." };
+  }
+  if (session.publishPause.isActive()) {
+    return { ok: false, message: "This document is being published right now — try moving the block again in a moment." };
+  }
+  const keys = new Set(session.liveFragments.getFragmentKeys());
+  if (!keys.has(req.source_fragment_key) || !keys.has(req.target_fragment_key)) {
+    return { ok: false, message: "This section is temporarily unavailable for editing." };
+  }
+
+  await settleLiveStructure(session);
+  if (session.state !== "active") {
+    return { ok: false, message: "This document isn't ready for editing right now — try again in a moment." };
+  }
+
+  const ownProposalId = session.generator.getCurrentProposalId();
+  const layout = await resolveLiveSectionLayout(session);
+  const sourceEntry = layout.find((entry) => entry.fragmentKey === req.source_fragment_key);
+  const targetEntry = layout.find((entry) => entry.fragmentKey === req.target_fragment_key);
+  if (!sourceEntry || !targetEntry) {
+    return { ok: false, message: "This section is temporarily unavailable for editing." };
+  }
+
+  const lockResult = await checkProposalLocks({
+    proposalId: ownProposalId ?? "__docsession-no-proposal__",
+    targets: [
+      { kind: "section", doc_path: session.docPath, heading_path: [...sourceEntry.headingPath] },
+      { kind: "section", doc_path: session.docPath, heading_path: [...targetEntry.headingPath] },
+    ],
+  });
+  if (lockResult.conflicts.length > 0) {
+    return { ok: false, message: "This section is locked by an in-progress proposal and can't be edited until that proposal resolves." };
+  }
+
+  const sourceMarkdown = session.liveFragments.readFragmentString(req.source_fragment_key);
+  const targetMarkdown = session.liveFragments.readFragmentString(req.target_fragment_key);
+  const applied = applyBodyMoveToMarkdown({
+    sourceMarkdown,
+    targetMarkdown,
+    sourceAddress: req.source_address,
+    targetAddress: req.target_address,
+    edge: req.edge,
+    serializedNode: req.serialized_node,
+  });
+  if (!applied) {
+    return { ok: false, message: "That block is no longer where it was — the document changed. Try the move again." };
+  }
+
+  const touched = req.source_fragment_key === req.target_fragment_key
+    ? [req.source_fragment_key]
+    : [req.source_fragment_key, req.target_fragment_key];
+  await session.generator.materializeEdit({ touchedFragmentKeys: touched });
+
+  session.ydoc.transact(() => {
+    updateFragmentPreservingIdentity(
+      session.ydoc,
+      req.source_fragment_key,
+      fragmentFromStructuralAssembly(applied.sourceMarkdown),
+    );
+    if (req.source_fragment_key !== req.target_fragment_key) {
+      updateFragmentPreservingIdentity(
+        session.ydoc,
+        req.target_fragment_key,
+        fragmentFromStructuralAssembly(applied.targetMarkdown),
+      );
+    }
+  });
+
+  for (const fragmentKey of touched) {
+    const writers = session.liveFragments.getWriterIdsForFragment(fragmentKey);
+    session.liveFragments.setFragmentWriterIds(fragmentKey, [...writers, writerId]);
+    noteFragmentActivity(session, writerId, fragmentKey);
+  }
+  const acceptedWriterIdentity = session.holders.get(writerId)?.identity;
+  if (acceptedWriterIdentity?.type === "human") {
+    recordAcceptedHumanDocumentWrite(session.docPath, acceptedWriterIdentity);
+    notifyDocumentActivityChanged(session.docPath);
+  }
+  announcePendingFragments(session, writerId, touched);
+
+  await emitLiveSectionsUpdateFrame(session);
+  return { ok: true };
 }

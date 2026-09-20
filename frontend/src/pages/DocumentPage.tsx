@@ -7,6 +7,7 @@ import {
 } from "./document-tab-edit-state";
 import { SectionTransferService, type SectionTransfer } from "../services/section-transfer";
 import { useSectionDragDrop } from "../hooks/useSectionDragDrop";
+import { useDocumentGripDragSession } from "../hooks/useDocumentGripDragSession";
 import { rememberRecentDoc } from "../services/recent-docs";
 import { ProposalPanel } from "../components/ProposalPanel";
 import { DocumentTopbar, parentFolderRoute } from "../components/DocumentTopbar";
@@ -117,6 +118,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [deleteWriteFailure, setDeleteWriteFailure] = useState<string | null>(null);
   const [pathCopied, setPathCopied] = useState(false);
   const pathCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -599,6 +601,10 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       const s = sectionsRef.current.find((row) => SectionId.text(row.id) === fk);
       return s ? getDisplayMarkdown(s) : null;
     },
+    onTransferComplete: (result) => {
+      if (!result.success && result.error) setMoveError(result.error);
+      else if (result.success) setMoveError(null);
+    },
   });
 
   // Copy rows carry each render row's CURRENT display markdown (overlay /
@@ -661,6 +667,16 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   });
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;
+  useDocumentGripDragSession({
+    canvasScrollRef: scrollContainerRef,
+    sectionListRef: sectionsContainerRef,
+    sections: renderSections,
+    editorRefs,
+    transferService: transferServiceRef.current,
+    readyEditors,
+    recordLocalEdit: (fragmentKey) => localEditSink.recordLocalEdit(fragmentKey),
+    onMoveRefused: (message) => setMoveError(message),
+  });
   const authorshipView: SessionAuthorshipView = authorshipLedger;
   const saveStatus = useDocSaveStatusInputs(
     {
@@ -835,7 +851,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       SectionId.text(s.id) === transfer.sourceFragmentKey,
     );
     if (srcSection) transfer.sourceHeadingPath = [...srcSection.headingPath];
-    void transferServiceRef.current?.execute(transfer);
+    void transferServiceRef.current?.execute(transfer).then((result) => {
+      if (!result) return;
+      if (!result.success && result.error) setMoveError(result.error);
+      else if (result.success) setMoveError(null);
+    });
   }, []);
 
   // ── Render ───────────────────────────────────────────────
@@ -1220,6 +1240,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
               {deleteError ? (
                 <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                   {deleteError}
+                </pre>
+              ) : null}
+              {moveError ? (
+                <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
+                  {moveError}
                 </pre>
               ) : null}
               {error ? (

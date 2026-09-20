@@ -1932,6 +1932,74 @@ export const LiveMoveSectionRequest = {
   },
 };
 
+export type LiveBodyMoveOwnerKind =
+  | "heading"
+  | "paragraph"
+  | "list"
+  | "list_item"
+  | "blockquote"
+  | "code_block"
+  | "table";
+
+export interface LiveBodyMoveOwnerAddress {
+  path: readonly number[];
+  kind: LiveBodyMoveOwnerKind;
+  fingerprint: string;
+}
+
+export interface LiveBodyMoveRequest {
+  source_fragment_key: string;
+  target_fragment_key: string;
+  source_address: LiveBodyMoveOwnerAddress;
+  target_address: LiveBodyMoveOwnerAddress;
+  edge: "before" | "after";
+  serialized_node: string;
+}
+
+const LIVE_BODY_MOVE_OWNER_KINDS = new Set<string>([
+  "heading",
+  "paragraph",
+  "list",
+  "list_item",
+  "blockquote",
+  "code_block",
+  "table",
+]);
+
+function parseLiveBodyMoveOwnerAddress(value: JsonValue, label: string): LiveBodyMoveOwnerAddress {
+  const obj = expectJsonObject(value, label);
+  const pathValue = obj.path;
+  if (!Array.isArray(pathValue) || pathValue.length === 0 || pathValue.some((n) => typeof n !== "number" || !Number.isInteger(n) || n < 0)) {
+    throw new Error(`${label}.path must be a non-empty array of non-negative integers`);
+  }
+  const kind = obj.kind;
+  if (typeof kind !== "string" || !LIVE_BODY_MOVE_OWNER_KINDS.has(kind)) {
+    throw new Error(`${label}.kind is not a block-owner kind`);
+  }
+  const fingerprint = jsonRequireString(obj, "fingerprint", label);
+  return { path: pathValue as number[], kind: kind as LiveBodyMoveOwnerKind, fingerprint };
+}
+
+export const LiveBodyMoveRequest = {
+  parse(value: JsonValue, label = "live body move request"): RequestParseResult<LiveBodyMoveRequest> {
+    return asRequestParseResult(() => {
+      const obj = expectJsonObject(value, label);
+      const edge = obj.edge;
+      if (edge !== "before" && edge !== "after") {
+        throw new Error(`${label}.edge must be "before" or "after", got ${JSON.stringify(edge)}`);
+      }
+      return {
+        source_fragment_key: jsonRequireString(obj, "source_fragment_key", label),
+        target_fragment_key: jsonRequireString(obj, "target_fragment_key", label),
+        source_address: parseLiveBodyMoveOwnerAddress(obj.source_address, `${label}.source_address`),
+        target_address: parseLiveBodyMoveOwnerAddress(obj.target_address, `${label}.target_address`),
+        edge,
+        serialized_node: jsonRequireString(obj, "serialized_node", label),
+      };
+    });
+  },
+};
+
 export interface CommitProposalAccepted {
   proposal_id: ProposalId;
   status: "committed";
