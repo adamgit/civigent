@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   HOME_FOLDER_WINDOW_OPTIONS,
@@ -7,6 +7,7 @@ import {
 } from "../../../pages/home/home-constants";
 import type { HomeActiveFolder } from "../../../pages/home/home-folder-activity";
 import { formatHomeCount } from "../../../pages/home/home-utils";
+import { HomeWideFolderHoverPane } from "./HomeWideFolderHoverPane";
 import { HomeWideFolderRow } from "./HomeWideFolderRow";
 import { HomeWidePager } from "./HomeWidePager";
 import { PanelHeader } from "./PanelHeader";
@@ -21,6 +22,15 @@ interface HomeWideActiveFoldersProps {
   showParentPath?: boolean;
 }
 
+function folderRowKey(folder: HomeActiveFolder): string {
+  return `${folder.folderPath}\0${folder.writerKind}`;
+}
+
+/**
+ * Experiment: the row is the folder-details link. The file-name subtitle and
+ * the full-height right-hand block toggle the pane. Revert
+ * HomeWideActiveFolders + HomeWideFolderRow + peek CSS if this doesn't feel right.
+ */
 export function HomeWideActiveFolders({
   folders,
   totalFolderCount,
@@ -30,9 +40,16 @@ export function HomeWideActiveFolders({
   showParentPath = false,
 }: HomeWideActiveFoldersProps) {
   const [page, setPage] = useState(0);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const rowEls = useRef(new Map<string, HTMLAnchorElement>());
+
   useEffect(() => {
     setPage(0);
   }, [windowId]);
+
+  useEffect(() => {
+    setOpenKey(null);
+  }, [page, windowId]);
 
   const pageCount = Math.max(1, Math.ceil(folders.length / HOME_WIDE_FOLDER_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -40,6 +57,9 @@ export function HomeWideActiveFolders({
     safePage * HOME_WIDE_FOLDER_PAGE_SIZE,
     safePage * HOME_WIDE_FOLDER_PAGE_SIZE + HOME_WIDE_FOLDER_PAGE_SIZE,
   );
+
+  const openFolder = openKey ? slice.find((folder) => folderRowKey(folder) === openKey) : undefined;
+  const openAnchor = openKey ? rowEls.current.get(openKey) : undefined;
 
   return (
     <section className="home-panel" data-home-active-folders aria-labelledby="active-folders-heading">
@@ -74,14 +94,23 @@ export function HomeWideActiveFolders({
             No folder activity in this window.
           </p>
         ) : (
-          slice.map((folder) => (
-            <HomeWideFolderRow
-              key={`${folder.folderPath}\0${folder.writerKind}`}
-              folder={folder}
-              now={now}
-              showParentPath={showParentPath}
-            />
-          ))
+          slice.map((folder) => {
+            const key = folderRowKey(folder);
+            return (
+              <HomeWideFolderRow
+                key={key}
+                folder={folder}
+                now={now}
+                showParentPath={showParentPath}
+                open={openKey === key}
+                rowRef={(el) => {
+                  if (el) rowEls.current.set(key, el);
+                  else rowEls.current.delete(key);
+                }}
+                onTogglePane={() => setOpenKey((current) => (current === key ? null : key))}
+              />
+            );
+          })
         )}
         <HomeWidePager
           page={safePage}
@@ -91,6 +120,9 @@ export function HomeWideActiveFolders({
           label="Active folders pages"
         />
       </div>
+      {openFolder && openAnchor ? (
+        <HomeWideFolderHoverPane folder={openFolder} anchor={openAnchor} />
+      ) : null}
     </section>
   );
 }

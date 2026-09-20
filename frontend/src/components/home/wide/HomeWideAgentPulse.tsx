@@ -66,15 +66,17 @@ export function HomeWideAgentPulse({
         />
       </div>
 
-      {pulseError ? <p className="agent-panel__empty text-error">{pulseError}</p> : null}
-      <AgentMosaic
-        tasks={chart.listTasks}
-        emptyMessage={emptyPulseCopy(
-          chart.range,
-          chart.selectedIndex != null,
-          chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
-        )}
-      />
+      <div className="agent-panel__body sidebar-scroll">
+        {pulseError ? <p className="agent-panel__empty text-error">{pulseError}</p> : null}
+        <AgentMosaic
+          tasks={chart.listTasks}
+          emptyMessage={emptyPulseCopy(
+            chart.range,
+            chart.selectedIndex != null,
+            chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+          )}
+        />
+      </div>
     </section>
   );
 }

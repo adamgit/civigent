@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { SectionHeadingBarcode } from "./SectionHeadingBarcode";
-import { compactAge } from "../../utils/prettyAge";
+import { compactAge, compactAgeTint } from "../../utils/prettyAge";
+import type { FolderFilesSort, FolderFilesSortKey } from "./folder-files-sort";
 
 /**
  * Clickable file row. The outer element is a real <Link href>, not a
@@ -30,6 +31,64 @@ const DOT_CLASS: Record<FolderFileStatusDot, string> = {
   new: "bg-folder-new",
   agent: "bg-agent",
 };
+
+const FILE_LIST_COLUMNS = {
+  row: "flex w-full min-w-0 items-center gap-3",
+  recent: "w-16 shrink-0",
+  name: "min-w-0 flex-1 truncate md:max-w-[50%]",
+  sections: "ml-auto min-w-0 flex-1 overflow-hidden text-right",
+} as const;
+
+const SORT_HEADINGS: Array<{
+  key: FolderFilesSortKey;
+  label: string;
+  column: "recent" | "name" | "sections";
+}> = [
+  { key: "recent", label: "Recent", column: "recent" },
+  { key: "name", label: "File name", column: "name" },
+  { key: "sections", label: "Sections", column: "sections" },
+];
+
+export function FolderFileListHeadings({
+  sort,
+  onSort,
+}: {
+  sort: FolderFilesSort;
+  onSort: (key: FolderFilesSortKey) => void;
+}) {
+  return (
+    <div
+      className={`${FILE_LIST_COLUMNS.row} border-b border-folder-divider pb-1.5`}
+      role="group"
+      aria-label="Sort files"
+    >
+      {SORT_HEADINGS.map((heading) => {
+        const active = sort.key === heading.key;
+        return (
+          <button
+            key={heading.key}
+            type="button"
+            className={`${FILE_LIST_COLUMNS[heading.column]} cursor-pointer whitespace-nowrap border-none bg-transparent p-0 font-ui text-[10px] font-semibold uppercase tracking-[0.14em] hover:text-text-secondary ${
+              heading.column === "sections" ? "" : "text-left"
+            } ${active ? "text-text-secondary" : "text-text-faint"}`}
+            role="columnheader"
+            aria-sort={
+              active ? (sort.direction === "asc" ? "ascending" : "descending") : "none"
+            }
+            onClick={() => onSort(heading.key)}
+          >
+            {heading.label}
+            {active ? (
+              <span className="ml-0.5" aria-hidden="true">
+                {sort.direction === "asc" ? "↑" : "↓"}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function SectionPreview({ headings }: { headings: FolderFileSectionHeading[] }) {
   if (headings.length === 0) {
@@ -65,7 +124,7 @@ export function FolderFileRow({
   return (
     <Link
       to={to}
-      className="group flex w-full min-w-0 items-center gap-3 py-2.5 text-left no-underline transition-colors hover:bg-section-hover"
+      className={`group ${FILE_LIST_COLUMNS.row} py-2.5 text-left no-underline transition-colors hover:bg-section-hover`}
     >
       {statusDots.length > 0 ? (
         <span className="flex w-3.5 shrink-0 items-center justify-center gap-0.5" aria-hidden="true">
@@ -77,13 +136,16 @@ export function FolderFileRow({
           ))}
         </span>
       ) : null}
-      <span className="w-14 shrink-0 tabular-nums text-[11px] text-text-faint">
+      <span
+        className={`${FILE_LIST_COLUMNS.recent} tabular-nums text-[11px] font-medium`}
+        style={typeof secondsAgo === "number" ? { color: compactAgeTint(secondsAgo) } : undefined}
+      >
         {typeof secondsAgo === "number" ? compactAge(secondsAgo) : null}
       </span>
-      <span className="min-w-0 truncate text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline md:max-w-[50%]">
+      <span className={`${FILE_LIST_COLUMNS.name} text-[15px] font-medium text-folder-link group-hover:text-folder-link-hover group-hover:underline`}>
         {name}
       </span>
-      <span className="ml-auto min-w-0 flex-1 overflow-hidden text-right">
+      <span className={FILE_LIST_COLUMNS.sections}>
         {sectionHeadings !== undefined ? (
           <>
             <span className="hidden group-hover:block">

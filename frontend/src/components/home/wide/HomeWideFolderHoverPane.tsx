@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { docsRouteForStoredPath } from "../../../app/docs-location";
@@ -13,9 +13,11 @@ import type {
 interface HomeWideFolderHoverPaneProps {
   folder: HomeActiveFolder;
   anchor: HTMLElement;
-  onEnter: () => void;
-  onLeave: () => void;
+  paneRef?: Ref<HTMLDivElement>;
 }
+
+/** Visual overlap into Active Folders so the pane reads as attached to the list. */
+const FOLDER_PANE_PANEL_OVERLAP_PX = 16;
 
 const GROUPS: Array<{ kind: HomeFolderDocChangeKind; label: string }> = [
   { kind: "added", label: "Added" },
@@ -89,18 +91,23 @@ function FileGroupList({
   );
 }
 
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
+  if (!ref) return;
+  if (typeof ref === "function") ref(value);
+  else (ref as { current: T | null }).current = value;
+}
+
 export function HomeWideFolderHoverPane({
   folder,
   anchor,
-  onEnter,
-  onLeave,
+  paneRef,
 }: HomeWideFolderHoverPaneProps) {
-  const paneRef = useRef<HTMLDivElement>(null);
+  const localPaneRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(() => {
     const rowRect = anchor.getBoundingClientRect();
     const panel = anchor.closest("[data-home-active-folders]");
     const panelRect = panel?.getBoundingClientRect() ?? rowRect;
-    return { top: rowRect.top, left: Math.max(8, panelRect.left - 528 - 8) };
+    return { top: rowRect.top, left: Math.max(8, panelRect.left - 528 + FOLDER_PANE_PANEL_OVERLAP_PX) };
   });
 
   useLayoutEffect(() => {
@@ -108,11 +115,11 @@ export function HomeWideFolderHoverPane({
       const rowRect = anchor.getBoundingClientRect();
       const panel = anchor.closest("[data-home-active-folders]");
       const panelRect = panel?.getBoundingClientRect() ?? rowRect;
-      const pane = paneRef.current;
+      const pane = localPaneRef.current;
       const width = pane?.offsetWidth ?? 528;
       const height = pane?.offsetHeight ?? 280;
       const vh = window.innerHeight;
-      let left = panelRect.left - width - 8;
+      let left = panelRect.left - width + FOLDER_PANE_PANEL_OVERLAP_PX;
       if (left < 8) left = 8;
       let top = rowRect.top;
       if (top + height > vh - 8) top = Math.max(8, vh - height - 8);
@@ -138,12 +145,12 @@ export function HomeWideFolderHoverPane({
 
   return createPortal(
     <div
-      ref={paneRef}
+      ref={(node) => {
+        localPaneRef.current = node;
+        assignRef(paneRef, node);
+      }}
       className="home-pulse-pane home-pulse-pane--folder"
-      role="tooltip"
       style={{ top: pos.top, left: pos.left }}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
       onClick={(event) => event.stopPropagation()}
     >
       <div className="home-pulse-pane__folder-path">{parentPath ?? "/"}</div>

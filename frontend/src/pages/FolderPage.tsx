@@ -5,7 +5,14 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { PageStatusBar } from "../components/PageStatusBar";
 import { FolderCard, type FolderBookSpine } from "../components/folder-details/FolderCard";
-import { FolderFileRow } from "../components/folder-details/FolderFileRow";
+import { FolderFileListHeadings, FolderFileRow } from "../components/folder-details/FolderFileRow";
+import {
+  compareFolderFiles,
+  nextFolderFilesSort,
+  readFolderFilesSort,
+  writeFolderFilesSort,
+  type FolderFilesSortKey,
+} from "../components/folder-details/folder-files-sort";
 import { FolderTreePageWatermark } from "../components/folder-details/FolderTreePageWatermark";
 import { DocumentSearchField } from "../components/DocumentSearchField";
 import {
@@ -283,6 +290,7 @@ export function FolderPage({ folderPath }: FolderPageProps) {
     [],
   );
   const [filterQuery, setFilterQuery] = useState("");
+  const [filesSort, setFilesSort] = useState(readFolderFilesSort);
   const isRoot = folderPath === FolderPath.root;
 
   const folderEntry = useMemo(() => findFolderEntry(entries, folderPath), [entries, folderPath]);
@@ -309,8 +317,21 @@ export function FolderPage({ folderPath }: FolderPageProps) {
 
   const sortedFiles = useMemo(() => {
     if (!stats) return [];
-    return [...stats.childFiles].sort(compareByName);
-  }, [stats]);
+    return [...stats.childFiles].sort((a, b) =>
+      compareFolderFiles(a, b, filesSort, {
+        ages: fileAges,
+        sectionHeadings: folderDetailsSectionHeadingsCache,
+      }),
+    );
+  }, [stats, filesSort, fileAges, folderDetailsSectionHeadingsCache]);
+
+  const handleFilesSort = useCallback((key: FolderFilesSortKey) => {
+    setFilesSort((previous) => {
+      const next = nextFolderFilesSort(previous, key);
+      writeFolderFilesSort(next);
+      return next;
+    });
+  }, []);
 
   const filter = filterQuery.trim().toLowerCase();
 
@@ -724,8 +745,9 @@ export function FolderPage({ folderPath }: FolderPageProps) {
                     className="min-w-0 flex-1"
                   />
                 </div>
+                <FolderFileListHeadings sort={filesSort} onSort={handleFilesSort} />
                 {visibleFiles.length === 0 ? (
-                  <p className="mb-2 text-xs text-text-muted">
+                  <p className="mb-2 mt-2 text-xs text-text-muted">
                     {filter ? "No matching files." : "No files in this folder."}
                   </p>
                 ) : (
