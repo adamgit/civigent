@@ -434,11 +434,18 @@ async function runRipgrepInScope(
       reject(error);
     };
 
+    const requestEarlyStop = (): void => {
+      if (shouldStopEarly) return;
+      shouldStopEarly = true;
+      child.kill("SIGTERM");
+      child.stdout.pause();
+      child.stdout.destroy();
+    };
+
     const processLine = (line: string): void => {
       collectRawMatchesFromRgJsonLine(line, matches, maxResults);
-      if (matches.length >= maxResults && !shouldStopEarly) {
-        shouldStopEarly = true;
-        child.kill("SIGTERM");
+      if (matches.length >= maxResults) {
+        requestEarlyStop();
       }
     };
 
@@ -454,12 +461,14 @@ async function runRipgrepInScope(
     });
 
     child.stdout.on("data", (chunk: Buffer | string) => {
+      if (shouldStopEarly) return;
       stdoutBuffer += chunk.toString();
       let newlineIndex = stdoutBuffer.indexOf("\n");
       while (newlineIndex >= 0) {
         const line = stdoutBuffer.slice(0, newlineIndex);
         stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
         processLine(line);
+        if (shouldStopEarly) return;
         newlineIndex = stdoutBuffer.indexOf("\n");
       }
     });
@@ -469,16 +478,22 @@ async function runRipgrepInScope(
     });
 
     child.on("close", (code) => {
-      if (stdoutBuffer.trim().length > 0) {
-        processLine(stdoutBuffer);
-      }
-
-      const stderrText = stderrBuffer.trim();
-
       if (shouldStopEarly) {
         settleResolve(matches.slice(0, maxResults));
         return;
       }
+
+      if (stdoutBuffer.includes("\n")) {
+        let newlineIndex = stdoutBuffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = stdoutBuffer.slice(0, newlineIndex);
+          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+          processLine(line);
+          newlineIndex = stdoutBuffer.indexOf("\n");
+        }
+      }
+
+      const stderrText = stderrBuffer.trim();
 
       if (code === 0 || code === 1) {
         settleResolve(matches);

@@ -24,6 +24,7 @@ import { isDevSupervised } from "./system-state.js";
 import type { FatalReport, WorkerIpcMessage } from "./system-state.js";
 import { getFatalErrorsMode } from "./fatal-errors-mode.js";
 import { persistFatalState } from "../storage/fatal-state.js";
+import { snapshot } from "../mcp/in-flight-calls.js";
 
 type FatalOrigin = FatalReport["origin"];
 
@@ -70,6 +71,7 @@ function buildFatalReport(err: unknown, origin: FatalOrigin): FatalReport {
     cause: error.cause != null ? String(error.cause) : null,
     origin,
     timestamp: new Date().toISOString(),
+    in_flight_calls: snapshot(),
   };
 }
 

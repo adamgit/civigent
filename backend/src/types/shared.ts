@@ -156,6 +156,7 @@ export type {
   GetAgentRosterResponse,
   CatalogChangedEvent,
   FatalReport,
+  InFlightMcpCall,
   SystemFatalEvent,
   ImpairmentReport,
   SystemImpairmentEvent,

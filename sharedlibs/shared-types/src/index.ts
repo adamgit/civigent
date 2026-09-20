@@ -2856,6 +2856,13 @@ export interface SectionEditRejectedEvent {
  * Shared with dev-supervisor SSE (see `SystemState`) so both delivery paths
  * (dev SSE, prod WS) use one shape.
  */
+export interface InFlightMcpCall {
+  writer_id: string;
+  writer_display_name: string;
+  writer_type: WriterType;
+  tool: string;
+}
+
 export interface FatalReport {
   message: string;
   stack: string;
@@ -2869,6 +2876,7 @@ export interface FatalReport {
    * latch. Absent on transient report-mode fatals, which latch nothing.
    */
   operator_action?: string;
+  in_flight_calls?: InFlightMcpCall[];
 }
 
 /**

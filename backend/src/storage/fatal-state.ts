@@ -19,7 +19,7 @@
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { getFatalStatePath } from "./data-root.js";
-import type { FatalReport } from "../types/shared.js";
+import type { FatalReport, InFlightMcpCall, WriterType } from "../types/shared.js";
 
 export const FATAL_OPERATOR_ACTION =
   "Resolve the underlying failure, delete `fatal.json` from the Civigent data directory, then restart Civigent.";
@@ -91,7 +91,7 @@ export async function loadFatalState(): Promise<LatchedFatalState | null> {
     return synthesizeLatchedFatal("not a FatalReport shape");
   }
 
-  return {
+  const loaded: LatchedFatalState = {
     message: record.message,
     stack: record.stack,
     cause: record.cause ?? null,
@@ -102,4 +102,41 @@ export async function loadFatalState(): Promise<LatchedFatalState | null> {
         ? record.operator_action
         : FATAL_OPERATOR_ACTION,
   };
+  const inFlightCalls = readInFlightCalls(
+    (parsed as { in_flight_calls?: unknown }).in_flight_calls,
+  );
+  if (inFlightCalls !== undefined) {
+    loaded.in_flight_calls = inFlightCalls;
+  }
+  return loaded;
+}
+
+function isWriterType(value: unknown): value is WriterType {
+  return value === "human" || value === "agent";
+}
+
+function readInFlightCalls(value: unknown): InFlightMcpCall[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const calls: InFlightMcpCall[] = [];
+  for (const item of value) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      return undefined;
+    }
+    const entry = item as Record<string, unknown>;
+    if (
+      typeof entry.writer_id !== "string" ||
+      typeof entry.writer_display_name !== "string" ||
+      !isWriterType(entry.writer_type) ||
+      typeof entry.tool !== "string"
+    ) {
+      return undefined;
+    }
+    calls.push({
+      writer_id: entry.writer_id,
+      writer_display_name: entry.writer_display_name,
+      writer_type: entry.writer_type,
+      tool: entry.tool,
+    });
+  }
+  return calls;
 }

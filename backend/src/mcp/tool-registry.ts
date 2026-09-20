@@ -13,6 +13,7 @@ import type { ActionResult } from "../monitoring/activity-log.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { ProposalLockConflictError } from "../domain/proposal-fsm-locks.js";
 import { refuseUnknownToolArguments } from "./tool-argument-bag.js";
+import { begin, end } from "./in-flight-calls.js";
 
 // ─── Tool handler context ────────────────────────────────
 
@@ -194,6 +195,7 @@ export class ToolRegistry {
       return makeToolErrorResult(`Unknown tool: ${name}`);
     }
 
+    const inFlight = begin(ctx.writer, name);
     try {
       const refused = refuseUnknownToolArguments(name, args, tool.definition.inputSchema);
       const result = refused ?? await tool.handler(args, ctx);
@@ -245,6 +247,8 @@ export class ToolRegistry {
         ? error.stack ?? error.message
         : String(error);
       return makeToolErrorResult(message);
+    } finally {
+      end(inFlight);
     }
   }
 }

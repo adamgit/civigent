@@ -46,6 +46,22 @@ export function SystemFatalScreen({ fatal }: SystemFatalScreenProps) {
             </pre>
           </div>
         )}
+
+        {fatal.in_flight_calls && fatal.in_flight_calls.length > 0 && (
+          <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 space-y-2">
+            <div className="text-xs text-slate-500 font-medium">In-flight MCP calls</div>
+            <ul className="space-y-1 m-0 pl-0 list-none">
+              {fatal.in_flight_calls.map((call, index) => (
+                <li
+                  key={`${call.writer_id}:${call.tool}:${index}`}
+                  className="text-sm text-slate-300 break-words"
+                >
+                  {call.writer_display_name} ({call.writer_id}) · {call.tool}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );
