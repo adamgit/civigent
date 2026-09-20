@@ -19,12 +19,15 @@ The system operates at **section-level granularity**. Sections are identified by
 
 Read a top-level section called "Overview" from the published/live wiki:
 ```
-{{tool:readPublishedSection}}(doc_path: "/my-doc.md", heading_path: ["Overview"])
+{{tool:readPublishedSection}}(sections: [{ doc_path: "/my-doc.md", heading_path: ["Overview"] }])
 ```
 
-Read a nested section "Weapons" inside "Ship Building" from the published/live wiki:
+Read several sections from the published/live wiki in one call:
 ```
-{{tool:readPublishedSection}}(doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"])
+{{tool:readPublishedSection}}(sections: [
+  { doc_path: "/my-doc.md", heading_path: ["Ship Building", "Weapons"] },
+  { doc_path: "/my-doc.md", heading_path: ["Overview"] }
+])
 ```
 
 Read a section from a proposal:
@@ -37,7 +40,7 @@ Read a section from a proposal:
 1. **Find documents:** `{{tool:listDocuments}}` returns readable documents in the live wiki.
 2. **Inspect section inventory:** `{{tool:listSections}}` returns section headings and `body_size_bytes` without body text. Pass a document path for one document, or a folder/root path to inventory across documents.
 3. **Search before reading:** `{{tool:searchText}}` supports `syntax: "literal" | "regexp"` for exact phrases and patterns. Body, heading, and filename hits carry `doc_path`. A `path_segment` hit carries `folder_path` (a folder prefix) — use it as `root` on a later list/search, not as `doc_path` on a document read.
-4. **Read published content:** `{{tool:readPublishedSection}}` reads a specific section by `doc_path` and `heading_path` (JSON array of strings) from the published/live (canonical) system. It will NOT show proposal-only edits. Use `{{tool:readDoc}}` for an entire document.
+4. **Read published content:** `{{tool:readPublishedSection}}` reads one or more sections in a single call, given a `sections` array of `{ doc_path, heading_path }` pairs (each `heading_path` a JSON array of strings), from the published/live (canonical) system. It will NOT show proposal-only edits. There is no whole-document read tool — list the sections you need with `{{tool:listSections}}` and pass their heading paths.
 5. **Read proposal content:** `{{tool:readProposalSection}}` reads a specific section from a proposal. `{{tool:readProposal}}` reads the whole proposal and its section content.
 
 ## Making Changes (Proposal Workflow)

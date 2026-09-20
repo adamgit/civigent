@@ -204,18 +204,16 @@ describe("US-4: hard-block, drop blocked section, recommit", () => {
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.status).toBe("committed");
 
-    // ── Step 6: read_published_section — Overview updated, Timeline unchanged ──
-    const readOverview = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Overview"],
+    // ── Step 6: read_published_sections — Overview updated, Timeline unchanged ──
+    const readOverview = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     });
     expect(readOverview.result.content[0].text).toContain(
       "Agent-updated overview for US4",
     );
 
-    const readTimeline = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Timeline"],
+    const readTimeline = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"] }],
     });
     expect(readTimeline.result.content[0].text).toContain(
       SAMPLE_SECTIONS.timeline.trim(),

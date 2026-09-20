@@ -1,7 +1,7 @@
 /**
  * Canary for the agent read shape: a body read answers WITH the markdown.
  *
- * `read_published_section` must return the section fragment itself, not a JSON
+ * `read_published_sections` must return each section fragment itself, not a JSON
  * envelope around it. The envelope is what shows the model `\n`, `\"`, doubled
  * backslashes, and (under any client-side ensure_ascii printer) `\uXXXX` in
  * place of real punctuation — the loop that teaches an agent to send escape
@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { createTestServer, type TestServerContext } from "../helpers/test-server.js";
-import { createSampleDocument, SAMPLE_DOC_PATH } from "../helpers/sample-content.js";
+import { createSampleDocument, SAMPLE_DOC_PATH, SAMPLE_SECTIONS } from "../helpers/sample-content.js";
 
 let ctx: TestServerContext;
 let mcpSessionId: string;
@@ -49,7 +49,7 @@ async function callMcpTool(
 const PUNCTUATION_BODY =
   "Sessions run 02\u201309 each year \u2014 it\u2019s a non\u00a0breaking space.";
 
-describe("read_published_section returns markdown, not a JSON envelope", () => {
+describe("read_published_sections returns markdown, not a JSON envelope", () => {
   beforeAll(async () => {
     ctx = await createTestServer();
     await createSampleDocument(ctx.dataCtx.rootDir);
@@ -94,11 +94,11 @@ describe("read_published_section returns markdown, not a JSON envelope", () => {
   });
 
   it("answers with the section fragment and preserves every code point", async () => {
-    const res = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Overview"],
+    const res = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     });
 
+    expect(res.result?.isError).toBeFalsy();
     const text: string = res.result.content[0].text;
 
     // The result IS markdown: it starts with the heading line and is not JSON.
@@ -108,5 +108,40 @@ describe("read_published_section returns markdown, not a JSON envelope", () => {
     expect(text).toContain(PUNCTUATION_BODY);
     expect(text).not.toContain("\\u2013");
     expect(text).not.toContain("\\n");
+  });
+
+  it("returns one raw text block per requested section, in request order", async () => {
+    const res = await callMcpTool("read_published_sections", {
+      sections: [
+        { doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] },
+        { doc_path: SAMPLE_DOC_PATH, heading_path: ["Timeline"] },
+      ],
+    });
+
+    expect(res.result?.isError).toBeFalsy();
+    const blocks: Array<{ type: string; text: string }> = res.result.content;
+    expect(blocks).toHaveLength(2);
+    expect(blocks.every((block) => block.type === "text")).toBe(true);
+
+    expect(blocks[0].text.startsWith("## Overview")).toBe(true);
+    expect(blocks[0].text).toContain(PUNCTUATION_BODY);
+    expect(() => JSON.parse(blocks[0].text)).toThrow();
+
+    expect(blocks[1].text.startsWith("## Timeline")).toBe(true);
+    expect(blocks[1].text).toContain(SAMPLE_SECTIONS.timeline);
+    expect(() => JSON.parse(blocks[1].text)).toThrow();
+  });
+
+  it("refuses read_doc and does not return the assembled document", async () => {
+    const res = await callMcpTool("read_doc", {
+      doc_path: SAMPLE_DOC_PATH,
+    });
+
+    expect(res.result?.isError).toBe(true);
+    const text: string = (res.result?.content ?? [])
+      .map((block: { text?: string }) => block.text ?? "")
+      .join("\n");
+    expect(text).not.toContain(PUNCTUATION_BODY);
+    expect(text).not.toContain(SAMPLE_SECTIONS.timeline);
   });
 });

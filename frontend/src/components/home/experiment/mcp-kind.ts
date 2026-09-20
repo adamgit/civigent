@@ -2,6 +2,7 @@ const READ_TOOLS = new Set([
   "read_doc",
   "read_file",
   "read_published_section",
+  "read_published_sections",
   "read_doc_structure",
   "read_proposal",
   "read_proposal_section",

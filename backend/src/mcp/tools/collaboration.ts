@@ -2,18 +2,19 @@
  * Tier 3 MCP tools — collaboration surface with explicit proposals.
  *
  * Tools: list_documents, list_sections, search_text,
- *        read_doc, read_published_section, read_proposal_section,
+ *        read_published_sections, read_proposal_section,
  *        create_proposal, publish_proposal, withdraw_proposal,
  *        list_proposals, read_proposal, write_proposal_section
  *
- * Temporarily deprecated (not registered): read_doc_structure → use list_sections.
+ * Deprecated (not registered): read_doc_structure, read_doc → use list_sections
+ * then read_published_sections.
  */
 
 import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult, textToolResult, jsonBlockedToolResult } from "../tool-registry.js";
 import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
-import { readAssembledDocument, DocumentNotFoundError } from "../../storage/document-reader.js";
+import type { McpContentBlock, McpToolCallResult } from "../protocol.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
@@ -157,46 +158,6 @@ const searchTextHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ─── read_doc ────────────────────────────────────────────
-
-const readDocHandler: ToolHandler = async (args, ctx) => {
-  const rawDocPath = args.doc_path as string | undefined;
-  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
-
-  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
-  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
-  const docPath = parsedDocPath.docPath;
-
-  let authorizedRead;
-  try {
-    authorizedRead = await authorizeDocRead(ctx.writer, docPath);
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
-    }
-    throw error;
-  }
-
-  try {
-    const content = await readAssembledDocument(authorizedRead);
-
-    if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      recordAgentRead.canonicalDocument(
-        ctx.writer,
-        docPath,
-        ctx.emitEvent,
-      );
-    }
-
-    return textToolResult(content);
-  } catch (error) {
-    if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Document not found: ${docPath}`);
-    }
-    throw error;
-  }
-};
-
 // ─── read_doc_structure (temporarily disabled on MCP surface) ──
 // Production trial: keep the handler for quick restore; agents should use
 // list_sections. Wire name is registered via registry.deprecate(...).
@@ -232,51 +193,92 @@ const readDocHandler: ToolHandler = async (args, ctx) => {
 //   }
 // };
 
-// ─── read_published_section ──────────────────────────────
+// ─── read_published_sections ─────────────────────────────
 
-const readPublishedSectionHandler: ToolHandler = async (args, ctx) => {
-  const rawDocPath = args.doc_path as string | undefined;
-  const headingPath = args.heading_path as string[] | undefined;
+interface ParsedPublishedSectionPair {
+  docPath: DocPath;
+  headingPath: string[];
+}
 
-  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
-  if (!Array.isArray(headingPath)) return makeToolErrorResult("Missing required parameter: heading_path (array of strings)");
-
-  const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
-  if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
-  const docPath = parsedDocPath.docPath;
-
-  let authorizedRead;
-  try {
-    authorizedRead = await authorizeDocRead(ctx.writer, docPath);
-  } catch (error) {
-    if (error instanceof PermissionError) {
-      return makeToolErrorResult(`Permission denied: you do not have read access to "${docPath}".`);
-    }
-    throw error;
+function parsePublishedSectionsArgument(
+  rawSections: unknown,
+): { pairs: ParsedPublishedSectionPair[] } | { errorResult: McpToolCallResult } {
+  if (!Array.isArray(rawSections)) {
+    return { errorResult: makeToolErrorResult("sections must be a JSON array of { doc_path, heading_path } pairs.") };
+  }
+  if (rawSections.length === 0) {
+    return { errorResult: makeToolErrorResult("sections must not be empty: provide at least one { doc_path, heading_path } pair.") };
   }
 
-  try {
-    const content = await readSectionWithHeading(authorizedRead, headingPath);
-
-    if (ctx.writer.type === "agent" && ctx.emitEvent) {
-      recordAgentRead.canonicalSection(
-        ctx.writer,
-        docPath,
-        headingPath,
-        ctx.emitEvent,
-      );
+  const pairs: ParsedPublishedSectionPair[] = [];
+  for (const raw of rawSections) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { errorResult: makeToolErrorResult("Each element of sections must be an object of { doc_path, heading_path }.") };
     }
-
-    return textToolResult(content);
-  } catch (error) {
-    if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
-      return makeToolErrorResult(`Section not found: ${headingPath.join(" > ")} in ${docPath}`);
+    const entry = raw as Record<string, unknown>;
+    const unknownKeys = Object.keys(entry).filter((key) => key !== "doc_path" && key !== "heading_path");
+    if (unknownKeys.length > 0) {
+      return {
+        errorResult: makeToolErrorResult(
+          `Unknown key${unknownKeys.length === 1 ? "" : "s"} on a sections entry: ${unknownKeys.join(", ")}. Only doc_path and heading_path are accepted.`,
+        ),
+      };
     }
-    if (error instanceof InvalidDocPathError) {
-      return makeToolErrorResult(`Invalid document path: ${docPath}`);
+    if (typeof entry.doc_path !== "string") {
+      return { errorResult: makeToolErrorResult("Each element of sections must have doc_path (string).") };
     }
-    throw error;
+    if (entry.heading_path === undefined || typeof entry.heading_path === "string") {
+      return { errorResult: makeToolErrorResult("heading_path must be a JSON array of strings, never a string.") };
+    }
+    if (!Array.isArray(entry.heading_path) || entry.heading_path.some((h) => typeof h !== "string")) {
+      return { errorResult: makeToolErrorResult("Each element of sections must have heading_path (array of strings).") };
+    }
+    const parsedDocPath = parseToolArgumentDocPath(entry.doc_path);
+    if ("errorResult" in parsedDocPath) return parsedDocPath;
+    pairs.push({ docPath: parsedDocPath.docPath, headingPath: entry.heading_path as string[] });
   }
+
+  return { pairs };
+}
+
+const readPublishedSectionsHandler: ToolHandler = async (args, ctx) => {
+  const parsed = parsePublishedSectionsArgument(args.sections);
+  if ("errorResult" in parsed) return parsed.errorResult;
+  const { pairs } = parsed;
+
+  const blocks: McpContentBlock[] = [];
+  for (const pair of pairs) {
+    let authorizedRead;
+    try {
+      authorizedRead = await authorizeDocRead(ctx.writer, pair.docPath);
+    } catch (error) {
+      if (error instanceof PermissionError) {
+        return makeToolErrorResult(`Permission denied: you do not have read access to "${pair.docPath}".`);
+      }
+      throw error;
+    }
+
+    try {
+      const content = await readSectionWithHeading(authorizedRead, pair.headingPath);
+      blocks.push({ type: "text", text: content });
+    } catch (error) {
+      if (error instanceof SectionNotFoundError || error instanceof HeadingNotFoundError) {
+        return makeToolErrorResult(`Section not found: ${pair.headingPath.join(" > ")} in ${pair.docPath}`);
+      }
+      if (error instanceof InvalidDocPathError) {
+        return makeToolErrorResult(`Invalid document path: ${pair.docPath}`);
+      }
+      throw error;
+    }
+  }
+
+  if (ctx.writer.type === "agent" && ctx.emitEvent) {
+    for (const pair of pairs) {
+      recordAgentRead.canonicalSection(ctx.writer, pair.docPath, pair.headingPath, ctx.emitEvent);
+    }
+  }
+
+  return { content: blocks };
 };
 
 // ─── create_proposal ─────────────────────────────────────
@@ -618,7 +620,7 @@ const readProposalHandler: ToolHandler = async (args) => {
       return makeToolErrorResult(
         `Proposal ${proposalId} is owned by a live editing session and is not readable through the agent proposal surface. `
           + `Its content reflects in-flight collaborative edits that are managed by the live document session, not an authored proposal. `
-          + `To see what is currently published, read the document directly with read_doc, list_sections, or read_published_section. `
+          + `To see what is currently published, read the document directly with list_sections or read_published_sections. `
           + `To track or author your own proposals, use my_proposals, list_proposals, or create_proposal.`,
       );
     }
@@ -826,22 +828,6 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     searchTextHandler,
   );
 
-  registry.register(
-    "readDoc",
-    {
-      name: "read_doc",
-      description: "Read the full live content of a document. The response IS the document's raw markdown — no JSON envelope. For a heading inventory, use list_sections.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          doc_path: { type: "string", description: "Document path" },
-        },
-        required: ["doc_path"],
-      },
-    },
-    readDocHandler,
-  );
-
   // Temporarily disabled on the MCP surface (production trial): agents should use
   // list_sections instead. Handler kept above so we can restore registration quickly.
   // registry.register(
@@ -863,22 +849,32 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
   registry.register(
     "readPublishedSection",
     {
-      name: "read_published_section",
-      description: "Read the published/live (canonical) content of a specific section. The response IS the section's raw markdown (heading line + body) — no JSON envelope. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
+      name: "read_published_sections",
+      description: "Read the published/live (canonical) content of one or more specific sections. The response is one text block per requested pair, in request order, each block the raw markdown (heading line + body) — no JSON envelope. This reads the published system and will NOT show proposal-only edits. To read a section as it appears inside a proposal (draft/committed/withdrawn), use read_proposal_section instead.",
       inputSchema: {
         type: "object",
         properties: {
-          doc_path: { type: "string", description: "Document path" },
-          heading_path: {
+          sections: {
             type: "array",
-            items: { type: "string" },
-            description: "Heading path as array of heading names, e.g. ['Getting Started', 'Installation']",
+            items: {
+              type: "object",
+              properties: {
+                doc_path: { type: "string", description: "Document path" },
+                heading_path: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Heading path as array of heading names, e.g. ['Getting Started', 'Installation']",
+                },
+              },
+              required: ["doc_path", "heading_path"],
+            },
+            description: "Sections to read, as { doc_path, heading_path } pairs. Must not be empty.",
           },
         },
-        required: ["doc_path", "heading_path"],
+        required: ["sections"],
       },
     },
-    readPublishedSectionHandler,
+    readPublishedSectionsHandler,
   );
 
   registry.register(
@@ -1070,5 +1066,21 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       "path to inventory sections across documents). Refresh your tool list " +
       "(tools/list) and re-fetch the latest skill.md / cursor-rule.md if your " +
       "client still advertises read_doc_structure.",
+  );
+  registry.deprecate(
+    "read_doc",
+    'The tool "read_doc" has been removed. Use list_sections to get a document\'s ' +
+      "heading inventory, then read_published_sections with an array of " +
+      "{ doc_path, heading_path } pairs to read the section bodies you need. " +
+      "Refresh your tool list (tools/list) and re-fetch the latest skill.md / " +
+      "cursor-rule.md if your client still advertises read_doc.",
+  );
+  registry.deprecate(
+    "read_published_section",
+    'The tool "read_published_section" has been renamed to "read_published_sections". ' +
+      "It now takes a single argument, sections, an array of { doc_path, heading_path } " +
+      "pairs (even for a single section, wrap it in a one-element array). Refresh your " +
+      "tool list (tools/list) and re-fetch the latest skill.md / cursor-rule.md, then " +
+      "retry with read_published_sections.",
   );
 }

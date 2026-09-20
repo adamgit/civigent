@@ -112,7 +112,7 @@ describe("multi-heading auto-split in proposals", () => {
     // Per items 246/258: proposal section metadata is keyed to the originally-requested
     // target headings only — auto-split successors are deliberately NOT reflected in the
     // agent-write-policy targets. The actual split is verified below via
-    // read_proposal_section before publish and read_published_section after publish.
+    // read_proposal_section before publish and read_published_sections after publish.
     const sectionHeadings = data.agent_write_policy.targets.map((t: any) => t.heading_path);
     expect(sectionHeadings).toContainEqual(["Overview"]);
 
@@ -132,21 +132,18 @@ describe("multi-heading auto-split in proposals", () => {
     expect(commitData.committed_head).toBeDefined();
 
     // Now verify each section is readable from the live wiki
-    const readOverview = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Overview"],
+    const readOverview = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     });
     expect(readOverview.result.content[0].text).toContain("Rewritten overview.");
 
-    const readDetails = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Details"],
+    const readDetails = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Details"] }],
     });
     expect(readDetails.result.content[0].text).toContain("New details section.");
 
-    const readSummary = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Summary"],
+    const readSummary = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Summary"] }],
     });
     expect(readSummary.result.content[0].text).toContain("New summary section.");
 
@@ -202,7 +199,7 @@ describe("multi-heading auto-split in proposals", () => {
     // Per items 246/258: proposal section metadata is keyed to the originally-requested
     // target headings only — auto-split successors are deliberately NOT reflected in the
     // agent-write-policy targets. The actual split is verified below via
-    // read_published_section after publish.
+    // read_published_sections after publish.
     const sectionHeadings = writeData.agent_write_policy.targets.map((t: any) => t.heading_path);
     expect(sectionHeadings).toContainEqual(["Timeline"]);
 
@@ -213,9 +210,8 @@ describe("multi-heading auto-split in proposals", () => {
     const commitData = JSON.parse(commitRes.result.content[0].text);
     expect(commitData.committed_head).toBeDefined();
 
-    const readMilestones = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Milestones"],
+    const readMilestones = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Milestones"] }],
     });
     expect(readMilestones.result.content[0].text).toContain("Key milestones here.");
   });

@@ -35,6 +35,7 @@ const TIER_3_METHODS = new Set([
   "read_doc",
   "read_doc_structure",
   "read_published_section",
+  "read_published_sections",
   "create_proposal",
   "write_proposal_section",
   "publish_proposal",
@@ -153,7 +154,7 @@ export function classifyWriteOutcome(actions: ActionEntry[]): McpLogWriteOutcome
 
 export function classifyReadPattern(methods: Set<string>): McpLogReadPatternKind | null {
   const hasReadDoc = methods.has("read_doc");
-  const hasReadSection = methods.has("read_published_section");
+  const hasReadSection = methods.has("read_published_section") || methods.has("read_published_sections");
   const hasListDocs = methods.has("list_documents");
   const hasListSections = methods.has("list_sections");
   const hasSearch = methods.has("search_text");

@@ -171,16 +171,14 @@ describe("US-1: multi-document proposal with justification bypass", () => {
     expect(commitData.status).toBe("committed");
     expect(commitData.committed_head).toBeTruthy();
 
-    // ── Step 5: read_published_section on both docs → live content updated ──
-    const readOverview = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH,
-      heading_path: ["Overview"],
+    // ── Step 5: read_published_sections on both docs → live content updated ──
+    const readOverview = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH, heading_path: ["Overview"] }],
     });
     expect(readOverview.result.content[0].text).toContain("Agent-updated overview");
 
-    const readPrinciples = await callMcpTool("read_published_section", {
-      doc_path: SAMPLE_DOC_PATH_2,
-      heading_path: ["Principles"],
+    const readPrinciples = await callMcpTool("read_published_sections", {
+      sections: [{ doc_path: SAMPLE_DOC_PATH_2, heading_path: ["Principles"] }],
     });
     expect(readPrinciples.result.content[0].text).toContain("Agent-updated principles");
   });
