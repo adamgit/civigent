@@ -94,13 +94,16 @@
 }
 
 .pulse-detail-card__line {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 2px;
 }
 
 .pulse-detail-card__doc {
+  flex: 0 0 auto;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -117,6 +120,8 @@
 }
 
 .pulse-detail-card__path {
+  flex: 1 1 12em;
+  min-width: min(12em, 100%);
   font-size: 12px;
   line-height: 1.35;
   color: var(--color-agent-muted);
