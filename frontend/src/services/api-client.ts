@@ -75,6 +75,7 @@ export interface AgentMcpSessionRecord {
   ended_at: string;
   action_count: number;
   actions: AgentMcpActionEntry[];
+  app_version: string;
 }
 
 export interface AgentMcpLogFileInfo {
@@ -259,14 +260,7 @@ export interface DocDiagnosticsResponse {
  */
 export type SearchHitKind = "body" | "heading" | "filename" | "path_segment";
 
-export interface SearchTextMatch {
-  kind: SearchHitKind;
-  /**
-   * For `body` / `heading` / `filename` this is the DOCUMENT path. For
-   * `path_segment` it is the matched FOLDER PREFIX — not a document, so it has
-   * no `.md` leaf and must not be linked to a document route.
-   */
-  doc_path: string;
+interface SearchTextMatchCommon {
   /** Populated for `body` and `heading`; empty for `filename` / `path_segment`. */
   heading_path: string[];
   /**
@@ -279,6 +273,21 @@ export interface SearchTextMatch {
    * WITHIN `match_context`.
    */
   match_offset_bytes: number;
+}
+
+export type SearchTextMatch =
+  | (SearchTextMatchCommon & {
+      kind: "body" | "heading" | "filename";
+      doc_path: string;
+    })
+  | (SearchTextMatchCommon & {
+      kind: "path_segment";
+      /** Matched folder prefix — not a document. */
+      folder_path: string;
+    });
+
+export function searchHitSubjectPath(match: SearchTextMatch): string {
+  return match.kind === "path_segment" ? match.folder_path : match.doc_path;
 }
 
 export interface DiscoveryFailure {

@@ -9,7 +9,7 @@
  */
 import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
-import type { SearchTextMatch } from "../../services/api-client";
+import { searchHitSubjectPath, type SearchTextMatch } from "../../services/api-client";
 import { docHref, folderHref } from "../../app/docs-location";
 import { DocPath, FolderPath } from "../../types/shared";
 import { SEARCH_HIT_KIND_TOKENS } from "./search-hit-kinds";
@@ -29,6 +29,14 @@ export function headingPathLabel(headingPath: string[]): string {
 export function documentTitleFromPath(docPath: string): string {
   const filename = docPath.split("/").filter(Boolean).pop() ?? docPath;
   return filename.endsWith(".md") ? filename.slice(0, -3) : filename;
+}
+
+function hitTargetUrl(match: SearchTextMatch): string | null {
+  if (match.kind === "path_segment") {
+    const folderPath = FolderPath.tryParse(match.folder_path);
+    return folderPath ? folderHref(folderPath) : null;
+  }
+  return docHref(DocPath.parse(match.doc_path));
 }
 
 function escapeRegExp(value: string): string {
@@ -128,15 +136,13 @@ export function SearchHitCards({
         // A `path_segment` hit's path is a FOLDER, so it has no document route,
         // no section, and no "Open document" — it opens the folder browser.
         const isFolderHit = match.kind === "path_segment";
-        const hitFolderPath = isFolderHit ? FolderPath.tryParse(match.doc_path) : null;
-        const targetUrl = isFolderHit
-          ? hitFolderPath && folderHref(hitFolderPath)
-          : docHref(DocPath.parse(match.doc_path));
+        const subjectPath = searchHitSubjectPath(match);
+        const targetUrl = hitTargetUrl(match);
         const sectionLabel = headingPathLabel(match.heading_path);
-        const documentTitle = documentTitleFromPath(match.doc_path);
+        const documentTitle = documentTitleFromPath(subjectPath);
         const cardClassName =
           "mb-3.5 block overflow-hidden rounded-[10px] border border-footer-border border-l-[3px] bg-canvas-bg text-inherit no-underline transition-all duration-150 hover:border-accent-border hover:shadow-[0_4px_16px_rgba(45,122,138,0.08)]";
-        const cardKey = `${match.kind}:${match.doc_path}:${match.heading_path.join(">>")}:${match.match_offset_bytes}:${index}`;
+        const cardKey = `${match.kind}:${subjectPath}:${match.heading_path.join(">>")}:${match.match_offset_bytes}:${index}`;
         const cardStyle = { borderLeftColor: tokens.foreground };
         const cardBody = (
           <>
@@ -169,7 +175,7 @@ export function SearchHitCards({
                   )}
                 </div>
                 <div className="font-mono text-[11px] text-text-muted mt-0.5 break-all">
-                  {match.doc_path}
+                  {subjectPath}
                 </div>
               </div>
               <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -221,7 +227,7 @@ export function SearchHitCards({
                   {isFolderHit ? "Open folder →" : "Open document →"}
                 </span>
               ) : (
-                <span className="text-text-faint font-medium">{match.doc_path}</span>
+                <span className="text-text-faint font-medium">{subjectPath}</span>
               )}
               {/* Only body and heading hits belong to a section; a filename or
                   folder hit has no section, and an empty heading path there

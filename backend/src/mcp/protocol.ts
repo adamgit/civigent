@@ -175,7 +175,6 @@ export interface McpToolDefinition {
     // justified `unknown` for this module.
     properties: Record<string, unknown>;
     required?: string[];
-    additionalProperties?: boolean;
   };
 }
 

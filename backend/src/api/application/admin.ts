@@ -556,7 +556,7 @@ export async function getAgentActivity(): Promise<{
   log_file: Awaited<ReturnType<typeof readAgentActivityLogFileInfo>>;
 }> {
   const { readFileIfExists } = await import("../../storage/fs-primitives.js");
-  const { getActivityLogPath } = await import("../../monitoring/activity-log.js");
+  const { appVersionForRead, getActivityLogPath } = await import("../../monitoring/activity-log.js");
   const logPath = getActivityLogPath();
   // A genuinely absent log file means no agent activity has been recorded yet —
   // a valid empty state. Any other read failure (permission, I/O) propagates.
@@ -568,7 +568,11 @@ export async function getAgentActivity(): Promise<{
   const sessions = raw
     .split("\n")
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line));
+    .map((line) => {
+      const parsed = JSON.parse(line) as { app_version?: unknown };
+      parsed.app_version = appVersionForRead(parsed.app_version);
+      return parsed;
+    });
   return { sessions, log_file: logFile };
 }
 

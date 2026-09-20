@@ -100,7 +100,7 @@ describe("Area J — structural/filesystem delete stage while a DocSession exist
 
     const res = await callMcpTool("/mcp/tier3", tier3SessionId, "delete_document", {
       proposal_id: proposalId,
-      path: SAMPLE_DOC_PATH,
+      doc_path: SAMPLE_DOC_PATH,
     });
     tier3SessionId = res.sessionId;
 

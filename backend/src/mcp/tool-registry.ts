@@ -12,6 +12,7 @@ import type { AuthenticatedWriter } from "../auth/context.js";
 import type { ActionResult } from "../monitoring/activity-log.js";
 import type { WsServerEvent } from "../types/shared.js";
 import { ProposalLockConflictError } from "../domain/proposal-fsm-locks.js";
+import { refuseUnknownToolArguments } from "./tool-argument-bag.js";
 
 // ─── Tool handler context ────────────────────────────────
 
@@ -194,7 +195,8 @@ export class ToolRegistry {
     }
 
     try {
-      const result = await tool.handler(args, ctx);
+      const refused = refuseUnknownToolArguments(name, args, tool.definition.inputSchema);
+      const result = refused ?? await tool.handler(args, ctx);
       if (ctx.writer.type === "agent") {
         const { agentEventLog } = await import("./agent-event-log.js");
         agentEventLog.append(ctx.writer, { kind: "tool_call", tool: name });

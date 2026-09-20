@@ -63,15 +63,7 @@ export interface ListSectionsResult {
  */
 export type SearchHitKind = "body" | "heading" | "filename" | "path_segment";
 
-export interface SearchTextMatch {
-  kind: SearchHitKind;
-  /**
-   * The subject the hit belongs to. For `body` / `heading` / `filename` this is
-   * the DOCUMENT path. For `path_segment` it is the matched FOLDER PREFIX (e.g.
-   * `/a/b` for a hit on segment `b`) — NOT a document, so consumers must not
-   * assume a `.md` leaf or an openable document route.
-   */
-  doc_path: string;
+interface SearchTextMatchCommon {
   /**
    * Section heading path for `body` and `heading` hits. Empty (`[]`) for
    * `filename` and `path_segment`, which are not section-scoped.
@@ -82,7 +74,7 @@ export interface SearchTextMatch {
    *  - `body`         — surrounding body slice (`context_bytes` either side)
    *  - `heading`      — the heading text
    *  - `filename`     — the filename stem
-   *  - `path_segment` — the full folder prefix (`doc_path`)
+   *  - `path_segment` — the full folder prefix (`folder_path`)
    */
   match_context: string;
   /**
@@ -92,6 +84,17 @@ export interface SearchTextMatch {
    */
   match_offset_bytes: number;
 }
+
+export type SearchTextMatch =
+  | (SearchTextMatchCommon & {
+      kind: "body" | "heading" | "filename";
+      doc_path: string;
+    })
+  | (SearchTextMatchCommon & {
+      kind: "path_segment";
+      /** Matched folder prefix — a FolderPath, not a document. */
+      folder_path: string;
+    });
 
 export interface SearchTextTimings {
   total_ms: number;
@@ -707,7 +710,7 @@ function collectFolderPrefixes(docPaths: readonly DocPath[]): string[] {
 
 /**
  * `path_segment` hits: a folder NAME in the path of a readable document matched
- * the pattern. `doc_path` is the folder prefix itself (not a document), and
+ * the pattern. `folder_path` is the folder prefix itself (not a document), and
  * `match_context` is that whole prefix so the UI can show where the folder sits.
  *
  * Only the LAST segment of each prefix is matched — the ancestors are their own
@@ -738,7 +741,7 @@ async function collectPathSegmentHits(
     const segmentByteOffset = Buffer.byteLength(prefix, "utf8") - Buffer.byteLength(segments[index], "utf8");
     hits.push({
       kind: "path_segment",
-      doc_path: prefix,
+      folder_path: prefix,
       heading_path: [],
       match_context: prefix,
       match_offset_bytes: segmentByteOffset + span.start,

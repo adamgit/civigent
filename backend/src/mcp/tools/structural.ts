@@ -417,9 +417,9 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
 
 const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
   const proposalId = args.proposal_id as string | undefined;
-  const rawDocPath = args.path as string | undefined;
+  const rawDocPath = args.doc_path as string | undefined;
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
-  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: path");
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
 
   const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
   if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
@@ -621,9 +621,9 @@ export function registerStructuralTools(registry: ToolRegistry): void {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "Active proposal ID (required)" },
-          path: { type: "string", description: "Document path to delete (must end with .md)" },
+          doc_path: { type: "string", description: "Document path to delete (must end with .md)" },
         },
-        required: ["proposal_id", "path"],
+        required: ["proposal_id", "doc_path"],
       },
     },
     deleteDocumentHandler,

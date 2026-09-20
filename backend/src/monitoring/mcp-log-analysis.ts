@@ -314,6 +314,7 @@ function finalizeErrorCohort(builder: ErrorCohortBuilder): McpLogErrorCohort {
 const ARG_SHAPE_PATTERNS: RegExp[] = [
   /^Refused: /,
   /^Unknown tool: /,
+  /^Unknown arguments?: /,
   /has been renamed or removed\./,
   /^Invalid document path: /,
   /^Invalid folder path: /,

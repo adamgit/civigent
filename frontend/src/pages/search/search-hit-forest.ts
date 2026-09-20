@@ -8,7 +8,7 @@
  *
  * Pure data: no React, no fetching, no routing.
  */
-import type { SearchHitKind, SearchTextMatch } from "../../services/api-client";
+import { searchHitSubjectPath, type SearchHitKind, type SearchTextMatch } from "../../services/api-client";
 
 /** Hit counts per kind. Every kind is always present, zero when absent. */
 export interface HitKindCounts {
@@ -77,9 +77,9 @@ function ensureChild(
   const existing = parent.children.find((child) => child.path === path);
   if (existing) {
     if (existing.nodeKind !== nodeKind) {
-      // Backend guarantees `path_segment` paths are strict folder prefixes and
-      // every other kind carries a `.md` document path, so one path cannot be
-      // both. If it ever is, the wire contract broke — say so, do not guess.
+      // Backend guarantees `path_segment` hits carry `folder_path` (a folder
+      // prefix) and every other kind carries a `.md` `doc_path`, so one path
+      // cannot be both. If it ever is, the wire contract broke — say so, do not guess.
       throw new Error(
         `Search forest: ${path} arrived as both a ${existing.nodeKind} and a ${nodeKind}.`,
       );
@@ -119,15 +119,15 @@ function accumulateCounts(node: SearchTreeNode): void {
  * Build the folder/document forest for a flat hit list.
  *
  * Each hit inserts its folder chain; every kind except `path_segment` also gets
- * a document leaf (a `path_segment` hit's path IS the folder, so it attaches
- * there). The synthetic `/` root always exists, so "show everything" is just a
- * selection of the root.
+ * a document leaf (a `path_segment` hit's `folder_path` IS the folder, so it
+ * attaches there). The synthetic `/` root always exists, so "show everything"
+ * is just a selection of the root.
  */
 export function buildSearchHitForest(hits: readonly SearchTextMatch[]): SearchTreeNode {
   const root = makeNode(SEARCH_FOREST_ROOT_PATH, SEARCH_FOREST_ROOT_PATH, "folder");
 
   for (const hit of hits) {
-    const segments = hit.doc_path.split("/").filter(Boolean);
+    const segments = searchHitSubjectPath(hit).split("/").filter(Boolean);
     let current = root;
     let prefix = "";
     for (let index = 0; index < segments.length; index += 1) {

@@ -115,6 +115,7 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
     expect(res.matches.length).toBe(1);
     const m = res.matches[0]!;
     expect(m.kind).toBe("body");
+    if (m.kind === "path_segment") throw new Error("expected a document hit");
     expect(m.doc_path).toBe(DOC_A);
     expect(m.heading_path).toEqual(["Overview"]);
     expect(m.match_context).toContain("QUICKBROWN");
@@ -141,6 +142,7 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
     expect(headingOnly.matches).toHaveLength(1);
     const hit = headingOnly.matches[0]!;
     expect(hit.kind).toBe("heading");
+    if (hit.kind === "path_segment") throw new Error("expected a document hit");
     expect(hit.doc_path).toBe(DOC_B);
     expect(hit.heading_path).toEqual(["HeadingOnlyToken"]);
     // Non-body kinds carry the matched text itself as context, with the offset
@@ -150,7 +152,7 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
 
     // ...and a token in DOC_B's body is still found as a `body` hit.
     const inBody = await searchReadableText(null, { pattern: "Plain summary", syntax: "literal", root: "/" });
-    expect(inBody.matches.map((m) => m.doc_path)).toContain(DOC_B);
+    expect(inBody.matches.map((m) => (m.kind === "path_segment" ? m.folder_path : m.doc_path))).toContain(DOC_B);
     expect(inBody.matches.map((m) => m.kind)).toContain("body");
   });
 
@@ -176,6 +178,8 @@ describe.skipIf(!RG_AVAILABLE)("search_text / searchReadableText (spec 07)", () 
 
     const authed = await searchReadableText(READER, { pattern: "QUICKBROWN", syntax: "literal", root: "/" });
     expect(authed.matches).toHaveLength(1);
-    expect(authed.matches[0]!.doc_path).toBe(DOC_A);
+    const authedHit = authed.matches[0]!;
+    if (authedHit.kind === "path_segment") throw new Error("expected a document hit");
+    expect(authedHit.doc_path).toBe(DOC_A);
   });
 });

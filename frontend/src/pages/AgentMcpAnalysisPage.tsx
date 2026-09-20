@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
+import { copyTextToClipboard } from "../utils/copy-text";
 import type {
   McpLogErrorCohort,
   McpLogReadPatternKind,
@@ -130,13 +131,133 @@ function CountBar({ count, total }: { count: number; total: number }) {
   );
 }
 
+function rangeSet(from: number, to: number): Set<number> {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  const next = new Set<number>();
+  for (let i = lo; i <= hi; i++) next.add(i);
+  return next;
+}
+
+function selectedOrAll<T>(rows: readonly T[], selected: Set<number>): T[] {
+  if (selected.size === 0) return [...rows];
+  return rows.filter((_, index) => selected.has(index));
+}
+
+function copyEnvelope<T>(
+  rowType: string,
+  about: string,
+  rows: readonly T[],
+  selected: Set<number>,
+): { row_type: string; about: string; subset: boolean; rows: T[] } {
+  return {
+    row_type: rowType,
+    about,
+    subset: selected.size > 0,
+    rows: selectedOrAll(rows, selected),
+  };
+}
+
+function rowTone(selected: boolean): string {
+  return selected ? "bg-accent-light" : "hover:bg-section-hover";
+}
+
+function CopyAsJsonButton({ getValue }: { getValue: () => unknown }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn-secondary shrink-0"
+      style={{ padding: "3px 10px", fontSize: 12 }}
+      onClick={() => {
+        void (async () => {
+          const didCopy = await copyTextToClipboard(JSON.stringify(getValue(), null, 2));
+          if (!didCopy) return;
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        })();
+      }}
+    >
+      {copied ? "copied" : "copy as JSON"}
+    </button>
+  );
+}
+
+function useDragRowSelection(rowCount: number, rowsKey: unknown) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const stopDrag = useRef<(() => void) | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+
+  useEffect(() => {
+    setSelected(new Set());
+  }, [rowsKey]);
+
+  useEffect(() => {
+    return () => {
+      stopDrag.current?.();
+    };
+  }, []);
+
+  const beginSelect = useCallback(
+    (event: ReactPointerEvent, index: number) => {
+      if (event.button !== 0) return;
+      const from =
+        event.target instanceof Element
+          ? event.target
+          : event.target instanceof Node
+            ? event.target.parentElement
+            : null;
+      if (from?.closest("button, a")) return;
+      event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      const root = rootRef.current;
+      setSelected(new Set([index]));
+
+      const indexAt = (clientX: number, clientY: number): number | null => {
+        if (!root) return null;
+        const el = document.elementFromPoint(clientX, clientY);
+        if (!(el instanceof Element) || !root.contains(el)) return null;
+        const row = el.closest("[data-row-index]");
+        if (!(row instanceof HTMLElement) || !root.contains(row)) return null;
+        const next = Number(row.dataset.rowIndex);
+        if (!Number.isInteger(next) || next < 0 || next >= rowCount) return null;
+        return next;
+      };
+
+      stopDrag.current?.();
+      const onMove = (moveEvent: PointerEvent) => {
+        const next = indexAt(moveEvent.clientX, moveEvent.clientY);
+        if (next == null) return;
+        setSelected(rangeSet(index, next));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        stopDrag.current = null;
+      };
+      stopDrag.current = onUp;
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [rowCount],
+  );
+
+  return { rootRef, selected, beginSelect };
+}
+
 function CountRow({
+  index,
+  selected,
+  onPointerDown,
   label,
   count,
   total,
   mono,
   onDetails,
 }: {
+  index: number;
+  selected: boolean;
+  onPointerDown: (event: ReactPointerEvent, index: number) => void;
   label: string;
   count: number;
   total: number;
@@ -144,7 +265,11 @@ function CountRow({
   onDetails?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-2 border-b border-footer-border last:border-0">
+    <div
+      data-row-index={index}
+      onPointerDown={(event) => onPointerDown(event, index)}
+      className={`flex items-center gap-3 px-4 py-2 border-b border-footer-border last:border-0 ${rowTone(selected)}`}
+    >
       <CountBar count={count} total={total} />
       <span className={`text-[13px] text-text-primary min-w-0 flex-1 ${mono ? "font-mono" : ""}`}>{label}</span>
       {onDetails ? (
@@ -224,12 +349,14 @@ function Card({
   title,
   subtitle,
   className = "",
+  headerAction,
   children,
 }: {
   id?: string;
   title: string;
   subtitle?: string;
   className?: string;
+  headerAction?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -237,25 +364,83 @@ function Card({
       id={id}
       className={`border border-card-border rounded-lg overflow-hidden bg-canvas-bg scroll-mt-4 ${className}`}
     >
-      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover">
-        <div className="text-[13px] font-semibold text-text-primary">{title}</div>
-        {subtitle ? <div className="text-[11px] text-text-muted mt-0.5">{subtitle}</div> : null}
+      <div className="px-4 py-2.5 border-b border-footer-border bg-section-hover flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-text-primary">{title}</div>
+          {subtitle ? <div className="text-[11px] text-text-muted mt-0.5">{subtitle}</div> : null}
+        </div>
+        {headerAction}
       </div>
       {children}
     </div>
   );
 }
 
-function ErrorRow({ cohort, index }: { cohort: McpLogErrorCohort; index: number }) {
+function CopyableCard<T>({
+  id,
+  title,
+  subtitle,
+  rowType,
+  about,
+  rows,
+  children,
+}: {
+  id?: string;
+  title: string;
+  subtitle?: string;
+  rowType: string;
+  about: string;
+  rows: readonly T[];
+  children: (sel: {
+    selected: Set<number>;
+    beginSelect: (event: ReactPointerEvent, index: number) => void;
+  }) => ReactNode;
+}) {
+  const { rootRef, selected, beginSelect } = useDragRowSelection(rows.length, rows);
+  return (
+    <Card
+      id={id}
+      title={title}
+      subtitle={subtitle}
+      headerAction={<CopyAsJsonButton getValue={() => copyEnvelope(rowType, about, rows, selected)} />}
+    >
+      <div ref={rootRef} className="select-none">
+        {children({ selected, beginSelect })}
+      </div>
+    </Card>
+  );
+}
+
+function ErrorRow({
+  cohort,
+  index,
+  selected,
+  onPointerDown,
+}: {
+  cohort: McpLogErrorCohort;
+  index: number;
+  selected: boolean;
+  onPointerDown: (event: ReactPointerEvent, index: number) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   return (
     <>
       <tr
-        className="border-b border-footer-border last:border-0 cursor-pointer hover:bg-section-hover"
-        onClick={() => setExpanded((value) => !value)}
+        data-row-index={index}
+        onPointerDown={(event) => onPointerDown(event, index)}
+        className={`border-b border-footer-border last:border-0 ${rowTone(selected)}`}
       >
         <td className="px-4 py-2 font-mono text-[12px] text-text-primary">
-          {expanded ? "▾" : "▸"} {cohort.method}
+          <button
+            type="button"
+            className="border-none bg-transparent p-0 mr-1 text-text-muted cursor-pointer"
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse agents" : "Expand agents"}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? "▾" : "▸"}
+          </button>
+          {cohort.method}
         </td>
         <td className="px-4 py-2 text-[12px] text-text-primary">{cohort.result}</td>
         <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">{cohort.cause_template}</td>
@@ -268,7 +453,14 @@ function ErrorRow({ cohort, index }: { cohort: McpLogErrorCohort; index: number 
       </tr>
       {expanded &&
         cohort.agents.map((agent) => (
-          <tr key={`${index}-${agent.agent_id}`} className="border-b border-footer-border last:border-0 bg-section-hover/40">
+          <tr
+            key={`${index}-${agent.agent_id}`}
+            data-row-index={index}
+            onPointerDown={(event) => onPointerDown(event, index)}
+            className={`border-b border-footer-border last:border-0 ${
+              selected ? "bg-accent-light" : "bg-section-hover/40"
+            }`}
+          >
             <td className="px-4 py-1.5 pl-8 font-mono text-[12px] text-text-muted" colSpan={2} title={agent.agent_id}>
               {agent.agent_display_name}
             </td>
@@ -416,172 +608,236 @@ export function AgentMcpAnalysisPage() {
             </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <Card
+              <CopyableCard
                 id="mcp-write-outcomes"
                 title="Write outcomes"
                 subtitle="Proposal cycles cut at publish or withdraw."
+                rowType="McpLogWriteOutcome"
+                about="Proposal cycles cut at publish or withdraw. One-tool sessions are counted separately."
+                rows={report.write_outcomes}
               >
-                {report.write_outcomes.map((row) => (
-                  <CountRow
-                    key={row.kind}
-                    label={WRITE_LABELS[row.kind]}
-                    count={row.count}
-                    total={writeTotal}
-                    onDetails={() => setDetail(WRITE_DETAILS[row.kind])}
-                  />
-                ))}
-              </Card>
+                {({ selected, beginSelect }) =>
+                  report.write_outcomes.map((row, index) => (
+                    <CountRow
+                      key={row.kind}
+                      index={index}
+                      selected={selected.has(index)}
+                      onPointerDown={beginSelect}
+                      label={WRITE_LABELS[row.kind]}
+                      count={row.count}
+                      total={writeTotal}
+                      onDetails={() => setDetail(WRITE_DETAILS[row.kind])}
+                    />
+                  ))
+                }
+              </CopyableCard>
 
-              <Card
+              <CopyableCard
                 id="mcp-read-patterns"
                 title="How they read"
                 subtitle="Read-only stretches between proposal cycles."
+                rowType="McpLogReadPattern"
+                about="Read-only stretches between proposal cycles. First matching pair wins."
+                rows={report.read_patterns}
               >
-                {report.read_patterns.map((row) => (
-                  <CountRow
-                    key={row.kind}
-                    label={READ_LABELS[row.kind]}
-                    count={row.count}
-                    total={readTotal}
-                    onDetails={() => setDetail(READ_DETAILS[row.kind])}
-                  />
-                ))}
-              </Card>
+                {({ selected, beginSelect }) =>
+                  report.read_patterns.map((row, index) => (
+                    <CountRow
+                      key={row.kind}
+                      index={index}
+                      selected={selected.has(index)}
+                      onPointerDown={beginSelect}
+                      label={READ_LABELS[row.kind]}
+                      count={row.count}
+                      total={readTotal}
+                      onDetails={() => setDetail(READ_DETAILS[row.kind])}
+                    />
+                  ))
+                }
+              </CopyableCard>
             </div>
 
-            <Card id="mcp-errors" title="Errors" subtitle="Expand a row to see which agents hit it.">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-4 py-2">Method</th>
-                      <th className="text-left px-4 py-2">Result</th>
-                      <th className="text-left px-4 py-2">Cause</th>
-                      <th className="text-right px-4 py-2">Instances</th>
-                      <th className="text-right px-4 py-2">Once</th>
-                      <th className="text-right px-4 py-2">Repeated</th>
-                      <th className="text-right px-4 py-2">Recovered</th>
-                      <th className="text-right px-4 py-2">Unresolved</th>
-                      <th className="text-right px-4 py-2">Abandoned</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.errors.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={9}>
-                          No error cohorts.
-                        </td>
+            <CopyableCard
+              id="mcp-errors"
+              title="Errors"
+              subtitle="Expand a row to see which agents hit it."
+              rowType="McpLogErrorCohort"
+              about="Cohorts of failed or blocked tool calls, grouped by method + result + normalized cause. In the same sitting, later same-method ok = recovered; later same-method fail = unresolved; no later same-method call = abandoned."
+              rows={report.errors}
+            >
+              {({ selected, beginSelect }) => (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
+                        <th className="text-left px-4 py-2">Method</th>
+                        <th className="text-left px-4 py-2">Result</th>
+                        <th className="text-left px-4 py-2">Cause</th>
+                        <th className="text-right px-4 py-2">Instances</th>
+                        <th className="text-right px-4 py-2">Once</th>
+                        <th className="text-right px-4 py-2">Repeated</th>
+                        <th className="text-right px-4 py-2">Recovered</th>
+                        <th className="text-right px-4 py-2">Unresolved</th>
+                        <th className="text-right px-4 py-2">Abandoned</th>
                       </tr>
-                    ) : (
-                      report.errors.map((cohort, i) => <ErrorRow key={i} cohort={cohort} index={i} />)
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-
-            <Card id="mcp-arg-shapes" title="Argument-shape failures">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-4 py-2">Method</th>
-                      <th className="text-left px-4 py-2">Cause</th>
-                      <th className="text-left px-4 py-2">Doc path</th>
-                      <th className="text-right px-4 py-2">Instances</th>
-                      <th className="text-left px-4 py-2">Sample</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.arg_shapes.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={5}>
-                          No argument-shape failures.
-                        </td>
-                      </tr>
-                    ) : (
-                      report.arg_shapes.map((cohort, i) => (
-                        <tr key={i} className="border-b border-footer-border last:border-0">
-                          <td className="px-4 py-2 font-mono text-[12px] text-text-primary">{cohort.method}</td>
-                          <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">
-                            {cohort.cause_template}
-                          </td>
-                          <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-all">
-                            {cohort.doc_path ?? "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-[12px]">{cohort.instance_count}</td>
-                          <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">
-                            {cohort.sample_error_message}
+                    </thead>
+                    <tbody>
+                      {report.errors.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={9}>
+                            No error cohorts.
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
+                      ) : (
+                        report.errors.map((cohort, i) => (
+                          <ErrorRow
+                            key={i}
+                            cohort={cohort}
+                            index={i}
+                            selected={selected.has(i)}
+                            onPointerDown={beginSelect}
+                          />
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CopyableCard>
 
-            <Card
+            <CopyableCard
+              id="mcp-arg-shapes"
+              title="Argument-shape failures"
+              rowType="McpLogArgShapeCohort"
+              about="Refused or invalid-argument errors, grouped by method + normalized cause + doc path."
+              rows={report.arg_shapes}
+            >
+              {({ selected, beginSelect }) => (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
+                        <th className="text-left px-4 py-2">Method</th>
+                        <th className="text-left px-4 py-2">Cause</th>
+                        <th className="text-left px-4 py-2">Doc path</th>
+                        <th className="text-right px-4 py-2">Instances</th>
+                        <th className="text-left px-4 py-2">Sample</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {report.arg_shapes.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={5}>
+                            No argument-shape failures.
+                          </td>
+                        </tr>
+                      ) : (
+                        report.arg_shapes.map((cohort, i) => (
+                          <tr
+                            key={i}
+                            data-row-index={i}
+                            onPointerDown={(event) => beginSelect(event, i)}
+                            className={`border-b border-footer-border last:border-0 ${rowTone(selected.has(i))}`}
+                          >
+                            <td className="px-4 py-2 font-mono text-[12px] text-text-primary">{cohort.method}</td>
+                            <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">
+                              {cohort.cause_template}
+                            </td>
+                            <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-all">
+                              {cohort.doc_path ?? "—"}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-[12px]">{cohort.instance_count}</td>
+                            <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">
+                              {cohort.sample_error_message}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CopyableCard>
+
+            <CopyableCard
               id="mcp-tool-counts"
               title="Tool counts"
               subtitle="Tier is inferred from the tool name, not the MCP endpoint."
+              rowType="McpLogToolCount"
+              about="Tier is inferred from the tool name, not the MCP endpoint."
+              rows={report.tool_counts}
             >
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
-                      <th className="text-left px-4 py-2">Method</th>
-                      <th className="text-left px-4 py-2">Tier (inferred)</th>
-                      <th className="text-left px-4 py-2">Agents</th>
-                      <th className="text-right px-4 py-2">Count</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.tool_counts.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={4}>
-                          No tool calls.
-                        </td>
+              {({ selected, beginSelect }) => (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-[11px] text-text-muted font-medium border-b border-footer-border">
+                        <th className="text-left px-4 py-2">Method</th>
+                        <th className="text-left px-4 py-2">Tier (inferred)</th>
+                        <th className="text-left px-4 py-2">Agents</th>
+                        <th className="text-right px-4 py-2">Count</th>
                       </tr>
-                    ) : (
-                      report.tool_counts.map((entry) => (
-                        <tr key={entry.method} className="border-b border-footer-border last:border-0">
-                          <td className="px-4 py-2 font-mono text-[12px] text-text-primary">{entry.method}</td>
-                          <td className="px-4 py-2 text-[12px] text-text-muted">{entry.inferred_tier}</td>
-                          <td
-                            className="px-4 py-2 text-[12px] text-text-muted"
-                            title={entry.agents.map((agent) => agent.agent_id).join(", ")}
-                          >
-                            {entry.agents.map((agent) => agent.agent_display_name).join(", ")}
+                    </thead>
+                    <tbody>
+                      {report.tool_counts.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={4}>
+                            No tool calls.
                           </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-[12px]">{entry.count}</td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
+                      ) : (
+                        report.tool_counts.map((entry, i) => (
+                          <tr
+                            key={entry.method}
+                            data-row-index={i}
+                            onPointerDown={(event) => beginSelect(event, i)}
+                            className={`border-b border-footer-border last:border-0 ${rowTone(selected.has(i))}`}
+                          >
+                            <td className="px-4 py-2 font-mono text-[12px] text-text-primary">{entry.method}</td>
+                            <td className="px-4 py-2 text-[12px] text-text-muted">{entry.inferred_tier}</td>
+                            <td
+                              className="px-4 py-2 text-[12px] text-text-muted"
+                              title={entry.agents.map((agent) => agent.agent_id).join(", ")}
+                            >
+                              {entry.agents.map((agent) => agent.agent_display_name).join(", ")}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums text-[12px]">{entry.count}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CopyableCard>
 
-            <Card
+            <CopyableCard
               id="mcp-one-tool-sessions"
               title="Sessions that used only one tool"
               subtitle="An MCP session that connected, called only this tool, and disconnected."
+              rowType="McpLogOneToolSession"
+              about="An MCP session that connected, called only this tool, and disconnected."
+              rows={report.one_tool_sessions}
             >
-              {report.one_tool_sessions.length === 0 ? (
-                <div className="px-4 py-3 text-[12px] text-text-muted">No one-tool sessions.</div>
-              ) : (
-                report.one_tool_sessions.map((row) => (
-                  <CountRow
-                    key={row.method}
-                    label={row.method}
-                    count={row.session_count}
-                    total={oneToolTotal}
-                    mono
-                  />
-                ))
-              )}
-            </Card>
+              {({ selected, beginSelect }) =>
+                report.one_tool_sessions.length === 0 ? (
+                  <div className="px-4 py-3 text-[12px] text-text-muted">No one-tool sessions.</div>
+                ) : (
+                  report.one_tool_sessions.map((row, index) => (
+                    <CountRow
+                      key={row.method}
+                      index={index}
+                      selected={selected.has(index)}
+                      onPointerDown={beginSelect}
+                      label={row.method}
+                      count={row.session_count}
+                      total={oneToolTotal}
+                      mono
+                    />
+                  ))
+                )
+              }
+            </CopyableCard>
           </div>
         ) : null}
       </div>

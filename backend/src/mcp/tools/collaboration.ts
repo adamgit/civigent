@@ -160,8 +160,8 @@ const searchTextHandler: ToolHandler = async (args, ctx) => {
 // ─── read_doc ────────────────────────────────────────────
 
 const readDocHandler: ToolHandler = async (args, ctx) => {
-  const rawDocPath = args.path as string | undefined;
-  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: path");
+  const rawDocPath = args.doc_path as string | undefined;
+  if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
 
   const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
   if ("errorResult" in parsedDocPath) return parsedDocPath.errorResult;
@@ -809,7 +809,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
     {
       name: "search_text",
       description:
-        "Run lexical search across live readable documents using literal or regular-expression syntax. Matches section bodies, section headings, document filenames, and folder path segments; every result carries a `kind` of body, heading, filename, or path_segment. For path_segment results the returned path is the matched folder prefix, not a document.",
+        "Run lexical search across live readable documents using literal or regular-expression syntax. Matches section bodies, section headings, document filenames, and folder path segments; every result carries a `kind` of body, heading, filename, or path_segment. Body, heading, and filename hits carry `doc_path`. A path_segment hit carries `folder_path` (the matched folder prefix), not `doc_path` — pass that folder as `root` on a later list/search, not as `doc_path` on a document read.",
       inputSchema: {
         type: "object",
         properties: {
@@ -834,9 +834,9 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       inputSchema: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Document path" },
+          doc_path: { type: "string", description: "Document path" },
         },
-        required: ["path"],
+        required: ["doc_path"],
       },
     },
     readDocHandler,

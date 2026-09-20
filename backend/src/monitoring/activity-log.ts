@@ -10,14 +10,44 @@
  *
  * Schema:
  *   Each JSONL line is a SessionRecord envelope containing an array of actions.
- *   The envelope includes agent identity, session timing, and aggregate stats.
+ *   The envelope includes agent identity, session timing, app_version, and aggregate stats.
  */
 
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import { appendFile, mkdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { getMonitoringRoot } from "../storage/data-root.js";
+
+/** Same file as `server.ts` and `GET /build-info`. */
+const BUILD_INFO_FILE_URL = new URL("../../build-info.json", import.meta.url);
+
+let cachedWriteAppVersion: string | undefined;
+
+function appVersionForWrite(): string {
+  if (cachedWriteAppVersion !== undefined) return cachedWriteAppVersion;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(BUILD_INFO_FILE_URL, "utf8"));
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "version" in parsed &&
+      typeof parsed.version === "string" &&
+      parsed.version.length > 0
+    ) {
+      cachedWriteAppVersion = parsed.version;
+      return cachedWriteAppVersion;
+    }
+  } catch {
+    /* same missing-file case as server.ts */
+  }
+  cachedWriteAppVersion = "dev";
+  return cachedWriteAppVersion;
+}
+
+export function appVersionForRead(raw: unknown): string {
+  return typeof raw === "string" && raw.length > 0 ? raw : "unknown";
+}
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -39,6 +69,8 @@ export interface SessionRecord {
   ended_at: string;   // ISO 8601 — flush() call
   action_count: number;
   actions: ActionEntry[];
+  /** `build-info.json` version, `"dev"` if that file is missing, `"unknown"` on pre-stamp lines. */
+  app_version: string;
 }
 
 interface InFlightSession {
@@ -105,7 +137,9 @@ export async function forEachFlushedSession(
       ) {
         continue;
       }
-      onSession(parsed as SessionRecord);
+      const session = parsed as SessionRecord;
+      session.app_version = appVersionForRead(session.app_version);
+      onSession(session);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
@@ -208,6 +242,7 @@ export class ActivityLog {
       ended_at: new Date().toISOString(),
       action_count: session.actions.length,
       actions: session.actions,
+      app_version: appVersionForWrite(),
     };
 
     const line = JSON.stringify(record) + "\n";
@@ -236,6 +271,7 @@ export class ActivityLog {
    */
   snapshotInFlight(): SessionRecord[] {
     const endedAt = new Date().toISOString();
+    const appVersion = appVersionForWrite();
     const records: SessionRecord[] = [];
     for (const [key, session] of this.sessions) {
       const nul = key.indexOf("\u0000");
@@ -251,6 +287,7 @@ export class ActivityLog {
           ...action,
           metadata: { ...action.metadata },
         })),
+        app_version: appVersion,
       });
     }
     return records;
