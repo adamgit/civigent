@@ -2,45 +2,28 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { ActivityTabStrip } from "../components/ActivityTabStrip";
 import { PageStatusBar } from "../components/PageStatusBar";
-import { HeatmapTab, type AgentReadingState } from "../components/coordination/HeatmapTab";
+import type { AgentReadingState } from "../components/coordination/agent-reading-state";
 import { AgentActivityTab } from "../components/coordination/AgentActivityTab";
 import { GitHistoryTab } from "../components/coordination/GitHistoryTab";
 import type { ProposalTimelineEntry } from "../components/coordination/ProposalTimeline";
 import { apiClient } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { sectionGlobalKey, type GetHeatmapResponse, type AnyProposal, type WsServerEvent } from "../types/shared.js";
+import { sectionGlobalKey, type AnyProposal, type WsServerEvent } from "../types/shared.js";
 import { diffProposalsForTimeline } from "../services/proposal-timeline-diff";
 
 const TABS = [
-  { label: "Heatmap", key: "heatmap" },
   { label: "Agent Activity", key: "agents" },
   { label: "Git History", key: "git" },
 ];
 
 export function CoordinationPage() {
-  const [activeTab, setActiveTab] = useState("heatmap");
-  const [heatmap, setHeatmap] = useState<GetHeatmapResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState("agents");
   const [proposals, setProposals] = useState<AnyProposal[]>([]);
   const [agentReadings, setAgentReadings] = useState<Map<string, AgentReadingState>>(new Map());
   const [proposalTimeline, setProposalTimeline] = useState<ProposalTimelineEntry[]>([]);
   const prevProposalMapRef = useRef<Map<string, { status: string }>>(new Map());
   const timelineIdRef = useRef(0);
   const wsRef = useRef<KnowledgeStoreWsClient | null>(null);
-
-  const loadHeatmap = useCallback(async () => {
-    try {
-      const result = await apiClient.getHeatmap();
-      setHeatmap(result);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   const loadProposals = useCallback(async () => {
     try {
@@ -64,14 +47,9 @@ export function CoordinationPage() {
     }
   }, []);
 
-  // Load heatmap + proposals once on mount. Auto-refresh is intentionally
-  // disabled: the heatmap payload is very large (~12.5k section rows) and
-  // re-rendering it on an interval froze the tab. This page is slated for a
-  // full rewrite; until then it loads once.
   useEffect(() => {
-    void loadHeatmap();
     void loadProposals();
-  }, [loadHeatmap, loadProposals]);
+  }, [loadProposals]);
 
   // WebSocket for live events
   useEffect(() => {
@@ -106,9 +84,6 @@ export function CoordinationPage() {
           return next;
         });
       }
-      // Auto-refresh disabled (see mount effect): reloading the large heatmap
-      // on every commit/presence event re-froze the tab. Live agent-reading
-      // dots above still update; the heatmap itself refreshes on next visit.
     });
     return () => {
       ws.disconnect();
@@ -126,15 +101,6 @@ export function CoordinationPage() {
       <div className="p-4" style={{ fontFamily: "var(--font-ui)" }}>
         <ActivityTabStrip tabs={TABS} activeKey={activeTab} onTabChange={setActiveTab} />
 
-        {activeTab === "heatmap" && (
-          <HeatmapTab
-            heatmap={heatmap}
-            agentReadings={agentReadings}
-            proposals={proposals}
-            loading={loading}
-            error={error}
-          />
-        )}
         {activeTab === "agents" && (
           <AgentActivityTab
             agentReadings={agentReadings}
@@ -147,8 +113,6 @@ export function CoordinationPage() {
       <PageStatusBar
         items={[
           "Coordination",
-          `Preset: ${heatmap?.preset ?? "loading"}`,
-          `${heatmap?.sections.length ?? 0} sections tracked`,
           `${activeAgentCount} active agents`,
         ]}
       />

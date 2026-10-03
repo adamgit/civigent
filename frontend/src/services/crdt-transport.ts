@@ -58,11 +58,12 @@ export interface CrdtTransportOptions {
 }
 
 export class CrdtTransport {
-  readonly doc: Y.Doc;
-  readonly awareness: Awareness;
-
   private provider: CrdtProvider;
   private readonly opts: CrdtTransportOptions;
+
+  /** Follows provider retargets so structural ops keep using the live DocSession doc. */
+  get doc(): Y.Doc { return this.provider.doc; }
+  get awareness(): Awareness { return this.provider.awareness; }
 
   constructor(docPath: DocPath, opts: CrdtTransportOptions = {}) {
     this.opts = opts;
@@ -122,8 +123,11 @@ export class CrdtTransport {
         awareness: opts.awareness,
       },
     );
-    this.doc = doc;
-    this.awareness = this.provider.awareness;
+  }
+
+  /** Point this open editor socket at a fresh DocSession Y.Doc without closing it. */
+  retarget(doc: Y.Doc, awareness: Awareness): void {
+    this.provider.retarget(doc, awareness);
   }
 
   connect(): void {

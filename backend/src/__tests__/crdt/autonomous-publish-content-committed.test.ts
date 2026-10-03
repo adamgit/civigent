@@ -3,7 +3,7 @@
  *
  * Every other commit path (human/manual proposal commit, agent commit, restore /
  * overwrite, import) emits a JSON `content:committed` app-event so non-CRDT
- * viewers (canonical document view, heatmap, governance, dashboard, coordination)
+ * viewers (canonical document view, governance, dashboard, coordination)
  * refresh. The DocSession autonomous publish path historically committed to
  * canonical without emitting it, leaving those views stale (spec 05 §Proposal
  * Publication: the CRDT publish reuses the standard proposal-commit notification;

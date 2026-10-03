@@ -1,5 +1,5 @@
 import type { AnyProposal } from "../../types/shared.js";
-import type { AgentReadingState } from "./HeatmapTab";
+import type { AgentReadingState } from "./agent-reading-state";
 import { ActiveAgentsPanel } from "./ActiveAgentsPanel";
 import { ProposalTimeline, type ProposalTimelineEntry } from "./ProposalTimeline";
 

@@ -27,6 +27,7 @@ vi.mock("../../services/observer-crdt-provider", () => ({
     doc: Y.Doc;
     connect = vi.fn();
     destroy = vi.fn();
+    retarget(doc: Y.Doc): void { this.doc = doc; }
     constructor(_docPath: string, events: Record<string, unknown>, opts?: { doc?: Y.Doc }) {
       this.doc = opts!.doc!;
       providers.push({ events: events as CapturedProvider["events"], doc: this.doc, connect: this.connect, destroy: this.destroy });
@@ -41,6 +42,7 @@ vi.mock("../../services/crdt-transport", () => ({
     connect = vi.fn();
     destroy = vi.fn();
     setPublishPauseBarrier = vi.fn();
+    retarget(doc: Y.Doc): void { this.doc = doc; }
     constructor(_docPath: string, opts: { doc?: Y.Doc }) {
       this.doc = opts.doc!;
       editorTransports.push({ doc: this.doc, opts: opts as unknown as Record<string, ((...a: unknown[]) => void) | undefined>, connect: this.connect, destroy: this.destroy });
@@ -308,5 +310,37 @@ describe("useLiveSectionReplica", () => {
     // NOTHING of the ended session survives — no ghost body, no duplication.
     expect(painted).not.toContain("live body");
     expect(painted.split("second session body").length - 1).toBe(1);
+  });
+
+  it("a bootstrap for a different docSessionId must not paint the cold seed", async () => {
+    // The reconnect hole: last-editor leave mints a new DocSessionId. The next
+    // 0x14 arrives on the STILL-BOUND replica (no 4021 park, no page seed
+    // refresh). Throwing that frame away and minting empty makes paintMarkdown
+    // return the open-time seed — the display lie after a body-only wait.
+    const { result } = renderHook(() => useLiveSectionReplica({ docPath: "/doc.md" }));
+    const first = providers[0];
+    const typed = "# Alpha\n\ntyped line and bullet";
+    const b1 = bootstrapFrameBytes(typed);
+    act(() => {
+      first.events.onLiveSectionFrame!(0x14, frameBody({ doc_session_id: "sess-1", state: b1.state }, b1.yjs));
+    });
+    expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("typed line and bullet");
+
+    await act(async () => {
+      await result.current.promoteToEditor();
+    });
+    const editor = editorTransports[0];
+
+    const b2 = bootstrapFrameBytes("# Alpha\n\ntyped line and bullet\n\n- still here");
+    act(() => {
+      editor.opts.onLiveSectionFrame!(0x14, frameBody({ doc_session_id: "sess-2", state: b2.state }, b2.yjs));
+    });
+
+    const painted = result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed");
+    expect(painted).toContain("still here");
+    expect(painted).not.toBe("cold seed");
+    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.mode).toBe("editor");
+    expect(editor.destroy).not.toHaveBeenCalled();
   });
 });

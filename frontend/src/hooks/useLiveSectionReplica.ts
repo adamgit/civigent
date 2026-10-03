@@ -17,6 +17,7 @@ import { CrdtTransport } from "../services/crdt-transport";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import {
   createLiveSectionReplica,
+  type LiveBootstrapInput,
   type LiveSectionReplica,
 } from "../services/live-section-replica";
 import {
@@ -206,15 +207,18 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
 
   const startFreshObserverPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
   const startFreshEditorPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
+  const adoptDisjointSessionBootstrapRef = useRef<((bootstrap: LiveBootstrapInput) => void) | null>(null);
 
   /** Route a live-section frame from either socket. A bootstrap for a DIFFERENT
    *  DocSession than the one this replica's doc is bound to means the server
    *  minted a fresh Y.Doc with a history disjoint from ours — Y.applyUpdate
-   *  merges histories (it never replaces), so applying it would duplicate every
-   *  fragment's content. Instead, drop the whole live pipeline (doc, awareness,
-   *  replica, socket) and rejoin clean; the fresh socket receives a fresh
-   *  bootstrap. Covers post-4021 turnover, 4022/4024 reseeds, and a session
-   *  turnover that happened entirely while the socket was down. */
+   *  merges histories (it never replaces), so applying it into this doc would
+   *  duplicate every fragment. Install that bootstrap into a fresh replica and
+   *  retarget the socket that just delivered it. Do not drop the socket: this
+   *  tab is often the editor who reconnected onto the new session, and closing
+   *  it discards that session. The replacement observer does not acquire one,
+   *  so paint would fall through to the document-open seed — content:committed
+   *  does not refetch seeds while this tab was live. */
   const handleLiveSectionFrame = useCallback((docPathArg: DocPath, opcode: number, payload: Uint8Array) => {
     const replica = replicaRef.current;
     if (!replica) return;
@@ -227,7 +231,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       } else if (boundTo === bootstrap.docSessionId) {
         replica.mergeSameSessionBootstrap(bootstrap);
       } else {
-        startFreshObserverPipelineRef.current?.(docPathArg);
+        adoptDisjointSessionBootstrapRef.current?.(bootstrap);
       }
       return;
     }
@@ -376,9 +380,29 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     transport.connect();
   }, [handleLiveSectionFrame, teardownConnection]);
 
+  /** A live socket just delivered a bootstrap for a DocSession other than the
+   *  one this replica is bound to. Histories are disjoint, so the bootstrap
+   *  goes into a fresh replica. The socket stays open and is retargeted onto
+   *  that replica — closing it would be last-editor leave on the session this
+   *  frame just joined. */
+  const adoptDisjointSessionBootstrap = useCallback((bootstrap: LiveBootstrapInput) => {
+    const conn = connectionRef.current;
+    const editing = modeRef.current === "editor";
+    mintFreshReplica();
+    const replica = replicaRef.current;
+    const doc = docRef.current;
+    const awareness = awarenessRef.current;
+    if (!replica || !doc || !awareness) return;
+    if (editing) replica.setEditingEnabled(true);
+    replica.bindToDocSession(bootstrap);
+    if (conn?.kind === "observer") conn.provider.retarget(doc);
+    else if (conn?.kind === "editor") conn.transport.retarget(doc, awareness);
+    forceRender();
+  }, [mintFreshReplica]);
+  adoptDisjointSessionBootstrapRef.current = adoptDisjointSessionBootstrap;
+
   /** Drop and replace the whole live pipeline as OBSERVER — for stale-session
-   *  rejection, unknown 4022 reasons, session end, and a bootstrap for a
-   *  DocSession this doc never bootstrapped. */
+   *  rejection, unknown 4022 reasons, and session end. */
   const startFreshObserverPipeline = useCallback((docPathArg: DocPath) => {
     teardownConnection();
     mintFreshReplica();

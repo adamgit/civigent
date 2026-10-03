@@ -86,21 +86,8 @@ import {
 } from "../../storage/proposal-repository.js";
 import { findProposalDefectDetector } from "../../domain/proposal-defect-detectors.js";
 import type { ActiveProposal, AnyProposal, ProposalTargetRef } from "../../types/shared.js";
-import path from "node:path";
-import type { GetHeatmapResponse, HeatmapEntry } from "../../types/shared.js";
 import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
-import {
-  readDocumentStructure,
-  flattenStructureToHeadingPaths,
-  resolveAllCanonicalSectionPaths,
-} from "../../storage/heading-resolver.js";
-import { readDocSectionCommitInfo, type SectionCommitInfo } from "../../storage/section-commit-history.js";
-import { getDataRoot } from "../../storage/data-root.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
-import { ContentLayer } from "../../storage/content-layer.js";
-import { lookupDocSession } from "../../crdt/ydoc-lifecycle.js";
-import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
-import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
 import { readProposalDto } from "./proposals.js";
 
@@ -412,80 +399,6 @@ export async function createCustomRole(request: CreateCustomRoleRequest): Promis
 
 export async function removeCustomRole(name: string): Promise<void> {
   await deleteCustomRole(RoleName.of(name));
-}
-
-// ─── Heatmap ────────────────────────────────────────────
-
-function flattenTree(
-  entries: Array<{ name: string; path: string; type: "file" | "directory"; children?: any[] }>,
-): Array<{ name: string; path: string; type: "file" | "directory" }> {
-  const result: Array<{ name: string; path: string; type: "file" | "directory" }> = [];
-  for (const entry of entries) {
-    result.push({ name: entry.name, path: entry.path, type: entry.type });
-    if (entry.children?.length) {
-      result.push(...flattenTree(entry.children));
-    }
-  }
-  return result;
-}
-
-export async function getHeatmap(): Promise<GetHeatmapResponse> {
-  const config = getAdminConfig();
-  const sections: HeatmapEntry[] = [];
-
-  const tree = await readDocumentsTreeUnfiltered("");
-  for (const entry of flattenTree(tree)) {
-    if (entry.type !== "file") continue;
-    const docPath = DocPath.parse(entry.path);
-
-    const structure = await readDocumentStructure(docPath);
-    const headingPaths = flattenStructureToHeadingPaths(structure);
-
-    const [gitCommitInfo, canonicalPaths] = await Promise.all([
-      readDocSectionCommitInfo(docPath),
-      resolveAllCanonicalSectionPaths(docPath),
-    ]);
-
-    const commitByHeading = new Map<string, SectionCommitInfo>();
-    for (const [headingKey, resolved] of canonicalPaths) {
-      const relFromDataRoot = path.relative(getDataRoot(), resolved.absolutePath);
-      const info = gitCommitInfo.get(relFromDataRoot);
-      if (info) commitByHeading.set(headingKey, info);
-    }
-
-    const crdtSessionActive = lookupDocSession(docPath) !== undefined;
-
-    for (const headingPath of headingPaths) {
-      const headingKey = SectionRef.headingKey(headingPath);
-      const commitInfo = commitByHeading.get(headingKey);
-      // O(1): use the already-resolved per-section commit info. Do NOT call
-      // summarizeSection here — it re-resolves the heading (a full skeleton
-      // reparse) per section, which is quadratic across the document and, over
-      // every document, hangs the server.
-      const agentWritePolicy = AgentWritePolicy.summarizeSectionFromCommitInfo(
-        new SectionRef(docPath, headingPath),
-        commitInfo ?? null,
-      );
-
-      sections.push({
-        doc_path: docPath,
-        heading_path: headingPath,
-        agentWritePolicy,
-        crdt_session_active: crdtSessionActive,
-        last_human_commit_sha: commitInfo?.sha ?? null,
-        last_commit_author: commitInfo?.authorName ?? null,
-        last_commit_timestamp: commitInfo ? new Date(commitInfo.timestampMs).toISOString() : null,
-      });
-    }
-  }
-
-  const preset = HUMAN_INVOLVEMENT_PRESETS[config.humanInvolvement_preset];
-  return {
-    preset: config.humanInvolvement_preset,
-    humanInvolvement_midpoint_seconds: preset.midpoint_seconds,
-    humanInvolvement_steepness: preset.steepness,
-    sections,
-  };
 }
 
 // ─── Canonical content integrity scan ───────────────────

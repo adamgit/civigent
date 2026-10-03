@@ -124,8 +124,13 @@ export interface CrdtProviderEvents {
 // ─── Provider ──────────────────────────────────────────────────────
 
 export class CrdtProvider {
-  readonly doc: Y.Doc;
-  readonly awareness: Awareness;
+  private _doc: Y.Doc;
+  private _awareness: Awareness;
+
+  /** The Y.Doc this socket syncs. Replaced on a disjoint DocSession bootstrap
+   *  (`retarget`) — the socket itself stays up. */
+  get doc(): Y.Doc { return this._doc; }
+  get awareness(): Awareness { return this._awareness; }
 
   private ws: WebSocket | null = null;
   private _state: CrdtConnectionState = "disconnected";
@@ -147,7 +152,6 @@ export class CrdtProvider {
   private lastTouchedFragments = new Set<string>();
   private readonly localEditObserverByFragmentKey = new Map<string, (events: Y.YEvent<any>[], txn: Y.Transaction) => void>();
   private shareSizeAtLastNewKeyScan = -1;
-  private attachObserversToKeysThatJustArrived: (() => void) | null = null;
   private pendingDocumentReplacementNotice: DocumentReplacementNoticePayload | null = null;
   private readonly clientInstanceId: ClientInstanceId;
   private readonly docPath: DocPath;
@@ -174,8 +178,8 @@ export class CrdtProvider {
     events: CrdtProviderEvents = {},
     opts?: { clientInstanceId?: ClientInstanceId; initialTransitionRequest?: ModeTransitionRequest; awareness?: Awareness },
   ) {
-    this.doc = doc;
-    this.awareness = opts?.awareness ?? new Awareness(doc);
+    this._doc = doc;
+    this._awareness = opts?.awareness ?? new Awareness(doc);
     this.ownsAwareness = opts?.awareness === undefined;
     this.events = events;
     this.docPath = docPath;
@@ -190,23 +194,6 @@ export class CrdtProvider {
     ensurePageWsLifecycleInstalled();
     this.cancelPageWake = subscribePageWsWake(() => this.onPageWake());
 
-    this.attachObserversToKeysThatJustArrived = () => {
-      if (doc.share.size === this.shareSizeAtLastNewKeyScan) return;
-      for (const fragmentKey of doc.share.keys()) {
-        if (this.localEditObserverByFragmentKey.has(fragmentKey)) continue;
-        if (!isSectionFragmentShareEntry(doc, fragmentKey)) continue;
-        const recordThisKeyAsLocallyTouched = (_events: Y.YEvent<any>[], txn: Y.Transaction): void => {
-          if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
-          this.lastTouchedFragments.add(fragmentKey);
-        };
-        doc.getXmlFragment(fragmentKey).observeDeep(recordThisKeyAsLocallyTouched);
-        this.localEditObserverByFragmentKey.set(fragmentKey, recordThisKeyAsLocallyTouched);
-      }
-      this.shareSizeAtLastNewKeyScan = doc.share.size;
-    };
-    this.attachObserversToKeysThatJustArrived();
-    doc.on("afterTransaction", this.attachObserversToKeysThatJustArrived);
-
     // Listen for local Y.Doc changes to broadcast.
     this.updateHandler = (update: Uint8Array, origin: unknown) => {
       if (origin === this || origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
@@ -218,7 +205,6 @@ export class CrdtProvider {
       this.emitReceiptChange();
       this.events.onLocalUpdate?.(touched);
     };
-    this.doc.on("update", this.updateHandler);
 
     // Listen for local awareness changes to broadcast.
     this.awarenessUpdateHandler = (changes, origin) => {
@@ -231,7 +217,23 @@ export class CrdtProvider {
       const encoded = encodeAwarenessUpdate(this.awareness, changedClients);
       this.sendRaw(MSG_AWARENESS, encoded);
     };
-    this.awareness.on("update", this.awarenessUpdateHandler);
+    this.attachDocListeners();
+    this.attachAwarenessListener();
+  }
+
+  /** Point this open socket at a fresh DocSession Y.Doc. The caller owns both
+   *  the previous doc and the new one; this does not destroy either, and it
+   *  does not close the socket. */
+  retarget(doc: Y.Doc, awareness: Awareness): void {
+    if (this.destroyed) return;
+    if (doc === this._doc && awareness === this._awareness) return;
+    this.detachDocListeners();
+    this.detachAwarenessListener();
+    this._doc = doc;
+    this._awareness = awareness;
+    this.lastTouchedFragments.clear();
+    this.attachDocListeners();
+    this.attachAwarenessListener();
   }
 
   get state(): CrdtConnectionState {
@@ -263,29 +265,59 @@ export class CrdtProvider {
     this.cancelPageWake();
     this.disconnect();
     this.barrier = null;
-    if (this.attachObserversToKeysThatJustArrived) {
-      this.doc.off("afterTransaction", this.attachObserversToKeysThatJustArrived);
-      this.attachObserversToKeysThatJustArrived = null;
-    }
-    for (const [fragmentKey, observer] of this.localEditObserverByFragmentKey) {
-      this.doc.getXmlFragment(fragmentKey).unobserveDeep(observer);
-    }
-    this.localEditObserverByFragmentKey.clear();
-    if (this.updateHandler) {
-      this.doc.off("update", this.updateHandler);
-      this.updateHandler = null;
-    }
-    if (this.awarenessUpdateHandler) {
-      this.awareness.off("update", this.awarenessUpdateHandler);
-      this.awarenessUpdateHandler = null;
-    }
+    this.detachDocListeners();
+    this.detachAwarenessListener();
+    this.updateHandler = null;
+    this.awarenessUpdateHandler = null;
     // Only tear down awareness we created; a replica-owned awareness outlives us.
     if (this.ownsAwareness) {
       // Mute awareness events during destruction.
       // eslint-disable-next-line @typescript-eslint/no-empty-function
-      this.awareness.emit = () => {};
-      this.awareness.destroy();
+      this._awareness.emit = () => {};
+      this._awareness.destroy();
     }
+  }
+
+  private onAfterTransaction = (): void => {
+    const doc = this._doc;
+    if (doc.share.size === this.shareSizeAtLastNewKeyScan) return;
+    for (const fragmentKey of doc.share.keys()) {
+      if (this.localEditObserverByFragmentKey.has(fragmentKey)) continue;
+      if (!isSectionFragmentShareEntry(doc, fragmentKey)) continue;
+      const recordThisKeyAsLocallyTouched = (_events: Y.YEvent<any>[], txn: Y.Transaction): void => {
+        if (txn.origin === this || txn.origin === LIVE_SECTION_SERVER_APPLY_ORIGIN) return;
+        this.lastTouchedFragments.add(fragmentKey);
+      };
+      doc.getXmlFragment(fragmentKey).observeDeep(recordThisKeyAsLocallyTouched);
+      this.localEditObserverByFragmentKey.set(fragmentKey, recordThisKeyAsLocallyTouched);
+    }
+    this.shareSizeAtLastNewKeyScan = doc.share.size;
+  };
+
+  private attachDocListeners(): void {
+    this.shareSizeAtLastNewKeyScan = -1;
+    this.onAfterTransaction();
+    this._doc.on("afterTransaction", this.onAfterTransaction);
+    if (this.updateHandler) this._doc.on("update", this.updateHandler);
+  }
+
+  private detachDocListeners(): void {
+    this._doc.off("afterTransaction", this.onAfterTransaction);
+    for (const [fragmentKey, observer] of this.localEditObserverByFragmentKey) {
+      this._doc.getXmlFragment(fragmentKey).unobserveDeep(observer);
+    }
+    this.localEditObserverByFragmentKey.clear();
+    if (this.updateHandler) this._doc.off("update", this.updateHandler);
+  }
+
+  private attachAwarenessListener(): void {
+    if (!this.awarenessUpdateHandler) return;
+    this._awareness.on("update", this.awarenessUpdateHandler);
+  }
+
+  private detachAwarenessListener(): void {
+    if (!this.awarenessUpdateHandler) return;
+    this._awareness.off("update", this.awarenessUpdateHandler);
   }
 
   // ─── Publish-pause quiescence barrier ──────────────────────────

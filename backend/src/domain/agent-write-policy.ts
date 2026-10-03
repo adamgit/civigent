@@ -77,7 +77,7 @@ export interface AgentWritePolicyImpl<TResult> {
   /**
    * O(1) section-level summary derived from a PRE-RESOLVED per-section commit
    * info (the section's single most-recent canonical commit, or null when there
-   * is no commit history). For bulk read surfaces (heatmap, section-list) that
+   * is no commit history). For bulk read surfaces (section-list) that
    * have ALREADY resolved every section's file path and joined it to the git
    * batch map: they MUST use this instead of `summarizeSection`, which re-resolves
    * the heading (a full skeleton reparse) per call and is therefore quadratic
@@ -265,7 +265,7 @@ class HumanInvolvementCompatibilityPolicy
    * Section-level read-API summary (spec 12 §Event/API Surfaces: "Document
    * section APIs should expose section-level agent write-policy summaries").
    *
-   * Used by read paths (section-meta-builder, heatmap) that need a per-section
+   * Used by read paths (section-meta-builder) that need a per-section
    * `canWrite` + selected-policy detail without constructing a proposal. Takes
    * the pre-fetched per-document commit-info map from `readDocSectionCommitInfo`
    * (keyed by section-file path relative to dataRoot) so callers keep batching

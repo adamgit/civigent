@@ -1585,7 +1585,14 @@ html.grip-drag-active .prosemirror-dropcursor-inline {
   margin-bottom: 12px;
   padding: 0;
 }
-.milkdown .ProseMirror code {
+/* Crepe reset.css sets `.milkdown .ProseMirror code { display: inline-block }`.
+ * That sheet is imported from MilkdownEditor, so it lands after this file and
+ * the same-specificity rule here used to lose. inline-block plus the
+ * ProseMirror trailing <br> (present when a code mark ends a block) makes the
+ * chip as wide as the line: background paints to the margin, and clicks in or
+ * after the text never resolve to a caret. :not(pre) keeps fenced blocks on
+ * Crepe's inline-block. */
+.milkdown .ProseMirror :not(pre) code {
   font-family: var(--font-mono);
   font-size: 13px;
   background: #f5f2ed;
@@ -1804,17 +1811,6 @@ html.grip-drag-active .prosemirror-dropcursor-inline {
   background: var(--color-status-red-light);
   color: var(--color-status-red);
 }
-
-/* ===== HUMAN-INVOLVEMENT HEATMAP ===== */
-.humanInvolvement-safe { background-color: rgba(148, 163, 184, 0.08); }
-.humanInvolvement-caution { background-color: rgba(96, 165, 250, 0.12); }
-.humanInvolvement-high { background-color: rgba(37, 99, 235, 0.12); }
-.humanInvolvement-blocked { background-color: rgba(30, 64, 175, 0.2); }
-
-.humanInvolvement-dot-safe { background-color: #94a3b8; }
-.humanInvolvement-dot-caution { background-color: #60a5fa; }
-.humanInvolvement-dot-high { background-color: #2563eb; }
-.humanInvolvement-dot-blocked { background-color: #1e40af; }
 
 /* ===== MIRROR PANEL ===== */
 .mirror-panel {

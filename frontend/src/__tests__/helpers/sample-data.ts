@@ -42,16 +42,6 @@ export const sampleActivity = [
   },
 ];
 
-export const sampleHeatmapEntry = {
-  doc_path: "ops/strategy.md",
-  heading_path: ["Overview"],
-  agentWritePolicy: { canWrite: true, message: "Agents can currently write to this section.", humanInvolvement: { score: 0.3 } },
-  crdt_session_active: false,
-  last_human_commit_sha: null,
-  last_commit_author: null,
-  last_commit_timestamp: null,
-};
-
 export const sampleSections = [
   {
     heading: "",

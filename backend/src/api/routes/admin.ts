@@ -45,7 +45,6 @@ import {
   getAgentActivity,
   readAgentActivityLogFileInfo,
   runAgentMcpLogAnalysis,
-  getHeatmap,
   getRuntimeMemory,
   getHomeRuntimeMemory,
   listAdminProposals,
@@ -93,17 +92,6 @@ export function registerAdminRoutes(
     try {
       if (refuseScopedWriter(resolveAuthenticatedWriter(req), res)) return;
       res.json(getHomeRuntimeMemory());
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // ─── Heatmap ──────────────────────────────────────────
-  router.get("/heatmap", async (req, res, next) => {
-    try {
-      const admin = await requireAdmin(req, res);
-      if (!admin) return;
-      res.json(await getHeatmap());
     } catch (error) {
       next(error);
     }

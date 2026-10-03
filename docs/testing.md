@@ -50,7 +50,6 @@ backend/src/__tests__/
 ├── recovery/             ← Crash recovery
 ├── publish/              ← Manual publishing
 ├── import/               ← Content import
-├── heatmap/              ← Heatmap endpoint
 ├── mirror/               ← Writer dirty state
 ├── documents-tree/       ← Document tree navigation
 └── perf/                 ← Performance tests

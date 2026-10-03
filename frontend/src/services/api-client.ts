@@ -37,7 +37,6 @@ import type {
   GetProposalSectionsResponse,
   GetDocumentsTreeResponse,
   GetFolderFileAgesResponse,
-  GetHeatmapResponse,
   ListDegradedProposalsResponse,
   ListProposalsResponse,
   AnyProposal,
@@ -1232,12 +1231,6 @@ export const apiClient = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason }),
     });
-  },
-
-  // --- Heatmap ---
-
-  async getHeatmap(): Promise<GetHeatmapResponse> {
-    return requestJson<GetHeatmapResponse>("/api/heatmap");
   },
 
   // Live durability lives in the `inprogress` proposal / DocSession; any future

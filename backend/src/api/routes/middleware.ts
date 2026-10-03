@@ -1,5 +1,5 @@
 import { type NextFunction, type Request, type Response, type Router } from "express";
-import type { HumanInvolvementPolicyResult } from "../../types/shared.js";
+import type { AgentWritePolicyResult } from "../../types/shared.js";
 import { AclPath, DocPath } from "../../types/shared.js";
 import { getSystemState } from "../../startup-state.js";
 import {
@@ -239,7 +239,7 @@ export function installCsrfGuard(router: Router): void {
  * Shape an agent-write-policy result into a REST response body. Surfaces the
  * policy's prose `message`s (top-level + per-target) rather than bare codes.
  */
-export function agentWritePolicyRouteBody(result: HumanInvolvementPolicyResult) {
+export function agentWritePolicyRouteBody(result: AgentWritePolicyResult) {
   return {
     can_write: result.canWrite,
     message: result.message,
