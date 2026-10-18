@@ -58,6 +58,7 @@ export interface DocumentCanvasProps {
   onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
   onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
+  onEditBlocked?: (message: string) => void;
 }
 
 export function DocumentCanvas({
@@ -99,6 +100,7 @@ export function DocumentCanvas({
   onCursorExit,
   onDocumentBoundary,
   onCrossSectionDrop,
+  onEditBlocked,
 }: DocumentCanvasProps) {
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
   const fragmentKeyCounts = new Map<string, number>();
@@ -217,6 +219,7 @@ export function DocumentCanvas({
                 onCursorExit={onCursorExit}
                 onDocumentBoundary={onDocumentBoundary}
                 onCrossSectionDrop={onCrossSectionDrop}
+                onEditBlocked={onEditBlocked}
               />
             </div>
 

@@ -305,6 +305,11 @@ export function DocumentTopbar({
 
       {/* Coarse transport/publish status indicator; hover explains the detail.
           Hidden on narrow — that path row is folder-link + copy + overflow. */}
+      {!narrow && backendError ? (
+        <p className="text-[11px] text-status-red max-w-[420px] truncate" role="alert" title={backendError}>
+          {backendError}
+        </p>
+      ) : null}
       {!narrow && meta.label ? (
         <div
           className="relative flex items-center gap-[5px] cursor-help"

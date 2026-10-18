@@ -98,6 +98,7 @@ export interface DocumentSectionRendererProps {
   onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
   onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
+  onEditBlocked?: (message: string) => void;
 }
 
 function playFlyToProposalPanelAnimation(fromX: number, fromY: number): void {
@@ -175,10 +176,20 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
   onCursorExit,
   onDocumentBoundary,
   onCrossSectionDrop,
+  onEditBlocked,
 }: DocumentSectionRendererProps) {
   const setHoveredFragmentKey = useSetHoveredFragmentKey();
   const headingPath = [...section.headingPath];
   const unavailableForEdit = isLockedByOtherHuman || crdtBlocked;
+  const editBlockedMessage = publishPaused
+    ? "Editing is paused while this document publishes."
+    : isLockedByOtherHuman
+      ? (proposalConflictReason
+        ? `This section cannot be edited: ${proposalConflictReason}`
+        : "This section is locked by another proposal and cannot be edited.")
+      : crdtBlocked
+        ? "This section is blocked and cannot be edited."
+        : null;
   const liveBinding = !proposalMode && hasEditor ? getLiveBinding?.(fk) : undefined;
   const mountEditor = hasEditor && (proposalMode || liveBinding !== undefined);
   const crdtDegraded = isCrdtDegraded(crdtState);
@@ -209,7 +220,20 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
       onMouseEnter={() => setHoveredFragmentKey(fk)}
       onMouseLeave={() => setHoveredFragmentKey(null)}
       onMouseDown={(e) => { mouseDownPosRef.current = { x: e.clientX, y: e.clientY }; }}
-      onClick={unavailableForEdit || publishPaused ? undefined : hasEditor ? undefined : (e) => {
+      onClick={editBlockedMessage
+        ? (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            onEditBlocked?.(editBlockedMessage);
+          }
+        : hasEditor && !mountEditor
+        ? (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const label = headingPath.length > 0 ? headingPath.join(" > ") : "the before-first-heading section";
+            onEditBlocked?.(`Cannot edit “${label}”. This section did not open for editing.`);
+          }
+        : hasEditor ? undefined : (e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey || e.button !== 0 || e.defaultPrevented) return;
         if (window.getSelection()?.isCollapsed === false) return;
         const down = mouseDownPosRef.current;

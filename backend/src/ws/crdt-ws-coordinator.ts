@@ -1572,29 +1572,30 @@ async function runLiveEditAcceptanceGate(
   const removedTargetFragmentKeys: string[] = [];
 
   // Resolve each touched fragment to its section identity (heading path). The
-  // empty-document BFH bootstrap resolves to the document-level `[]` slot so
-  // its first edit can materialize a real BFH section; any OTHER unresolved
-  // fragment fails hard, since acknowledging an untargetable edit as durable
-  // would be a phantom materialize.
+  // empty-document BFH bootstrap is already a real layout row (`headingPath: []`)
+  // from `resolveLiveSectionLayout`, so a present BFH key takes the normal path.
+  // A BFH key that is NOT in the layout is not that bootstrap — accepting it
+  // schedules quiescence against an untargetable fragment and the process dies
+  // with no client-visible error. Reject it here and tell the origin client.
   const targets: Array<{ kind: "section"; doc_path: DocPath; heading_path: string[] }> = [];
   const fragmentKeyByGlobalIndex: string[] = [];
+  const untargetableRejections: LiveEditRejectionGroup[] = [];
   for (const fragmentKey of touchedKeys) {
     const headingPath = headingByFragmentKey.get(fragmentKey);
     if (!headingPath) {
-      if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
-        targets.push({ kind: "section", doc_path: session.docPath, heading_path: [] });
-        fragmentKeyByGlobalIndex.push(fragmentKey);
-        continue;
-      }
       // A late write into a section this quiescence already deleted (its top-level
       // XmlFragment lingers in `share` because Yjs can't delete it) is an expected
       // delete-under-you, not corruption — hand it back for revert + force-off.
-      // The hard fatal stays for any OTHER untargetable fragment (registry/layout
-      // drift), so the gate still detects genuine corruption.
       if (session.removedFragmentTombstones.has(fragmentKey)) {
         removedTargetFragmentKeys.push(fragmentKey);
         continue;
       }
+      if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
+        untargetableRejections.push(buildUntargetableBeforeFirstHeadingRejection(fragmentKey));
+        continue;
+      }
+      // The hard fatal stays for any OTHER untargetable fragment (registry/layout
+      // drift), so the gate still detects genuine corruption.
       throw new Error(
         `Live edit touched fragment "${fragmentKey}" which has no section identity in the ` +
           `resolved layout for ${session.docPath}. Refusing to acknowledge an untargetable edit ` +
@@ -1605,7 +1606,9 @@ async function runLiveEditAcceptanceGate(
     fragmentKeyByGlobalIndex.push(fragmentKey);
   }
 
-  if (targets.length === 0) return { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys };
+  if (targets.length === 0) {
+    return { acceptedFragmentKeys: [], rejectionGroups: untargetableRejections, removedTargetFragmentKeys };
+  }
 
   const lockResult = await checkProposalLocks({
     proposalId: ownProposalId ?? "__docsession-no-proposal__",
@@ -1672,7 +1675,29 @@ async function runLiveEditAcceptanceGate(
   }
 
   const acceptedFragmentKeys = lockAccepted.filter((k) => !structuralRejectedKeys.has(k));
-  return { acceptedFragmentKeys, rejectionGroups, removedTargetFragmentKeys };
+  return {
+    acceptedFragmentKeys,
+    rejectionGroups: [...untargetableRejections, ...rejectionGroups],
+    removedTargetFragmentKeys,
+  };
+}
+
+function buildUntargetableBeforeFirstHeadingRejection(fragmentKey: string): LiveEditRejectionGroup {
+  return {
+    fragmentKeys: [fragmentKey],
+    reasonCode: "invalid-live-edit-structure",
+    affectedFragments: [{ fragmentKey, headingPath: [], heading: "" }],
+    title: "Edit rejected",
+    message: "The before-first-heading section is not in this document, so the edit was refused.",
+    whatHappened:
+      "Clicking to edit reached the server as a write to the before-first-heading section, " +
+      "but that section is not in the document's current structure.",
+    whyRejected:
+      "An edit can only land on a section the document can address. Saving this write would " +
+      "leave a fragment with nowhere to go, and the document would fail when it next settled.",
+    serverAction: "Your edit was reverted. Nothing was saved.",
+    guidance: "Reload the document and edit a section that is visible in it.",
+  };
 }
 
 function buildProposalLockRejectionGroup(
@@ -1829,6 +1854,17 @@ export async function processArbitratedClientUpdate(
       rejectedFragmentKeys,
       SERVER_NORMALIZATION_ORIGIN,
     );
+    // Restore re-registers every reverted key. An untargetable before-first-heading
+    // fragment must not stay in the live registry: the next settle would find it
+    // with no layout identity and crash instead of leaving the refusal on screen.
+    for (const group of rejectionGroups) {
+      if (group.reasonCode !== "invalid-live-edit-structure") continue;
+      for (const fragmentKey of group.fragmentKeys) {
+        session.fragmentLastActivity.delete(fragmentKey);
+        session.dirtyFragmentKeys.delete(fragmentKey);
+        session.liveFragments.unregisterFragmentKey(fragmentKey);
+      }
+    }
     if (rejectionGroups.some((g) => g.reasonCode === "proposal-lock-conflict")) {
       broadcastLiveSectionsUpdate(docPath, { state: await buildWireLiveSectionsState(session, pendingSectionsForDoc(session.docPath), activeEditorSocketStates(session.docPath)) });
     }
@@ -1938,7 +1974,12 @@ export async function processArbitratedClientUpdate(
       const captured = capturedByKey.get(fragmentKey);
       if (captured === undefined) {
         if (fragmentKey === BEFORE_FIRST_HEADING_KEY) {
-          bodyOnlyKeys.push(fragmentKey);
+          // Not the empty-document bootstrap — that BFH is in the layout, so
+          // `captured` is defined. Do not materialize a fragment the document
+          // cannot address; the acceptance gate rejects that write.
+          session.fragmentLastActivity.delete(fragmentKey);
+          session.dirtyFragmentKeys.delete(fragmentKey);
+          session.liveFragments.unregisterFragmentKey(fragmentKey);
         } else {
           hasStructuralTransition = true;
         }
@@ -2479,6 +2520,14 @@ export interface CrdtWsServer {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void>;
 }
 
+/** WebSocket close reasons are limited to 123 bytes. Keep the error text. */
+function websocketCloseReason(err: unknown): string {
+  const message = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim();
+  const bytes = Buffer.from(message || "internal error");
+  if (bytes.length <= 120) return bytes.toString("utf8");
+  return bytes.subarray(0, 120).toString("utf8");
+}
+
 export function createCrdtWsServer(): CrdtWsServer {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -2504,7 +2553,9 @@ export function createCrdtWsServer(): CrdtWsServer {
         // KS_FATAL_ERRORS_MODE=crash this exits the process (preserving
         // legacy queueMicrotask-throw behaviour); under `report` the process
         // stays alive and the fatal is surfaced to clients via the WS hub.
-        socket.close(1011, "internal error");
+        // The close reason is the error text — a fixed "internal error" hides
+        // the failure from the client that triggered it.
+        socket.close(1011, websocketCloseReason(err));
         handleProcessFatal(err, "uncaughtException");
       });
     });

@@ -24,6 +24,7 @@ import { gitExec, getHeadSha } from "../../storage/git-repo.js";
 import { getDataRoot } from "../../storage/data-root.js";
 import { fragmentKeyFromSectionFile, BEFORE_FIRST_HEADING_KEY } from "../../crdt/ydoc-fragments.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading } from "../../storage/section-shape.js";
+import { diagnosticFragmentKeyForEntry } from "../../diagnostics/document-diagnostics/collect-section-layers.js";
 import { validateLiveEditForDuplicateSiblingHeadings } from "../../crdt/live-edit-structural-validation.js";
 import { classifyStructuralChange } from "../../crdt/structural-change.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
@@ -174,7 +175,7 @@ describe("dupeheadings corruption flow", () => {
     expect(overviewRows[0].fragmentKey).not.toBe(BEFORE_FIRST_HEADING_KEY);
   });
 
-  it("B2: raw isBodyHolderShape mis-keys nested body-holder as document BFH (diagnostics hole)", () => {
+  it("B2: diagnostics keys a nested body-holder with the document-BFH predicate", () => {
     // FlatEntry shape for a nested body-holder under Overview — same shape
     // listCanonicalEntries / collect-section-layers see after leaf→sub-skeleton.
     const nestedBodyHolderShape = {
@@ -187,20 +188,20 @@ describe("dupeheadings corruption flow", () => {
     expect(isBodyHolderShape(nestedBodyHolderShape)).toBe(true);
     expect(isDocumentBeforeFirstHeading(nestedBodyHolderShape)).toBe(false);
 
-    const diagKey = fragmentKeyFromSectionFile(
+    const rawBodyHolderKey = fragmentKeyFromSectionFile(
       nestedBodyHolderShape.sectionFile,
-      isBodyHolderShape(nestedBodyHolderShape), // collect-section-layers.ts today
+      isBodyHolderShape(nestedBodyHolderShape),
     );
+    const diagKey = diagnosticFragmentKeyForEntry(nestedBodyHolderShape);
     const correctKey = fragmentKeyFromSectionFile(
       nestedBodyHolderShape.sectionFile,
-      isDocumentBeforeFirstHeading(nestedBodyHolderShape), // live-section-layout.ts today
+      isDocumentBeforeFirstHeading(nestedBodyHolderShape),
     );
 
-    // Dump: section::__beforeFirstHeading__ bound to --section-body--c2cqo0.md
-    expect(diagKey).toBe(BEFORE_FIRST_HEADING_KEY);
+    // Raw shape still mis-keys; diagnostics must not.
+    expect(rawBodyHolderKey).toBe(BEFORE_FIRST_HEADING_KEY);
     expect(correctKey).toBe("section::--section-body--c2cqo0");
-    // Elegant fix: diagnostics must use isDocumentBeforeFirstHeading → keys agree.
-    expect(diagKey).not.toBe(correctKey);
+    expect(diagKey).toBe(correctKey);
   });
 
   // ── C: quiescence unguarded vs ingress ─────────────────────────────────

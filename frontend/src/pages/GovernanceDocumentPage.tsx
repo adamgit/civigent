@@ -117,6 +117,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   // ── Metadata state ───────────────────────────────────────
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [editAccessError, setEditAccessError] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -239,7 +240,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     (fragmentKey: string): LiveEditorBinding | undefined => {
       const replica = liveReplica.replica;
       if (!liveReplica.isCurrentlyLiveAuthority || !replica) return undefined;
-      return replica.getLiveSection(SectionId.brand(fragmentKey)).createEditorBinding();
+      return replica.findInTopology(SectionId.brand(fragmentKey))?.createEditorBinding();
     },
     [liveReplica.replica, liveReplica.isCurrentlyLiveAuthority],
   );
@@ -347,6 +348,20 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     const row = renderSections[effectiveFocusedIndex];
     return row ? SectionId.text(row.id) : null;
   }, [effectiveFocusedIndex, renderSections]);
+
+  useEffect(() => {
+    if (!liveReplica.isCurrentlyLiveAuthority || focusedFragmentKey === null) return;
+    const replica = liveReplica.replica;
+    if (!replica) return;
+    if (replica.findInTopology(SectionId.brand(focusedFragmentKey))) return;
+    const row = renderSections.find((section) => SectionId.text(section.id) === focusedFragmentKey);
+    const label = row && row.headingPath.length > 0
+      ? row.headingPath.join(" > ")
+      : "the before-first-heading section";
+    setEditAccessError(
+      `Cannot edit “${label}”. That section is not in the live document, so editing it was refused.`,
+    );
+  }, [liveReplica.isCurrentlyLiveAuthority, liveReplica.replica, liveReplica.topology, focusedFragmentKey, renderSections]);
 
   const orderedRenderKeys = useMemo(
     () => renderSections.map((row) => SectionId.text(row.id)),
@@ -669,6 +684,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   );
 
   const focusFragmentAndSetCaretTarget = useCallback((fk: string, coords?: { x: number; y: number }) => {
+    setEditAccessError(null);
     setFocusedSectionId(SectionId.brand(fk));
     if (!liveReplica.isCurrentlyLiveAuthority) {
       const pos = sectionsRef.current.findIndex((row) => SectionId.text(row.id) === fk);
@@ -927,6 +943,16 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                 {moveError}
               </pre>
             ) : null}
+            {editAccessError ? (
+              <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono" role="alert">
+                {editAccessError}
+              </pre>
+            ) : null}
+            {liveReplica.transportError ? (
+              <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono" role="alert">
+                {liveReplica.transportError}
+              </pre>
+            ) : null}
             {error ? (
               <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                 {error}
@@ -1056,6 +1082,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       onCursorExit={handleSectionCursorExit}
                       onDocumentBoundary={handleDocumentBoundary}
                       onCrossSectionDrop={handleCrossSectionDrop}
+                      onEditBlocked={setEditAccessError}
                     />
                   )}
                 </div>
