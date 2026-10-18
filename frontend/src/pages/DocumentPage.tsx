@@ -14,6 +14,7 @@ import { DocumentTopbar, parentFolderRoute } from "../components/DocumentTopbar"
 import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner";
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentCanvas } from "../components/DocumentCanvas";
+import type { SectionArrowExit } from "../components/sectionEdge";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
 import { useForcePublish } from "../hooks/useForcePublish";
 import { buildUnpublishedHistoryRow } from "../models/unpublished-history";
@@ -88,7 +89,6 @@ import {
   lockSignalFor,
   dtoToRenderRef,
 } from "./cold-bootstrap";
-import { resolveFocusAfterTopologyChange } from "./resolve-focus-after-topology-change";
 import { useSplitCaretHandoff } from "../hooks/useSplitCaretHandoff";
 import { SectionHoverProvider } from "../contexts/SectionHoverContext";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
@@ -99,7 +99,27 @@ import {
   type SessionAuthorshipView,
 } from "../status/sessionAuthorship";
 import { copyTextToClipboard } from "../utils/copy-text";
+import {
+  focusedSection,
+  onActivateRow,
+  type EditPipe,
+} from "../status/live-document-session";
+import type { CrdtConnectionState } from "../services/crdt-provider";
 import { DocPath, HeadingLevel } from "../types/shared";
+import { LeftoverFocusLockTrigger } from "../debug/LeftoverFocusLockTrigger";
+
+function topbarConnectionState(pipe: EditPipe): CrdtConnectionState {
+  switch (pipe.phase) {
+    case "live":
+      return "connected";
+    case "connecting":
+      return "connecting";
+    case "reconnecting":
+      return "reconnecting";
+    case "error":
+      return "error";
+  }
+}
 
 interface DocumentPageProps {
   docPath: DocPath;
@@ -135,6 +155,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [debugLeftoverFragmentKey, setDebugLeftoverFragmentKey] = useState<string | null>(null);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
@@ -213,35 +234,22 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     caretFrameHooks: caretHandoff.caretFrameHooks,
   });
   const liveReplicaReadyRef = useRef(false);
-  useEffect(() => { liveReplicaReadyRef.current = liveReplica.isCurrentlyLiveAuthority; }, [liveReplica.isCurrentlyLiveAuthority]);
-
-  const [focusedSectionId, setFocusedSectionId] = useState<SectionId | null>(null);
-  const prevTopologyRef = useRef<readonly import("../types/live-sections").LiveSectionRef[]>([]);
-  useEffect(() => {
-    if (!liveReplica.isCurrentlyLiveAuthority) { prevTopologyRef.current = []; return; }
-    const prev = prevTopologyRef.current;
-    const next = liveReplica.topology;
-    if (prev === next) return;
-    prevTopologyRef.current = next;
-    const caretOwningId = caretHandoff.lastCaretRecoveryRef.current?.sectionId ?? null;
-    caretHandoff.lastCaretRecoveryRef.current = null;
-    setFocusedSectionId((cur) => resolveFocusAfterTopologyChange(prev, next, cur, caretOwningId));
-  }, [liveReplica.isCurrentlyLiveAuthority, liveReplica.topology, caretHandoff]);
+  useEffect(() => { liveReplicaReadyRef.current = liveReplica.bound; }, [liveReplica.bound]);
 
   const workspaceSeeds = useMemo(() => deriveWorkspaceBootstrap(sections), [sections]);
   const sectionLockSignals = useMemo(() => deriveWorkspaceSectionLockSignals(sections), [sections]);
   const sectionLockSignalsRef = useRef<WorkspaceSectionLockSignal[]>([]);
   useEffect(() => { sectionLockSignalsRef.current = sectionLockSignals; }, [sectionLockSignals]);
 
-  const isEditingMode = liveReplica.mode === "editor";
+  const isEditing = liveReplica.session.kind === "editing";
   const coldRenderRefs = useMemo<readonly RenderSectionRef[]>(() => {
     if (sections.length > 0) return sections.map(dtoToRenderRef);
-    if (isEditingMode) return [syntheticBeforeFirstHeadingSeed().ref];
+    if (isEditing) return [syntheticBeforeFirstHeadingSeed().ref];
     return [];
-  }, [sections, isEditingMode]);
+  }, [sections, isEditing]);
   const baseRenderRows = useMemo<readonly RenderSectionRef[]>(
-    () => (liveReplica.isCurrentlyLiveAuthority ? liveReplica.topology : coldRenderRefs),
-    [liveReplica.isCurrentlyLiveAuthority, liveReplica.topology, coldRenderRefs],
+    () => (liveReplica.bound ? liveReplica.topology : coldRenderRefs),
+    [liveReplica.bound, liveReplica.topology, coldRenderRefs],
   );
 
   const lastEditorByKey = useMemo(() => {
@@ -256,14 +264,14 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     [lastEditorByKey],
   );
 
-  const getActiveEditors = useActiveEditors(liveReplica.awareness, liveReplica.isCurrentlyLiveAuthority);
+  const getActiveEditors = useActiveEditors(liveReplica.awareness, liveReplica.bound);
   const publishDecision = liveReplica.replica?.getPublishDecision() ?? null;
 
   // Shared-draft banner inputs (FP4-FP6). The bound proposal id, its claimed
   // changed-section count, and the actively-edited count all come from the ONE
   // live replica (the server's authoritative wire state) — no second client-side
   // source of truth. The banner shows only when a proposal is actually bound.
-  const boundProposalId = liveReplica.isCurrentlyLiveAuthority
+  const boundProposalId = liveReplica.bound
     ? (liveReplica.replica?.getBoundProposalId() ?? null)
     : null;
   const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
@@ -276,16 +284,16 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const getLiveBinding = useCallback(
     (fragmentKey: string): LiveEditorBinding | undefined => {
       const replica = liveReplica.replica;
-      if (!liveReplica.isCurrentlyLiveAuthority || !replica) return undefined;
+      if (!liveReplica.bound || !replica) return undefined;
       return replica.getLiveSection(SectionId.brand(fragmentKey)).createEditorBinding();
     },
-    [liveReplica.replica, liveReplica.isCurrentlyLiveAuthority],
+    [liveReplica.replica, liveReplica.bound],
   );
 
   const getLiveMarkdown = useCallback(
     (fragmentKey: string): string | undefined => {
       const replica = liveReplica.replica;
-      if (!liveReplica.isCurrentlyLiveAuthority || !replica) return undefined;
+      if (!liveReplica.bound || !replica) return undefined;
       return replica.findInTopology(SectionId.brand(fragmentKey))?.readMarkdown();
     },
     [liveReplica],
@@ -328,7 +336,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     handleProposalSectionChange,
     handleCursorExit,
     setEditorRef,
-    setRetargetCaretTarget,
   } = useDocumentSessionController({
     docPath,
     sections: baseRenderRows,
@@ -368,36 +375,38 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     sectionsRef.current = renderSections;
   }, [renderSections]);
 
+  const liveFocusedSection = focusedSection(liveReplica.session);
   const effectiveFocusedIndex = useMemo(() => {
-    if (!liveReplica.isCurrentlyLiveAuthority) return bootstrapFocusedSectionIndex;
-    if (focusedSectionId === null) return null;
-    const key = SectionId.text(focusedSectionId);
-    const idx = renderSections.findIndex((s) => SectionId.text(s.id) === key);
+    if (proposalMode) return bootstrapFocusedSectionIndex;
+    if (liveFocusedSection === null) return null;
+    const idx = renderSections.findIndex((s) => s.id === liveFocusedSection);
     return idx >= 0 ? idx : null;
-  }, [liveReplica.isCurrentlyLiveAuthority, focusedSectionId, bootstrapFocusedSectionIndex, renderSections]);
+  }, [proposalMode, liveFocusedSection, bootstrapFocusedSectionIndex, renderSections]);
 
   // Focus identity as a raw fragment key (live: SectionId; cold: derived from
   // the stored cold index) — the currency for hover/mount/eviction windows.
   // Positions are derived from the ordered rows per pass, never stored.
   const focusedFragmentKey = useMemo(() => {
-    if (effectiveFocusedIndex === null) return null;
+    if (effectiveFocusedIndex === null) {
+      return proposalMode ? null : debugLeftoverFragmentKey;
+    }
     const row = renderSections[effectiveFocusedIndex];
     return row ? SectionId.text(row.id) : null;
-  }, [effectiveFocusedIndex, renderSections]);
+  }, [effectiveFocusedIndex, renderSections, proposalMode, debugLeftoverFragmentKey]);
 
   // Evict ready editors outside the mount window around the focused FRAGMENT.
   useEditorWindowEviction(renderSections, focusedFragmentKey, setReadyEditors);
 
   caretHandoff.configRef.current = {
-    editorMode: liveReplica.mode === "editor",
+    editorMode: isEditing,
     focusedFragmentKey,
     topology: liveReplica.topology,
     getView: (fk) => editorRefs.current.get(fk)?.getView() ?? null,
     onRetarget: (plan) =>
-      setRetargetCaretTarget({
-        fragmentKey: plan.fragmentKey,
-        position: "retarget",
-        placement: { slot: plan.slot, offset: plan.offset, fingerprint: plan.fingerprint },
+      liveReplica.retargetCaret(plan.sectionId, {
+        slot: plan.slot,
+        offset: plan.offset,
+        fingerprint: plan.fingerprint,
       }),
   };
 
@@ -511,7 +520,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const sectionUncommitted = useCallback(
     (fragmentKey: string): boolean => {
       const replica = liveReplica.replica;
-      if (liveReplica.isCurrentlyLiveAuthority && replica) {
+      if (liveReplica.bound && replica) {
         return replica.isPending(SectionId.brand(fragmentKey));
       }
       // Cold hint path: app-WS section:pending/settled while no live authority.
@@ -520,8 +529,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     [liveReplica, coldPendingByFragmentKey],
   );
 
-  const isEditing = isEditingMode;
-  const crdtBanner = connectionBannerInfo(isEditing, liveReplica.editorState, liveReplica.observerState);
+  const crdtBanner = connectionBannerInfo(liveReplica.session);
   const focusedHeadingPath = effectiveFocusedIndex !== null && renderSections[effectiveFocusedIndex]
     ? [...renderSections[effectiveFocusedIndex].headingPath]
     : null;
@@ -642,19 +650,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     void loadSections(docPath);
   }, [docPath, loadSections]);
 
-  // Editor socket permanently rejected while editing → drop back to observer
-  // and reseed canonical content.
-  useEffect(() => {
-    if (liveReplica.mode === "editor" && liveReplica.editorState === "disconnected") {
-      void liveReplica.demoteToObserver();
-      // Editing session is over: clear focus so mounted editors tear down
-      // (same visible outcome as the legacy stop-editing path).
-      setFocusedSectionId(null);
-      setBootstrapFocusedSectionIndex(null);
-      void loadSections(docPath);
-    }
-  }, [liveReplica, docPath, loadSections, setBootstrapFocusedSectionIndex]);
-
   const docTitle = getDocDisplayName(docPath);
 
   const publishPaused = liveReplica.publishPaused;
@@ -695,7 +690,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     }
     reportFocusedDocTabEditState(docPath, {
       hasUnpublishedChanges: hasUnpublishedChangesOnThisPage(
-        liveReplica.isCurrentlyLiveAuthority,
+        liveReplica.bound,
         changedSectionCount,
       ),
       hasInFlightEdits: hasInFlightEditsOnThisPage(
@@ -710,13 +705,16 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     docPath,
     reportFocusedDocTabEditState,
     clearFocusedDocTabEditState,
-    liveReplica.isCurrentlyLiveAuthority,
+    liveReplica.bound,
     changedSectionCount,
     saveStatus.allReceived,
     saveStatus.hasLocalUncommittedEdits,
   ]);
+  const topbarCrdtState = liveReplica.session.kind === "editing"
+    ? topbarConnectionState(liveReplica.session.pipe)
+    : "connected";
   const transportStatus = resolveTransportStatus(
-    liveReplica.editorState,
+    topbarCrdtState,
     publishPaused,
     isEditing,
     saveStatus.allReceived,
@@ -728,23 +726,23 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const documentActivity = useDocumentActivity(transportStatus);
 
   const focusFragmentAndSetCaretTarget = useCallback((fk: string, coords?: { x: number; y: number }) => {
-    setFocusedSectionId(SectionId.brand(fk));
-    if (!liveReplica.isCurrentlyLiveAuthority) {
-      const pos = sectionsRef.current.findIndex((row) => SectionId.text(row.id) === fk);
-      setBootstrapFocusedSectionIndex(pos >= 0 ? pos : fk === BEFORE_FIRST_HEADING_KEY ? 0 : null);
-    }
+    const pos = sectionsRef.current.findIndex((row) => SectionId.text(row.id) === fk);
+    setBootstrapFocusedSectionIndex(pos >= 0 ? pos : fk === BEFORE_FIRST_HEADING_KEY ? 0 : null);
     pendingCaretTargetRef.current = { fragmentKey: fk, position: "start", coords };
     publishViewingSection(fk);
-  }, [liveReplica.isCurrentlyLiveAuthority, setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection]);
+  }, [setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection]);
 
   const handleFocusSection = useCallback((fk: string, _headingPath: string[], coords: { x: number; y: number }) => {
     focusFragmentAndSetCaretTarget(fk, coords);
   }, [focusFragmentAndSetCaretTarget]);
 
-  const promoteToEditorAndFocusFragment = useCallback(async (fk: string, coords?: { x: number; y: number }) => {
-    await liveReplica.promoteToEditor();
-    focusFragmentAndSetCaretTarget(fk, coords);
-  }, [liveReplica.promoteToEditor, focusFragmentAndSetCaretTarget]);
+  const handleActivateRow = useCallback((fk: string, coords?: { x: number; y: number }) => {
+    if (!coords) return;
+    const command = onActivateRow(liveReplica.session, SectionId.brand(fk), coords, isSectionBlocked(fk));
+    if (!command) return;
+    if (command.type === "openEditor") liveReplica.openEditor(command.section, command.coords);
+    else liveReplica.moveCaretToPoint(command.section, command.coords);
+  }, [liveReplica.session, liveReplica.openEditor, liveReplica.moveCaretToPoint, isSectionBlocked]);
 
   const dismissSectionEditRejection = useCallback(() => {
     setSectionEditRejection(null);
@@ -763,36 +761,25 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         if (idx < 0 || idx >= rows.length) continue;
         const row = rows[idx];
         if (!canFocusSection(row)) continue;
-        const targetFk = SectionId.text(row.id);
-        focusFragmentAndSetCaretTarget(targetFk);
-        if (readyEditors.has(targetFk)) {
-          requestAnimationFrame(() => {
-            editorRefs.current.get(targetFk)?.focus("start");
-            pendingCaretTargetRef.current = null;
-          });
-        }
+        if (proposalMode) focusFragmentAndSetCaretTarget(SectionId.text(row.id));
+        else liveReplica.moveCaretToEdge(row.id, "start", null);
         return;
       }
     }
-  }, [canFocusSection, focusFragmentAndSetCaretTarget, readyEditors, editorRefs, pendingCaretTargetRef]);
+  }, [canFocusSection, proposalMode, focusFragmentAndSetCaretTarget, liveReplica.moveCaretToEdge]);
 
-  // Cross-section caret navigation: resolve the CURRENT position of the exiting
-  // fragment in the rendered rows, then focus the neighboring fragment key.
-  const handleSectionCursorExit = useCallback((fk: string, direction: "up" | "down") => {
+  const handleSectionCursorExit = useCallback((fk: string, exit: SectionArrowExit) => {
     const rows = sectionsRef.current;
     const pos = rows.findIndex((row) => SectionId.text(row.id) === fk);
     if (pos < 0) return;
-    if (!liveReplica.isCurrentlyLiveAuthority) {
-      handleCursorExit(pos, direction);
+    if (proposalMode) {
+      handleCursorExit(pos, exit);
       return;
     }
-    const target = rows[direction === "up" ? pos - 1 : pos + 1];
+    const target = rows[exit.toward === "up" ? pos - 1 : pos + 1];
     if (!target || !canFocusSection(target)) return;
-    const targetFk = SectionId.text(target.id);
-    setFocusedSectionId(SectionId.brand(targetFk));
-    pendingCaretTargetRef.current = { fragmentKey: targetFk, position: direction === "up" ? "end" : "start" };
-    publishViewingSection(targetFk);
-  }, [liveReplica.isCurrentlyLiveAuthority, handleCursorExit, canFocusSection, pendingCaretTargetRef, publishViewingSection]);
+    liveReplica.moveCaretToEdge(target.id, exit.toward === "up" ? "end" : "start", exit.column);
+  }, [proposalMode, handleCursorExit, canFocusSection, liveReplica.moveCaretToEdge]);
 
   const handleDocumentBoundary = useCallback((boundary: "start" | "end") => {
     const rows = sectionsRef.current;
@@ -808,24 +795,25 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     }
     if (targetIdx < 0) return;
     const targetFk = SectionId.text(rows[targetIdx].id);
-    setFocusedSectionId(SectionId.brand(targetFk));
-    if (!liveReplica.isCurrentlyLiveAuthority) {
+    if (proposalMode) {
       setBootstrapFocusedSectionIndex(targetIdx);
-    }
-    pendingCaretTargetRef.current = { fragmentKey: targetFk, position: boundary };
-    publishViewingSection(targetFk);
-    if (readyEditors.has(targetFk)) {
-      requestAnimationFrame(() => {
-        editorRefs.current.get(targetFk)?.focus(boundary);
-        pendingCaretTargetRef.current = null;
-      });
+      pendingCaretTargetRef.current = { fragmentKey: targetFk, position: boundary };
+      publishViewingSection(targetFk);
+      if (readyEditors.has(targetFk)) {
+        requestAnimationFrame(() => {
+          editorRefs.current.get(targetFk)?.focus(boundary);
+          pendingCaretTargetRef.current = null;
+        });
+      }
+    } else {
+      liveReplica.moveCaretToEdge(rows[targetIdx].id, boundary, null);
     }
     if (boundary === "start") {
       handleNavigateToTop();
     } else {
       handleNavigateToSection(targetFk);
     }
-  }, [canFocusSection, liveReplica.isCurrentlyLiveAuthority, setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection, readyEditors, editorRefs, handleNavigateToTop, handleNavigateToSection]);
+  }, [canFocusSection, proposalMode, setBootstrapFocusedSectionIndex, pendingCaretTargetRef, publishViewingSection, readyEditors, editorRefs, liveReplica.moveCaretToEdge, handleNavigateToTop, handleNavigateToSection]);
 
   const handleEditorReady = useCallback((fk: string) => {
     setReadyEditors(prev => {
@@ -946,7 +934,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           onToggleDiagnostics={() => setShowDiagnostics((v) => !v)}
           showOverwrite={showOverwrite}
           onToggleOverwrite={currentUser?.is_admin ? () => setShowOverwrite((v) => !v) : undefined}
-          crdtState={liveReplica.editorState}
+          crdtState={topbarCrdtState}
           publishPaused={publishPaused}
           isEditing={isEditing}
           allReceived={saveStatus.allReceived}
@@ -1269,7 +1257,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                       handleFocusSection(firstKey, [], { x: e.clientX, y: e.clientY });
                       return;
                     }
-                    void promoteToEditorAndFocusFragment(firstKey, { x: e.clientX, y: e.clientY });
+                    handleActivateRow(firstKey, { x: e.clientX, y: e.clientY });
                   }}
                 >
                   Document is empty.
@@ -1303,7 +1291,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             dragOverFragmentKey={dragOverFragmentKey}
             isSectionBlocked={isSectionBlocked}
             publishPaused={publishPaused}
-            crdtState={liveReplica.editorState}
+            session={liveReplica.session}
             transferService={transferServiceRef.current}
             readyEditors={readyEditors}
             getDisplayMarkdown={getDisplayMarkdown}
@@ -1315,7 +1303,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             sectionUncommitted={sectionUncommitted}
             localEditSink={localEditSink}
             mouseDownPosRef={mouseDownPosRef}
-            onStartEditing={promoteToEditorAndFocusFragment}
+            onStartEditing={handleActivateRow}
             onFocusSection={handleFocusSection}
             onSetEditorRef={setEditorRef}
             onEditorReady={handleEditorReady}
@@ -1325,6 +1313,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             onCursorExit={handleSectionCursorExit}
             onDocumentBoundary={handleDocumentBoundary}
             onCrossSectionDrop={handleCrossSectionDrop}
+            caretRequest={liveReplica.pendingPlacement}
+            onCaretPlaced={liveReplica.clearPendingPlacement}
           />
           </EditorSessionCommandsProvider>
 
@@ -1367,6 +1357,19 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           onClose={() => setSectionNavOverlayOpen(false)}
         />
       ) : null}
+
+      <LeftoverFocusLockTrigger
+        session={liveReplica.session}
+        bound={liveReplica.bound}
+        focusedFragmentKey={focusedFragmentKey}
+        firstSectionId={renderSections[0]?.id ?? null}
+        orderedFragmentKeys={renderSections.map((s) => SectionId.text(s.id))}
+        focusedEditorReady={liveFocusedSection !== null && readyEditors.has(SectionId.text(liveFocusedSection))}
+        leftoverFragmentKey={debugLeftoverFragmentKey}
+        stopEditing={liveReplica.stopEditing}
+        injectLeftoverFocus={setDebugLeftoverFragmentKey}
+        clearLeftoverFocus={() => setDebugLeftoverFragmentKey(null)}
+      />
 
       <DocumentFooter
         docPath={docPath}

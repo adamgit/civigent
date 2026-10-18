@@ -58,7 +58,8 @@ function renderProposalSection(opts: {
         section={makeSection()}
         fragmentKey={FRAG}
         isFocused
-        hasEditor
+        mountEditor
+        readOnly={false}
         isInProposal
         proposalConflictReason={null}
         isLockedByOtherHuman={false}
@@ -68,7 +69,6 @@ function renderProposalSection(opts: {
         injectedByWriter={null}
         hasRemotePresence={false}
         dragOverFragmentKey={null}
-        crdtState="connected"
         transferService={null}
         proposalMode
         canEditProposalContent
@@ -78,7 +78,7 @@ function renderProposalSection(opts: {
         getLiveBinding={opts.getLiveBinding}
         localEditSink={localEditSink}
         mouseDownPosRef={mouseDownPosRef}
-        onStartEditing={vi.fn()}
+        onActivateRow={vi.fn()}
         onFocusSection={vi.fn()}
         onSetEditorRef={vi.fn()}
         onEditorReady={vi.fn()}

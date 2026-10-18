@@ -25,7 +25,7 @@ export interface UseProposalDraftingParams {
   setError: (e: string | null) => void;
   loadSections: (docPath: DocPath) => Promise<WorkspaceSectionDto[]>;
   setBootstrapFocusedSectionIndex: React.Dispatch<React.SetStateAction<number | null>>;
-  leaveLiveEditing: () => Promise<void>;
+  leaveLiveEditing: () => void;
 }
 
 export interface UseProposalDraftingReturn {
@@ -287,7 +287,7 @@ export function useProposalDrafting({
 
   const enterProposalMode = useCallback(async (proposalId: string) => {
     setPanelError(null);
-    await leaveLiveEditing();
+    leaveLiveEditing();
     setProposalMode(true);
     setActiveProposalId(proposalId);
     activeProposalIdRef.current = proposalId;

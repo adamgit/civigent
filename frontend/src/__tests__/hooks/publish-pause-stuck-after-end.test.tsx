@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { SectionId } from "../../types/live-sections";
 import { renderHook, act } from "@testing-library/react";
 import * as Y from "yjs";
 import { updateYFragment } from "y-prosemirror";
@@ -134,7 +135,7 @@ describe("publish pause must not leave editors permanently frozen", () => {
     });
 
     await act(async () => {
-      await result.current.promoteToEditor();
+      result.current.openEditor(SectionId.brand("s1"), { x: 0, y: 0 });
     });
     const editor = editorTransports[0];
 
@@ -188,7 +189,7 @@ describe("publish pause must not leave editors permanently frozen", () => {
     expect(result.current.publishPaused).toBe(true);
 
     await act(async () => {
-      await result.current.promoteToEditor();
+      result.current.openEditor(SectionId.brand("s1"), { x: 0, y: 0 });
     });
     const editor = editorTransports[0];
 

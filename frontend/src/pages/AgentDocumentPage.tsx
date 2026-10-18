@@ -301,7 +301,6 @@ export function AgentDocumentPage({ docPath, toolbarAccessory }: AgentDocumentPa
               dragOverFragmentKey={null}
               isSectionBlocked={returnFalse}
               publishPaused={true}
-              crdtState="connected"
               transferService={null}
               readyEditors={EMPTY_KEY_SET}
               getDisplayMarkdown={getDisplayMarkdown}

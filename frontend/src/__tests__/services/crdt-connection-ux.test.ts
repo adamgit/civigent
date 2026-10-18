@@ -10,9 +10,10 @@
 
 import { describe, it, expect } from "vitest";
 import type { CrdtConnectionState } from "../../services/crdt-provider";
+import { editing, viewing } from "../../status/live-document-session";
+import { SectionId } from "../../types/live-sections";
 import {
   crdtConnectionPhase,
-  isCrdtDegraded,
   crdtBannerInfo,
   connectionBannerInfo,
 } from "../../services/crdt-connection-ux";
@@ -37,22 +38,6 @@ describe("crdtConnectionPhase", () => {
   it("covers all states (no undefined fall-through)", () => {
     for (const s of ALL_STATES) {
       expect(crdtConnectionPhase(s)).toBeDefined();
-    }
-  });
-});
-
-describe("isCrdtDegraded", () => {
-  it("is false only when live", () => {
-    expect(isCrdtDegraded("connected")).toBe(false);
-  });
-
-  it("is true for connecting (the bug that was missed)", () => {
-    expect(isCrdtDegraded("connecting")).toBe(true);
-  });
-
-  it("is true for every non-live state", () => {
-    for (const s of ALL_STATES) {
-      expect(isCrdtDegraded(s)).toBe(s !== "connected");
     }
   });
 });
@@ -82,26 +67,25 @@ describe("crdtBannerInfo", () => {
 });
 
 describe("connectionBannerInfo (editing vs viewing)", () => {
-  it("while editing, follows the editor transport state incl. offline", () => {
-    expect(connectionBannerInfo(true, "connected", "disconnected")).toBeNull();
-    expect(connectionBannerInfo(true, "reconnecting", "disconnected")!.message).toMatch(/reconnect/i);
-    expect(connectionBannerInfo(true, "error", "disconnected")!.tone).toBe("red");
+  const section = SectionId.brand("s1");
+
+  it("while editing, follows the editor pipe phase incl. error", () => {
+    expect(connectionBannerInfo(editing(section, { phase: "live" }, false))).toBeNull();
+    expect(connectionBannerInfo(editing(section, { phase: "reconnecting" }, false))!.message).toMatch(/reconnect/i);
+    expect(connectionBannerInfo(editing(section, { phase: "error" }, false))!.tone).toBe("red");
   });
 
   it("while viewing, surfaces the observer's active degraded phases", () => {
-    // The bug being fixed: a server loss while only viewing was silently lost.
-    expect(connectionBannerInfo(false, "disconnected", "reconnecting")).not.toBeNull();
-    expect(connectionBannerInfo(false, "disconnected", "connecting")).not.toBeNull();
+    expect(connectionBannerInfo(viewing({ phase: "reconnecting" }, false))).not.toBeNull();
+    expect(connectionBannerInfo(viewing({ phase: "connecting" }, false))).not.toBeNull();
   });
 
-  it("while viewing, shows NO banner when the observer is live or not running", () => {
-    expect(connectionBannerInfo(false, "disconnected", "connected")).toBeNull();
-    // "disconnected" observer = no observer running (not a failure) → no banner.
-    expect(connectionBannerInfo(false, "disconnected", "disconnected")).toBeNull();
+  it("while viewing, shows NO banner when the observer is live", () => {
+    expect(connectionBannerInfo(viewing({ phase: "live" }, false))).toBeNull();
   });
 
   it("the viewing banner never claims unsaved changes (a viewer has no edits)", () => {
-    const info = connectionBannerInfo(false, "disconnected", "reconnecting")!;
+    const info = connectionBannerInfo(viewing({ phase: "reconnecting" }, false))!;
     expect(info.message.toLowerCase()).not.toContain("saved");
     expect(info.tone).toBe("amber");
   });

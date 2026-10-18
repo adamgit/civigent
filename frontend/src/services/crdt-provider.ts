@@ -398,8 +398,8 @@ export class CrdtProvider {
         // fresh Y.Doc on this event.
         this.clearReconnectTimer();
         this.reconnectAttempts = 0;
-        this.setState("disconnected");
         this.events.onSessionReinit?.(event.reason);
+        this.setState("disconnected");
         return;
       }
 
@@ -412,8 +412,8 @@ export class CrdtProvider {
         this.wakeReconnectPending = false;
         this.clearReconnectTimer();
         this.reconnectAttempts = 0;
-        this.setState("disconnected");
         this.events.onDocumentDeleted?.();
+        this.setState("disconnected");
         return;
       }
 
@@ -423,8 +423,8 @@ export class CrdtProvider {
         // (Spec 05 §4 > Close codes.)
         this.clearReconnectTimer();
         this.reconnectAttempts = 0;
-        this.setState("disconnected");
         this.events.onForceRebuild?.();
+        this.setState("disconnected");
         return;
       }
 
@@ -438,8 +438,8 @@ export class CrdtProvider {
         // read/observer mode.
         this.clearReconnectTimer();
         this.reconnectAttempts = 0;
-        this.setState("disconnected");
         this.events.onSuperseded?.();
+        this.setState("disconnected");
         return;
       }
 

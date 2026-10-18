@@ -31,13 +31,11 @@ function survivorIdentityFor(
 }
 
 export interface UseSplitCaretHandoffReturn {
-  lastCaretRecoveryRef: React.MutableRefObject<SplitCaretPlan | null>;
   configRef: React.MutableRefObject<SplitCaretHandoffConfig | null>;
   caretFrameHooks: CaretFrameHooks;
 }
 
 export function useSplitCaretHandoff(): UseSplitCaretHandoffReturn {
-  const lastCaretRecoveryRef = useRef<SplitCaretPlan | null>(null);
   const configRef = useRef<SplitCaretHandoffConfig | null>(null);
 
   const caretFrameHooks = useMemo<CaretFrameHooks>(
@@ -63,7 +61,6 @@ export function useSplitCaretHandoff(): UseSplitCaretHandoffReturn {
           nextTopology,
         });
         if (!plan) return;
-        lastCaretRecoveryRef.current = plan;
         if (plan.action === "follow-promotion") {
           const sourceView = configRef.current?.getView(capture.sourceFragmentKey);
           if (sourceView) sealEditorForCaretTransit(sourceView);
@@ -74,5 +71,5 @@ export function useSplitCaretHandoff(): UseSplitCaretHandoffReturn {
     [],
   );
 
-  return { lastCaretRecoveryRef, configRef, caretFrameHooks };
+  return { configRef, caretFrameHooks };
 }

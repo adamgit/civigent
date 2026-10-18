@@ -1,9 +1,10 @@
 import { $prose } from "@milkdown/utils";
 import { Plugin } from "@milkdown/prose/state";
+import { sectionExitForArrow, type SectionArrowExit } from "./sectionEdge";
 
 export interface CrossSectionNavigationPluginOptions {
   onCursorExitRef: {
-    readonly current: ((direction: "up" | "down") => void) | undefined;
+    readonly current: ((exit: SectionArrowExit) => void) | undefined;
   };
 }
 
@@ -16,21 +17,10 @@ export function crossSectionNavigationPlugin({
         const exitCb = onCursorExitRef.current;
         if (!exitCb) return false;
 
-        if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-          const { $head } = view.state.selection;
-          if ($head.pos <= 1) {
-            exitCb("up");
-            return true;
-          }
-        }
-        if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-          const { $head } = view.state.selection;
-          if ($head.pos >= view.state.doc.content.size - 1) {
-            exitCb("down");
-            return true;
-          }
-        }
-        return false;
+        const exit = sectionExitForArrow(view, event.key);
+        if (!exit) return false;
+        exitCb(exit);
+        return true;
       },
     },
   }));

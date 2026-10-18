@@ -1,20 +1,8 @@
-/**
- * useLiveSectionReplica — the SINGLE live transport owner for document pages.
- *
- * Owns the per-tab client instance id, one shared Y.Doc + Awareness, the
- * observer socket (read-only viewing), the editor socket (after
- * `promoteToEditor()`), ordered live-section frames, publish-pause state and
- * the quiescence barrier, replacement notices, superseded/session-end
- * handling, and connection state for the page banner. No other hook may open
- * a CRDT socket or own a live Y.Doc for a document page.
- */
-
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { ObserverCrdtProvider, type ObserverConnectionState } from "../services/observer-crdt-provider";
+import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { CrdtTransport } from "../services/crdt-transport";
-import type { CrdtConnectionState } from "../services/crdt-provider";
 import {
   createLiveSectionReplica,
   type LiveSectionReplica,
@@ -26,77 +14,58 @@ import {
   decodeLiveSectionsUpdate,
   routeLiveSectionFrame,
 } from "../services/live-section-frames";
-import type { CaretFrameHooks } from "../pages/split-caret";
-import type { SectionId, LiveSectionRef } from "../types/live-sections";
+import { type CaretFrameHooks, type SplitCaretPlacement } from "../pages/split-caret";
+import { SectionId, type LiveSectionRef } from "../types/live-sections";
 import type { DocPath, DocumentReplacementNoticePayload } from "../types/shared";
 import { WS_CLOSE_REASON_DOCUMENT_REPLACED } from "../services/crdt-close-codes";
 import { rememberDocSessionId } from "../services/doc-session-memory";
 import { randomUuid } from "../utils/random-uuid";
-
-export type LiveReplicaMode = "observer" | "editor";
+import {
+  reduceSession,
+  viewing,
+  type ClickCoords,
+  type LiveDocumentSession,
+  type Placement,
+  type SessionCommand,
+} from "../status/live-document-session";
 
 export interface UseLiveSectionReplicaParams {
   docPath: DocPath | null;
   onSessionEnded?: (completeSessionEndHandoff: () => void) => void;
-  /** 4022 document-replaced / 4024 force-rebuild — reseed canonical content. */
   onSessionReinit?: () => void;
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
-  /** 4023: a newer same-writer editor tab took over. The hook demotes this tab
-   *  back to observer itself; the callback is for user-facing messaging. */
   onSuperseded?: () => void;
-  /** 4026: the document was deleted. The hook tears the live pipeline down and
-   *  never rejoins; the page must navigate away. */
   onDocumentDeleted?: () => void;
   caretFrameHooks?: CaretFrameHooks;
 }
 
 export interface LiveSectionReplicaView {
-  /** Same as `replica?.isCurrentlyLiveAuthority ?? false`. */
-  isCurrentlyLiveAuthority: boolean;
-  /** Full public replica contract, including `boundDocSessionId`. */
+  bound: boolean;
   replica: LiveSectionReplica | null;
   topology: readonly LiveSectionRef[];
-  mode: LiveReplicaMode;
-  /** Stable per-tab client instance id shared by the CRDT sockets and the
-   *  JSON app WebSocket subscription (origin-only event routing). */
+  session: LiveDocumentSession;
   clientInstanceId: string;
-  /** Editor-socket connection state; "disconnected" while observing. */
-  editorState: CrdtConnectionState;
-  /** Observer-socket connection state; "disconnected" while editing. */
-  observerState: ObserverConnectionState;
-  /** True while a DocSession publish pause has editors frozen (opcode-driven
-   *  while editing, join-mirror while observing). */
   publishPaused: boolean;
-  /** Guarantee A watermark: every local edit acknowledged received. */
   allReceived: boolean;
-  /** Server-reported durable transport/session failure (null when clean). */
   transportError: string | null;
-  /** Shared awareness for presence (viewing dots, cursors). */
   awareness: Awareness | null;
-  /** Monotonic identity of the live Y.Doc/replica. Pages MUST key the subtree
-   *  that binds editors/presence to the live doc on this value, so a pipeline
-   *  rebuild unmounts those children (running their binding cleanup) in the
-   *  same commit that first renders the replacement replica — the unbind
-   *  barrier the hook's synchronous destroy relies on. */
   replicaGeneration: number;
-  /** The live editor transport while mode === "editor" (structural ops /
-   *  section transfer). Owned by this hook — do not destroy it. */
   editorTransport: CrdtTransport | null;
   paintMarkdown: (id: SectionId, seedMarkdown: string) => string;
-  /** Per-fragment render version — changes exactly when that fragment's Y types
-   *  change, so a memoised row re-renders on its own content and nothing else. */
   getFragmentVersion: (fragmentKey: string) => number;
-  promoteToEditor: () => Promise<void>;
-  demoteToObserver: () => Promise<void>;
+  openEditor: (section: SectionId, coords: ClickCoords) => void;
+  moveCaretToPoint: (section: SectionId, coords: ClickCoords) => void;
+  moveCaretToEdge: (section: SectionId, edge: "start" | "end", column: number | null) => void;
+  retargetCaret: (section: SectionId, retarget: SplitCaretPlacement) => void;
+  stopEditing: () => void;
+  pendingPlacement: { section: SectionId; placement: Placement } | null;
+  clearPendingPlacement: () => void;
 }
 
 type Connection =
   | { kind: "observer"; provider: ObserverCrdtProvider }
   | { kind: "editor"; transport: CrdtTransport };
 
-/** Two animation frames — enough for React to commit the readOnly flip onto
- *  every mounted editor before the client is declared quiescent for a
- *  publish pause (spec 05 §"DocSession publish pause messages"). */
 function settleQuiescence(): Promise<void> {
   return new Promise<void>((resolve) => {
     if (typeof requestAnimationFrame !== "function") {
@@ -107,6 +76,10 @@ function settleQuiescence(): Promise<void> {
   });
 }
 
+function initialSession(): LiveDocumentSession {
+  return viewing({ phase: "connecting" }, false);
+}
+
 export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): LiveSectionReplicaView {
   const { docPath } = params;
 
@@ -114,21 +87,15 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   const docRef = useRef<Y.Doc | null>(null);
   const awarenessRef = useRef<Awareness | null>(null);
   const replicaRef = useRef<LiveSectionReplica | null>(null);
-  /** Retired-but-alive replicas awaiting the unbind barrier (see drain effect). */
   const pendingDestroyRef = useRef<LiveSectionReplica[]>([]);
-  /** The replica the LAST COMMITTED render was made with (set in the hook body
-   *  every render). A retired replica may only be destroyed once a commit has
-   *  rendered WITHOUT it — that commit's effect-destroy phase (child-first) has
-   *  then already detached every editor/presence binding from its doc. */
   const renderedReplicaRef = useRef<LiveSectionReplica | null>(null);
   const unsubscribeReplicaRef = useRef<(() => void) | null>(null);
   const generationRef = useRef(0);
   const connectionRef = useRef<Connection | null>(null);
   const parkedPipelineRef = useRef<DocPath | null>(null);
-  const modeRef = useRef<LiveReplicaMode>("observer");
-  const editorStateRef = useRef<CrdtConnectionState>("disconnected");
-  const observerStateRef = useRef<ObserverConnectionState>("disconnected");
-  const publishPausedRef = useRef(false);
+  const pipelineDocPathRef = useRef<DocPath | null>(null);
+  const sessionRef = useRef<LiveDocumentSession>(initialSession());
+  const pendingPlacementRef = useRef<{ section: SectionId; placement: Placement } | null>(null);
   const allReceivedRef = useRef(true);
   const transportErrorRef = useRef<string | null>(null);
   const [, forceRender] = useReducer((c: number) => c + 1, 0);
@@ -145,26 +112,19 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   onDocumentDeletedRef.current = params.onDocumentDeleted;
   const caretFrameHooksRef = useRef(params.caretFrameHooks);
   caretFrameHooksRef.current = params.caretFrameHooks;
-  const demoteRef = useRef<(() => Promise<void>) | null>(null);
+  const dispatchRef = useRef<(cmd: SessionCommand) => void>(() => {
+    throw new Error("useLiveSectionReplica: dispatch called before the hook body assigned it");
+  });
 
   const teardownConnection = useCallback(() => {
     const conn = connectionRef.current;
     if (!conn) return;
+    connectionRef.current = null;
     if (conn.kind === "observer") conn.provider.destroy();
     else conn.transport.destroy();
-    connectionRef.current = null;
-    editorStateRef.current = "disconnected";
-    observerStateRef.current = "disconnected";
-    publishPausedRef.current = false;
     allReceivedRef.current = true;
   }, []);
 
-  /** Retire the current replica WITHOUT destroying it: detach the hook's
-   *  subscription, null the live refs so no consumer can bind, and park the
-   *  replica (alive, named) in `pendingDestroyRef`. Still-mounted editors keep
-   *  a live doc until React has re-rendered without this replica and run their
-   *  binding cleanups; the drain effect below then destroys it synchronously.
-   *  Never destroy-by-timer: lifetime is an ownership handoff, not a race. */
   const retireReplica = useCallback(() => {
     const replica = replicaRef.current;
     if (!replica) return;
@@ -176,15 +136,24 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     replicaRef.current = null;
   }, []);
 
-  /** Mint the page's single live Y.Doc + Awareness + replica. Called on mount
-   *  and again whenever the pipeline is replaced for a new DocSession. */
   const mintFreshReplica = useCallback(() => {
     retireReplica();
     generationRef.current += 1;
     const doc = new Y.Doc();
     const awareness = new Awareness(doc);
     const replica = createLiveSectionReplica(doc, awareness);
-    unsubscribeReplicaRef.current = replica.subscribe(() => forceRender());
+    let lastPauseMirror = replica.isPublishPauseMirrorActive();
+    unsubscribeReplicaRef.current = replica.subscribe(() => {
+      const pauseMirror = replica.isPublishPauseMirrorActive();
+      if (pauseMirror !== lastPauseMirror) {
+        lastPauseMirror = pauseMirror;
+        if (pauseMirror !== sessionRef.current.paused) {
+          dispatchRef.current({ type: "pauseChanged", paused: pauseMirror });
+          return;
+        }
+      }
+      forceRender();
+    });
     docRef.current = doc;
     awarenessRef.current = awareness;
     replicaRef.current = replica;
@@ -201,20 +170,11 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       replicaRef.current = null;
       replica.destroy();
     }
-    modeRef.current = "observer";
+    pipelineDocPathRef.current = null;
+    sessionRef.current = initialSession();
+    pendingPlacementRef.current = null;
   }, [teardownConnection]);
 
-  const startFreshObserverPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
-  const startFreshEditorPipelineRef = useRef<((docPathArg: DocPath) => void) | null>(null);
-
-  /** Route a live-section frame from either socket. A bootstrap for a DIFFERENT
-   *  DocSession than the one this replica's doc is bound to means the server
-   *  minted a fresh Y.Doc with a history disjoint from ours — Y.applyUpdate
-   *  merges histories (it never replaces), so applying it would duplicate every
-   *  fragment's content. Instead, drop the whole live pipeline (doc, awareness,
-   *  replica, socket) and rejoin clean; the fresh socket receives a fresh
-   *  bootstrap. Covers post-4021 turnover, 4022/4024 reseeds, and a session
-   *  turnover that happened entirely while the socket was down. */
   const handleLiveSectionFrame = useCallback((docPathArg: DocPath, opcode: number, payload: Uint8Array) => {
     const replica = replicaRef.current;
     if (!replica) return;
@@ -222,12 +182,16 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       const bootstrap = decodeLiveSectionsBootstrap(payload);
       rememberDocSessionId(docPathArg, bootstrap.docSessionId);
       const boundTo = replica.boundDocSessionId;
-      if (boundTo === null) {
-        replica.bindToDocSession(bootstrap);
-      } else if (boundTo === bootstrap.docSessionId) {
-        replica.mergeSameSessionBootstrap(bootstrap);
-      } else {
-        startFreshObserverPipelineRef.current?.(docPathArg);
+      if (boundTo !== null && boundTo !== bootstrap.docSessionId) {
+        dispatchRef.current({ type: "sessionReplaced", keepEditing: false });
+        return;
+      }
+      const prevTopology = replica.getTopology();
+      if (boundTo === null) replica.bindToDocSession(bootstrap);
+      else replica.mergeSameSessionBootstrap(bootstrap);
+      const nextTopology = replica.getTopology();
+      if (nextTopology !== prevTopology) {
+        dispatchRef.current({ type: "topologyChanged", prev: prevTopology, next: nextTopology });
       }
       return;
     }
@@ -235,13 +199,17 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       const input = decodeLiveSectionsUpdate(payload);
       const hooks = caretFrameHooksRef.current;
       const doc = docRef.current;
+      const prevTopology = replica.getTopology();
       if (input.yjsUpdate && hooks && doc && replica.isCurrentlyLiveAuthority) {
         const capture = hooks.beforeApply();
-        const prevTopology = replica.getTopology();
         replica.ingestUpdate(input);
         hooks.afterApply(capture, prevTopology, replica.getTopology());
       } else {
         replica.ingestUpdate(input);
+      }
+      const nextTopology = replica.getTopology();
+      if (nextTopology !== prevTopology) {
+        dispatchRef.current({ type: "topologyChanged", prev: prevTopology, next: nextTopology });
       }
       return;
     }
@@ -249,34 +217,28 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   }, []);
 
   const startObserver = useCallback((docPathArg: DocPath) => {
-    const provider = new ObserverCrdtProvider(
+    const isCurrent = () => connectionRef.current?.kind === "observer" && connectionRef.current.provider === provider;
+    const provider: ObserverCrdtProvider = new ObserverCrdtProvider(
       docPathArg,
       {
         onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
         onStateChange: (state) => {
-          observerStateRef.current = state;
-          forceRender();
+          if (!isCurrent()) return;
+          if (state === "connected") dispatchRef.current({ type: "pipeChanged", pipe: { phase: "live" } });
+          else if (state === "connecting" || state === "reconnecting") {
+            dispatchRef.current({ type: "pipeChanged", pipe: { phase: state } });
+          }
         },
         onSessionEnded: () => {
-          teardownConnection();
-          const parkedReplica = replicaRef.current;
-          let completed = false;
-          const completeSessionEndHandoff = () => {
-            if (completed) return;
-            completed = true;
-            if (replicaRef.current !== parkedReplica) return;
-            startFreshObserverPipelineRef.current?.(docPathArg);
-          };
-          const handler = onSessionEndedRef.current;
-          if (handler) handler(completeSessionEndHandoff);
-          else completeSessionEndHandoff();
+          if (!isCurrent()) return;
+          dispatchRef.current({ type: "sessionEnded" });
         },
         onSessionReinit: () => {
+          if (!isCurrent()) return;
           onSessionReinitRef.current?.();
         },
         onDocumentDeleted: () => {
-          // 4026: the document is gone. Drop the socket and do NOT rejoin —
-          // there is nothing to observe. The page navigates away.
+          if (!isCurrent()) return;
           teardownConnection();
           forceRender();
           onDocumentDeletedRef.current?.();
@@ -292,57 +254,46 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   }, [handleLiveSectionFrame, teardownConnection]);
 
   const startEditor = useCallback((docPathArg: DocPath) => {
-    const transport = new CrdtTransport(docPathArg, {
+    const isCurrent = () => connectionRef.current?.kind === "editor" && connectionRef.current.transport === transport;
+    const transport: CrdtTransport = new CrdtTransport(docPathArg, {
       doc: docRef.current!,
       awareness: awarenessRef.current!,
       clientInstanceId: clientInstanceIdRef.current,
       onLiveSectionFrame: (opcode, payload) => handleLiveSectionFrame(docPathArg, opcode, payload),
       onStateChange: (state) => {
-        editorStateRef.current = state;
-        forceRender();
+        if (!isCurrent()) return;
+        if (state === "connected") dispatchRef.current({ type: "pipeChanged", pipe: { phase: "live" } });
+        else if (state === "disconnected") dispatchRef.current({ type: "stopEditing", cause: "socket-stopped" });
+        else dispatchRef.current({ type: "pipeChanged", pipe: { phase: state } });
       },
       onError: (reason) => {
+        if (!isCurrent()) return;
         transportErrorRef.current = reason;
         forceRender();
       },
       onReceiptChange: ({ allReceived }) => {
+        if (!isCurrent()) return;
         if (allReceivedRef.current === allReceived) return;
         allReceivedRef.current = allReceived;
         forceRender();
       },
       onSessionReinit: (reason) => {
-        // 4022 document replaced: the editor provider does not reconnect — its
-        // Y.Doc holds the replaced session's history and could send
-        // old-history-anchored updates during the reconnect-to-bootstrap
-        // window. Replace the whole pipeline now with a fresh doc; the fresh
-        // socket's bootstrap fills the fresh replica and releases any buffered
-        // replacement notice after it applies. The close reason selects the
-        // rejoin mode: normal replacement keeps this tab editing, while a
-        // stale-session rejection (or any unknown reason) must not let a stale
-        // tab displace the active editor, so it rejoins as observer.
-        if (reason === WS_CLOSE_REASON_DOCUMENT_REPLACED) {
-          startFreshEditorPipelineRef.current?.(docPathArg);
-        } else {
-          startFreshObserverPipelineRef.current?.(docPathArg);
-        }
+        if (!isCurrent()) return;
+        dispatchRef.current({ type: "sessionReplaced", keepEditing: reason === WS_CLOSE_REASON_DOCUMENT_REPLACED });
         onSessionReinitRef.current?.();
       },
       onForceRebuild: () => {
-        // 4024 admin force-rebuild: replacement that preserves editing.
-        startFreshEditorPipelineRef.current?.(docPathArg);
+        if (!isCurrent()) return;
+        dispatchRef.current({ type: "sessionReplaced", keepEditing: true });
         onSessionReinitRef.current?.();
       },
       onSuperseded: () => {
-        // A newer same-writer editor tab took over. Drop to observer instead of
-        // reconnecting (reconnecting would supersede the newer tab back and
-        // ping-pong the editor role).
-        void demoteRef.current?.();
+        if (!isCurrent()) return;
+        dispatchRef.current({ type: "superseded" });
         onSupersededRef.current?.();
       },
       onDocumentDeleted: () => {
-        // 4026: the document is gone. Unlike 4022/4024 there is no replacement
-        // pipeline to build and no observer to fall back to — tear the editor
-        // transport down and let the page navigate away.
+        if (!isCurrent()) return;
         teardownConnection();
         forceRender();
         onDocumentDeletedRef.current?.();
@@ -351,54 +302,116 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         onDocumentReplacementNoticeRef.current?.(payload);
       },
       onPublishPauseStart: () => {
-        publishPausedRef.current = true;
-        forceRender();
+        if (!isCurrent()) return;
+        dispatchRef.current({ type: "pauseChanged", paused: true });
       },
       onPublishPauseEnd: () => {
-        publishPausedRef.current = false;
+        if (!isCurrent()) return;
         replicaRef.current?.clearPublishPauseMirror();
-        forceRender();
+        dispatchRef.current({ type: "pauseChanged", paused: false });
       },
     });
-    // Publish-pause quiescence barrier: the paused flag flips editors read-only
-    // via React; the barrier only waits for that flip to commit before the
-    // provider sends doc_publish_ready.
     transport.setPublishPauseBarrier({
       freeze: () => settleQuiescence(),
-      unfreeze: () => { /* paused-flag flip re-enables editors */ },
+      unfreeze: () => {},
     });
     connectionRef.current = { kind: "editor", transport };
-    // Optimistic initial phase: "disconnected" is reserved for a REAL permanent
-    // rejection (it triggers the page's demote-and-reseed path). The provider
-    // reports "connecting" via onStateChange, but a render between construction
-    // and that callback must not read as a dead editor socket.
-    editorStateRef.current = "connecting";
     transport.connect();
   }, [handleLiveSectionFrame, teardownConnection]);
 
-  /** Drop and replace the whole live pipeline as OBSERVER — for stale-session
-   *  rejection, unknown 4022 reasons, session end, and a bootstrap for a
-   *  DocSession this doc never bootstrapped. */
-  const startFreshObserverPipeline = useCallback((docPathArg: DocPath) => {
-    teardownConnection();
-    mintFreshReplica();
-    modeRef.current = "observer";
-    startObserver(docPathArg);
+  const clearPendingPlacement = useCallback(() => {
+    if (pendingPlacementRef.current === null) return;
+    pendingPlacementRef.current = null;
     forceRender();
-  }, [teardownConnection, mintFreshReplica, startObserver]);
-  startFreshObserverPipelineRef.current = startFreshObserverPipeline;
+  }, []);
 
-  /** Drop and replace the whole live pipeline as EDITOR — for normal 4022
-   *  replacement and 4024 force-rebuild, which preserve this tab's editing. */
-  const startFreshEditorPipeline = useCallback((docPathArg: DocPath) => {
+  const runSessionEndHandoff = useCallback(() => {
     teardownConnection();
-    mintFreshReplica();
-    modeRef.current = "editor";
-    replicaRef.current?.setEditingEnabled(true);
-    startEditor(docPathArg);
+    const parkedReplica = replicaRef.current;
+    let completed = false;
+    const completeSessionEndHandoff = () => {
+      if (completed) return;
+      completed = true;
+      if (replicaRef.current !== parkedReplica) return;
+      dispatchRef.current({ type: "sessionReplaced", keepEditing: false });
+    };
+    const handler = onSessionEndedRef.current;
+    if (handler) handler(completeSessionEndHandoff);
+    else completeSessionEndHandoff();
+  }, [teardownConnection]);
+
+  const applySessionEffects = useCallback((prev: LiveDocumentSession, next: LiveDocumentSession, cmd: SessionCommand) => {
+    const pipelineDocPath = (): DocPath => {
+      const current = pipelineDocPathRef.current;
+      if (current === null) {
+        throw new Error(`useLiveSectionReplica: session command ${cmd.type} needs a live pipeline but none is running`);
+      }
+      return current;
+    };
+    switch (cmd.type) {
+      case "openEditor": {
+        if (prev.kind !== "viewing") break;
+        teardownConnection();
+        startEditor(pipelineDocPath());
+        replicaRef.current?.setEditingEnabled(true);
+        pendingPlacementRef.current = { section: cmd.section, placement: { coords: cmd.coords } };
+        break;
+      }
+      case "moveCaretToPoint": {
+        if (prev.kind !== "editing") break;
+        pendingPlacementRef.current = { section: cmd.section, placement: { coords: cmd.coords } };
+        break;
+      }
+      case "moveCaretToEdge": {
+        if (prev.kind !== "editing") break;
+        pendingPlacementRef.current = {
+          section: cmd.section,
+          placement: { at: cmd.edge, column: cmd.column },
+        };
+        break;
+      }
+      case "retargetCaret": {
+        if (prev.kind !== "editing") break;
+        pendingPlacementRef.current = { section: cmd.section, placement: { retarget: cmd.retarget } };
+        break;
+      }
+      case "stopEditing":
+      case "superseded":
+        if (prev.kind === "editing") {
+          teardownConnection();
+          startObserver(pipelineDocPath());
+          replicaRef.current?.setEditingEnabled(false);
+        }
+        break;
+      case "sessionReplaced":
+        teardownConnection();
+        mintFreshReplica();
+        if (next.kind === "editing") {
+          startEditor(pipelineDocPath());
+          replicaRef.current?.setEditingEnabled(true);
+        } else {
+          startObserver(pipelineDocPath());
+        }
+        break;
+      case "sessionEnded":
+        runSessionEndHandoff();
+        break;
+      case "pipeChanged":
+      case "pauseChanged":
+      case "topologyChanged":
+        break;
+    }
+    if (next.kind === "viewing") pendingPlacementRef.current = null;
+  }, [mintFreshReplica, runSessionEndHandoff, startEditor, startObserver, teardownConnection]);
+
+  const dispatch = useCallback((cmd: SessionCommand) => {
+    const prev = sessionRef.current;
+    const next = reduceSession(prev, cmd);
+    sessionRef.current = next;
+    applySessionEffects(prev, next, cmd);
     forceRender();
-  }, [teardownConnection, mintFreshReplica, startEditor]);
-  startFreshEditorPipelineRef.current = startFreshEditorPipeline;
+  }, [applySessionEffects]);
+  dispatchRef.current = dispatch;
 
   useEffect(() => {
     if (!docPath) return;
@@ -410,14 +423,16 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       parked === docPath &&
       replicaRef.current !== null &&
       connectionRef.current?.kind === "observer" &&
-      modeRef.current === "observer";
+      sessionRef.current.kind === "viewing";
 
     if (reclaimed) {
       forceRender();
     } else {
       if (parked !== null) teardownConnection();
       mintFreshReplica();
-      modeRef.current = "observer";
+      sessionRef.current = initialSession();
+      pendingPlacementRef.current = null;
+      pipelineDocPathRef.current = docPath;
       transportErrorRef.current = null;
       startObserver(docPath);
       forceRender();
@@ -433,12 +448,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     };
   }, [docPath, destroyUnreclaimedPipeline, mintFreshReplica, startObserver, teardownConnection]);
 
-  // Drain retired replicas once the unbind barrier has passed. Runs after every
-  // commit, AFTER child effects: if the last committed render still used a
-  // retired replica (retire happened in this commit's effect phase, e.g. a
-  // docPath change), editors are still bound to its doc — keep it alive until
-  // the next commit renders without it and child cleanup detaches them, then
-  // destroy synchronously. No timer is ever involved.
   useEffect(() => {
     if (pendingDestroyRef.current.length === 0) return;
     const stillBound: LiveSectionReplica[] = [];
@@ -449,16 +458,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     pendingDestroyRef.current = stillBound;
   });
 
-  // Unmount barrier: on FULL tree unmount React 18 runs parent passive-effect
-  // cleanups BEFORE descendant cleanups, so mounted editors may still hold
-  // these docs when this cleanup fires (the LIVE replica is not in this
-  // collection — the docPath cleanup above parks the whole pipeline and its
-  // microtask disposer destroys it unless a same-doc remount reclaims it).
-  // Capture the retired owners, clear the pending collection immediately
-  // (Strict Mode cleanup/recreate must never destroy a newly minted doc), and
-  // destroy in one microtask after descendant passive cleanups have detached
-  // their bindings. Replacement-path destruction (drain effect above) stays
-  // synchronous.
   useEffect(() => () => {
     const retired = pendingDestroyRef.current;
     pendingDestroyRef.current = [];
@@ -468,41 +467,38 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     });
   }, []);
 
-  const promoteToEditor = useCallback(async () => {
-    if (!docPath || modeRef.current === "editor") return;
-    teardownConnection();
-    startEditor(docPath);
-    modeRef.current = "editor";
-    replicaRef.current?.setEditingEnabled(true);
-    forceRender();
-  }, [docPath, startEditor, teardownConnection]);
+  const openEditor = useCallback((section: SectionId, coords: ClickCoords) => {
+    if (!docPath) return;
+    dispatch({ type: "openEditor", section, coords });
+  }, [docPath, dispatch]);
 
-  const demoteToObserver = useCallback(async () => {
-    if (!docPath || modeRef.current === "observer") return;
-    teardownConnection();
-    startObserver(docPath);
-    modeRef.current = "observer";
-    replicaRef.current?.setEditingEnabled(false);
-    forceRender();
-  }, [docPath, startObserver, teardownConnection]);
+  const moveCaretToPoint = useCallback((section: SectionId, coords: ClickCoords) => {
+    if (!docPath) return;
+    dispatch({ type: "moveCaretToPoint", section, coords });
+  }, [docPath, dispatch]);
 
-  useEffect(() => { demoteRef.current = demoteToObserver; }, [demoteToObserver]);
+  const moveCaretToEdge = useCallback((section: SectionId, edge: "start" | "end", column: number | null) => {
+    if (!docPath) return;
+    dispatch({ type: "moveCaretToEdge", section, edge, column });
+  }, [docPath, dispatch]);
+
+  const retargetCaret = useCallback((section: SectionId, retarget: SplitCaretPlacement) => {
+    if (!docPath) return;
+    dispatch({ type: "retargetCaret", section, retarget });
+  }, [docPath, dispatch]);
+
+  const stopEditing = useCallback(() => {
+    dispatch({ type: "stopEditing" });
+  }, [dispatch]);
 
   const replica = replicaRef.current;
-  // Stamp which replica this render binds against — the drain effect's unbind
-  // barrier. (Set during render; committed alongside whatever the children
-  // rendered with.)
   renderedReplicaRef.current = replica;
-  const isCurrentlyLiveAuthority = replica?.isCurrentlyLiveAuthority ?? false;
-  const topology = isCurrentlyLiveAuthority && replica ? replica.getTopology() : [];
+  const bound = replica?.isCurrentlyLiveAuthority ?? false;
+  const topology = bound && replica ? replica.getTopology() : [];
 
   const paintMarkdown = useCallback((id: SectionId, seedMarkdown: string): string => {
     const r = replicaRef.current;
     if (!r || !r.isCurrentlyLiveAuthority) return seedMarkdown;
-    // Once the replica is currently live authority, cold seed markdown is
-    // finished: painting an id outside the live topology would resurrect
-    // pre-live REST text for a section a split/merge/delete already removed.
-    // `getLiveSection` throws on any illegal id — that IS the contract here.
     return r.getLiveSection(id).readMarkdown();
   }, []);
 
@@ -511,15 +507,14 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   }, []);
 
   const conn = connectionRef.current;
+  const session = sessionRef.current;
   return {
-    isCurrentlyLiveAuthority,
+    bound,
     replica,
     topology,
-    mode: modeRef.current,
+    session,
     clientInstanceId: clientInstanceIdRef.current,
-    editorState: editorStateRef.current,
-    observerState: observerStateRef.current,
-    publishPaused: publishPausedRef.current || (replica?.isPublishPauseMirrorActive() ?? false),
+    publishPaused: session.paused,
     allReceived: allReceivedRef.current,
     transportError: transportErrorRef.current,
     awareness: awarenessRef.current,
@@ -527,7 +522,12 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     editorTransport: conn?.kind === "editor" ? conn.transport : null,
     paintMarkdown,
     getFragmentVersion,
-    promoteToEditor,
-    demoteToObserver,
+    openEditor,
+    moveCaretToPoint,
+    moveCaretToEdge,
+    retargetCaret,
+    stopEditing,
+    pendingPlacement: pendingPlacementRef.current,
+    clearPendingPlacement,
   };
 }

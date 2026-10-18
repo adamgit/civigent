@@ -88,7 +88,7 @@ describe("useLiveSectionReplica", () => {
 
   it("paints cold seed until ready, then live fragment body after bootstrap", () => {
     const { result } = renderHook(() => useLiveSectionReplica({ docPath: "/doc.md" }));
-    expect(result.current.isCurrentlyLiveAuthority).toBe(false);
+    expect(result.current.bound).toBe(false);
     // Pre-ready: paint the seed.
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toBe("cold seed");
 
@@ -100,7 +100,7 @@ describe("useLiveSectionReplica", () => {
       provider.events.onLiveSectionFrame!(0x14, frameBody({ doc_session_id: "s", state }, yjs));
     });
 
-    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.bound).toBe(true);
     expect(result.current.topology.map((r) => SectionId.text(r.id))).toEqual([ALPHA]);
     // After ready: paint the live fragment, NOT the seed.
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("live body");
@@ -113,7 +113,7 @@ describe("useLiveSectionReplica", () => {
     act(() => {
       provider.events.onLiveSectionFrame!(0x14, frameBody({ doc_session_id: "s", state }, yjs));
     });
-    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.bound).toBe(true);
 
     // "section::ghost" is not in the bootstrap topology: once live authority
     // exists, seed paint for it is illegal (it would revive pre-live REST text
@@ -147,7 +147,7 @@ describe("useLiveSectionReplica", () => {
     act(() => {
       provider.events.onLiveSectionFrame!(0x14, frameBody({ doc_session_id: "s", state }, yjs));
     });
-    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.bound).toBe(true);
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("live body");
 
     // Session end (4021): connection destroyed, no replacement provider yet,
@@ -158,7 +158,7 @@ describe("useLiveSectionReplica", () => {
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
     expect(provider.destroy).toHaveBeenCalled();
     expect(providers).toHaveLength(1);
-    expect(result.current.isCurrentlyLiveAuthority).toBe(true);
+    expect(result.current.bound).toBe(true);
     expect(result.current.topology.map((r) => SectionId.text(r.id))).toEqual([ALPHA]);
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toContain("live body");
 
@@ -171,7 +171,7 @@ describe("useLiveSectionReplica", () => {
     expect(providers).toHaveLength(2);
     expect(providers[1].doc).not.toBe(provider.doc);
     expect(providers[1].connect).toHaveBeenCalled();
-    expect(result.current.isCurrentlyLiveAuthority).toBe(false);
+    expect(result.current.bound).toBe(false);
     expect(result.current.topology).toEqual([]);
     expect(result.current.paintMarkdown(SectionId.brand(ALPHA), "cold seed")).toBe("cold seed");
   });
@@ -186,13 +186,13 @@ describe("useLiveSectionReplica", () => {
     const replicaBefore = result.current.replica;
     const observer = providers[0];
     const sharedDoc = observer.doc;
-    expect(result.current.mode).toBe("observer");
+    expect(result.current.session.kind).toBe("viewing");
 
     await act(async () => {
-      await result.current.promoteToEditor();
+      result.current.openEditor(SectionId.brand("s1"), { x: 0, y: 0 });
     });
 
-    expect(result.current.mode).toBe("editor");
+    expect(result.current.session.kind).toBe("editing");
     // Observer socket torn down; editor socket opened on the SAME shared doc.
     expect(observer.destroy).toHaveBeenCalled();
     expect(editorTransports).toHaveLength(1);
@@ -202,10 +202,10 @@ describe("useLiveSectionReplica", () => {
     expect(result.current.replica).toBe(replicaBefore);
 
     await act(async () => {
-      await result.current.demoteToObserver();
+      result.current.stopEditing();
     });
 
-    expect(result.current.mode).toBe("observer");
+    expect(result.current.session.kind).toBe("viewing");
     // Editor torn down; a fresh observer opened on the SAME doc; replica kept.
     expect(editorTransports[0].destroy).toHaveBeenCalled();
     expect(providers[1].doc).toBe(sharedDoc);
@@ -217,7 +217,7 @@ describe("useLiveSectionReplica", () => {
     const { result } = renderHook(() => useLiveSectionReplica({ docPath: "/doc.md", onSessionReinit }));
     const gen0 = result.current.replicaGeneration;
     await act(async () => {
-      await result.current.promoteToEditor();
+      result.current.openEditor(SectionId.brand("s1"), { x: 0, y: 0 });
     });
     const editor = editorTransports[0];
     const editorDoc = editor.doc;
@@ -230,13 +230,13 @@ describe("useLiveSectionReplica", () => {
 
     expect(editor.destroy).toHaveBeenCalled();
     expect(onSessionReinit).toHaveBeenCalledTimes(1);
-    expect(result.current.mode).toBe("editor");
+    expect(result.current.session.kind).toBe("editing");
     expect(result.current.replicaGeneration).toBeGreaterThan(gen0);
     const freshEditor = editorTransports[editorTransports.length - 1];
     expect(freshEditor).not.toBe(editor);
     expect(freshEditor.doc).not.toBe(editorDoc);
     expect(freshEditor.connect).toHaveBeenCalled();
-    expect(result.current.isCurrentlyLiveAuthority).toBe(false);
+    expect(result.current.bound).toBe(false);
 
     // Stale-session rejection: a stale tab must not displace the active
     // editor — it rejoins as OBSERVER on another fresh doc.
@@ -245,7 +245,7 @@ describe("useLiveSectionReplica", () => {
     });
 
     expect(freshEditor.destroy).toHaveBeenCalled();
-    expect(result.current.mode).toBe("observer");
+    expect(result.current.session.kind).toBe("viewing");
     const freshObserver = providers[providers.length - 1];
     expect(freshObserver.doc).not.toBe(freshEditor.doc);
     expect(freshObserver.connect).toHaveBeenCalled();
@@ -255,7 +255,7 @@ describe("useLiveSectionReplica", () => {
     const onSessionReinit = vi.fn();
     const { result } = renderHook(() => useLiveSectionReplica({ docPath: "/doc.md", onSessionReinit }));
     await act(async () => {
-      await result.current.promoteToEditor();
+      result.current.openEditor(SectionId.brand("s1"), { x: 0, y: 0 });
     });
     const editor = editorTransports[0];
 
@@ -265,7 +265,7 @@ describe("useLiveSectionReplica", () => {
 
     expect(editor.destroy).toHaveBeenCalled();
     expect(onSessionReinit).toHaveBeenCalledTimes(1);
-    expect(result.current.mode).toBe("editor");
+    expect(result.current.session.kind).toBe("editing");
     const freshEditor = editorTransports[editorTransports.length - 1];
     expect(freshEditor).not.toBe(editor);
     expect(freshEditor.doc).not.toBe(editor.doc);
@@ -288,7 +288,7 @@ describe("useLiveSectionReplica", () => {
     act(() => {
       first.events.onSessionEnded!();
     });
-    expect(result.current.isCurrentlyLiveAuthority).toBe(false);
+    expect(result.current.bound).toBe(false);
     expect(first.destroy).toHaveBeenCalled();
     expect(providers).toHaveLength(2);
     const second = providers[1];

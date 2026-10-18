@@ -21,6 +21,7 @@
 import {
   forwardRef,
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -45,7 +46,9 @@ import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
 import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
 import { caretScrollClearancePlugin } from "./caretScrollClearancePlugin";
+import { selectionAtSectionEdge, selectionOnSectionLine, type SectionArrowExit } from "./sectionEdge";
 import { vscodeMarkdownPasteFix } from "./vscodeMarkdownPasteFix";
+import { trailingParagraphPolicy } from "./trailingParagraphPolicy";
 import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
@@ -91,8 +94,8 @@ export interface MilkdownEditorHandle {
   getMarkdown(): string;
   /** Get the heading path at the current selection. */
   getActiveHeadingPath(): string[];
-  /** Focus this editor, placing cursor at start or end. */
-  focus(position: "start" | "end"): void;
+  /** Focus this editor at its first or last caret. A column is a viewport x on that line. */
+  focus(position: "start" | "end", column?: number | null): void;
   /** Focus this editor, placing caret at the given viewport coordinates.
    *  Falls back to focus("start") if coords don't resolve to a position.
    *  Must only be called when editor is ready AND visible. */
@@ -113,8 +116,8 @@ export interface MilkdownEditorCommonProps {
   userName?: string;
   /** User's cursor color (CSS color string). */
   userColor?: string;
-  /** Called when the cursor exits the editor boundary (ArrowUp at start, ArrowDown at end). */
-  onCursorExit?: (direction: "up" | "down") => void;
+  /** Called when an arrow leaves this section. `column` is the caret's viewport x for a vertical arrow. */
+  onCursorExit?: (exit: SectionArrowExit) => void;
   onDocumentBoundary?: (boundary: "start" | "end") => void;
   /** Advisory pre-drop check for cross-section drags.
    *  Called during dragover to gate whether this editor should accept a drop.
@@ -202,7 +205,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<EditorLifecycleController | null>(null);
-  const deferredFocusRef = useRef<"start" | "end" | null>(null);
+  const deferredFocusRef = useRef<{ position: "start" | "end"; column: number | null } | null>(null);
   const headingPathRef = useRef<string[]>([]);
   // Cleanup for the native `beforeinput` listener that surfaces genuine local
   // edits. Held so it can be removed on CRDT-detach and on unmount, so a leaked
@@ -246,18 +249,13 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
 
   // ── Focus helper (safe to call only after create() resolves) ──
 
-  function doFocus(crepe: Crepe, position: "start" | "end"): void {
+  function doFocus(crepe: Crepe, position: "start" | "end", column: number | null): void {
     const view = crepe.editor.ctx.get(editorViewCtx);
     view.focus();
-    const { doc } = view.state;
-    const pos = position === "start"
-      ? 1
-      : Math.max(1, doc.content.size - 1);
-    const clampedPos = Math.max(1, Math.min(pos, doc.content.size - 1));
-    const tr = view.state.tr.setSelection(
-      TextSelection.create(doc, clampedPos),
-    );
-    view.dispatch(tr);
+    const selection = column == null
+      ? selectionAtSectionEdge(view.state.doc, position)
+      : selectionOnSectionLine(view, position, column);
+    view.dispatch(view.state.tr.setSelection(selection));
   }
 
   // ── Imperative handle ──────────────────────────────────
@@ -273,31 +271,29 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     getActiveHeadingPath(): string[] {
       return headingPathRef.current;
     },
-    focus(position: "start" | "end"): void {
+    focus(position: "start" | "end", column: number | null = null): void {
       const ctrl = controllerRef.current;
       const crepe = ctrl?.getCrepe();
       if (!crepe) return;
       if (!ctrl?.isReady()) {
-        deferredFocusRef.current = position;
+        deferredFocusRef.current = { position, column };
         return;
       }
-      doFocus(crepe, position);
+      doFocus(crepe, position, column);
     },
     focusAtCoords(x: number, y: number): void {
       const ctrl = controllerRef.current;
       const crepe = ctrl?.getCrepe();
       if (!crepe || !ctrl?.isReady()) return;
       const view = crepe.editor.ctx.get(editorViewCtx);
+      if (getComputedStyle(view.dom).visibility === "hidden") return;
       const posResult = view.posAtCoords({ left: x, top: y });
-      if (posResult) {
-        const { doc } = view.state;
-        const pos = Math.max(1, Math.min(posResult.pos, doc.content.size - 1));
-        const tr = view.state.tr.setSelection(TextSelection.create(doc, pos));
-        view.dispatch(tr);
-        view.focus();
-      } else {
-        doFocus(crepe, "start");
-      }
+      if (!posResult) return;
+      const { doc } = view.state;
+      const pos = Math.max(1, Math.min(posResult.pos, doc.content.size - 1));
+      const tr = view.state.tr.setSelection(TextSelection.create(doc, pos));
+      view.dispatch(tr);
+      view.focus();
     },
     focusAtPos(pos: number): void {
       const ctrl = controllerRef.current;
@@ -391,11 +387,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         firstSyncDetector,
       ],
     });
-    disarmEchoGuard = installAttachEchoGuard(
-      ySyncPluginKey.getState(newState),
-      replicaStore.doc,
-      fk,
-    );
+    disarmEchoGuard = installAttachEchoGuard(ySyncPluginKey.getState(newState));
     view.updateState(newState);
 
     awareness.setLocalStateField("user", {
@@ -450,15 +442,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     ctrl.setCrdtAttached(false);
   }
 
-  function markReady(crepe: Crepe): void {
+  function markReady(_crepe: Crepe): void {
     setReady(true);
-    onReadyRef.current?.();
-
-    const pendingPos = deferredFocusRef.current;
-    if (pendingPos) {
-      deferredFocusRef.current = null;
-      doFocus(crepe, pendingPos);
-    }
   }
 
   // ── Effect A: Crepe lifecycle (deps: [fragmentKey]) ────
@@ -499,6 +484,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       },
     });
     crepe.editor.config(vscodeMarkdownPasteFix);
+    crepe.editor.config(trailingParagraphPolicy);
     ctrl.setCrepe(crepe);
 
     // ── Link document-path picker ─────────────────────────
@@ -739,7 +725,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   // autonomous/last-editor publish and must click back in.
   const prevReadOnlyRef = useRef(readOnly);
   const hadFocusBeforeReadOnlyRef = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const ctrl = controllerRef.current;
     const crepe = ctrl?.getCrepe();
     const wasReadOnly = prevReadOnlyRef.current;
@@ -766,6 +752,17 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       }
     }
   }, [readOnly]);
+
+  useEffect(() => {
+    if (!ready) return;
+    onReadyRef.current?.();
+    const crepe = controllerRef.current?.getCrepe();
+    const pendingPos = deferredFocusRef.current;
+    if (crepe && pendingPos) {
+      deferredFocusRef.current = null;
+      doFocus(crepe, pendingPos.position, pendingPos.column);
+    }
+  }, [ready]);
 
   useEffect(() => {
     if (!ready) return;

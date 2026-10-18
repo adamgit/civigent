@@ -1,7 +1,7 @@
 import React from "react";
 import { DocumentSectionRenderer } from "./DocumentSectionRenderer";
-import type { CrdtConnectionState } from "../services/crdt-provider";
 import type { MilkdownEditorHandle } from "./MilkdownEditor";
+import type { SectionArrowExit } from "./sectionEdge";
 import type { WorkspaceSectionDto } from "../pages/document-page-utils";
 import {
   headingPathToLabel,
@@ -11,6 +11,13 @@ import { SectionId, type RenderSectionRef } from "../types/live-sections";
 import { sectionHeadingKey, type DocPath } from "../types/shared.js";
 import type { SectionTransfer, SectionTransferService } from "../services/section-transfer";
 import type { LocalEditOriginSink } from "../status/sessionAuthorship";
+import {
+  focusedSection,
+  mountEditor,
+  rowReadOnly,
+  type LiveDocumentSession,
+  type Placement,
+} from "../status/live-document-session";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
 import {
   DocumentSectionReadNotes,
@@ -36,7 +43,7 @@ export interface DocumentCanvasProps {
   dragOverFragmentKey: string | null;
   isSectionBlocked: (fragmentKey: string) => boolean;
   publishPaused: boolean;
-  crdtState: CrdtConnectionState;
+  session?: LiveDocumentSession;
   transferService: SectionTransferService | null;
   readyEditors: Set<string>;
   getDisplayMarkdown: (section: RenderSectionRef) => string;
@@ -48,16 +55,18 @@ export interface DocumentCanvasProps {
   sectionUncommitted?: (fragmentKey: string) => boolean;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
-  onStartEditing: (fragmentKey: string, coords?: { x: number; y: number }) => void | Promise<void>;
+  onStartEditing: (fragmentKey: string, coords?: { x: number; y: number }) => void;
   onFocusSection: (fragmentKey: string, headingPath: string[], coords: { x: number; y: number }) => void;
   onSetEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
   onEditorReady: (fragmentKey: string) => void;
   onEditorUnready: (fragmentKey: string) => void;
   onProposalSectionChange?: (headingPath: readonly string[], markdown: string) => void;
   onToggleProposalSection?: (target: RenderSectionRef) => void | Promise<void>;
-  onCursorExit: (fragmentKey: string, direction: "up" | "down") => void;
+  onCursorExit: (fragmentKey: string, exit: SectionArrowExit) => void;
   onDocumentBoundary: (boundary: "start" | "end") => void;
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
+  caretRequest?: { section: SectionId; placement: Placement } | null;
+  onCaretPlaced?: () => void;
 }
 
 export function DocumentCanvas({
@@ -77,7 +86,7 @@ export function DocumentCanvas({
   dragOverFragmentKey,
   isSectionBlocked,
   publishPaused,
-  crdtState,
+  session,
   transferService,
   readyEditors,
   getDisplayMarkdown,
@@ -99,12 +108,16 @@ export function DocumentCanvas({
   onCursorExit,
   onDocumentBoundary,
   onCrossSectionDrop,
+  caretRequest,
+  onCaretPlaced,
 }: DocumentCanvasProps) {
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
   const fragmentKeyCounts = new Map<string, number>();
   for (const fragmentKey of orderedFragmentKeys) {
     fragmentKeyCounts.set(fragmentKey, (fragmentKeyCounts.get(fragmentKey) ?? 0) + 1);
   }
+  const sessionFocusedSection = session ? focusedSection(session) : null;
+  const sessionFocusedReady = sessionFocusedSection !== null && readyEditors.has(SectionId.text(sessionFocusedSection));
   if (sectionsLoading && sections.length === 0) {
     return (
       <div className="flex items-stretch" data-testid="doc-canvas-loading-bones" aria-hidden="true">
@@ -140,12 +153,14 @@ export function DocumentCanvas({
         const renderKey = hasDuplicateIdentity ? `${fk}::duplicate-row-${sectionIndex}` : fk;
         const sectionLabel = headingPathToLabel(headingPath);
         const crdtBlocked = isSectionBlocked(fk);
-        const inMountWindow = shouldMountEditorForFragment(
+        const inProposalMountWindow = proposalMode && shouldMountEditorForFragment(
           fk,
           focusedFragmentKey,
           orderedFragmentKeys,
           focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey),
         );
+        const inLiveMountWindow = !proposalMode && session !== undefined && !crdtBlocked
+          && mountEditor(session, section.id, orderedFragmentKeys, sessionFocusedReady);
         // A corrupt legacy draft can reference one physical fragment from more
         // than one visible row. Mounting the same Y.XmlFragment in both rows makes
         // their refs and selection bindings fight: the last row wins every focus
@@ -153,8 +168,8 @@ export function DocumentCanvas({
         // occurrence as the sole editor owner so the user can rename/remove it
         // and repair the draft. The other occurrence stays visible but static.
         const mountAllowed = ownsFragmentIdentity && (proposalMode
-          ? (canEditProposalContent && isInProposal && inMountWindow)
-          : (!crdtBlocked && inMountWindow));
+          ? (canEditProposalContent && isInProposal && inProposalMountWindow)
+          : inLiveMountWindow);
         const lastEditor = getLastEditor?.(fk);
         const activeEditorIds = getActiveEditors?.(fk) ?? [];
         return (
@@ -178,7 +193,8 @@ export function DocumentCanvas({
                 section={section}
                 fragmentKey={fk}
                 isFocused={ownsFragmentIdentity && focusedFragmentKey === fk}
-                hasEditor={mountAllowed}
+                mountEditor={mountAllowed}
+                readOnly={session ? rowReadOnly(session, section.id, crdtBlocked) : true}
                 isInProposal={isInProposal}
                 proposalConflictReason={proposalConflictReason}
                 isLockedByOtherHuman={proposalMode ? lockedInProposalMode : false}
@@ -188,7 +204,6 @@ export function DocumentCanvas({
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={false}
                 dragOverFragmentKey={dragOverFragmentKey}
-                crdtState={crdtState}
                 transferService={transferService}
                 proposalMode={proposalMode}
                 canEditProposalContent={canEditProposalContent}
@@ -199,11 +214,7 @@ export function DocumentCanvas({
                 getLiveBinding={getLiveBinding}
                 localEditSink={localEditSink}
                 mouseDownPosRef={mouseDownPosRef}
-                onStartEditing={
-                  ownsFragmentIdentity
-                    ? onStartEditing
-                    : (fragmentKey) => onStartEditing(fragmentKey)
-                }
+                onActivateRow={onStartEditing}
                 onFocusSection={onFocusSection}
                 onSetEditorRef={onSetEditorRef}
                 onEditorReady={onEditorReady}
@@ -217,6 +228,8 @@ export function DocumentCanvas({
                 onCursorExit={onCursorExit}
                 onDocumentBoundary={onDocumentBoundary}
                 onCrossSectionDrop={onCrossSectionDrop}
+                caretRequest={caretRequest?.section === section.id ? caretRequest.placement : null}
+                onCaretPlaced={onCaretPlaced}
               />
             </div>
 

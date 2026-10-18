@@ -9,7 +9,9 @@ import { resolveWriterId } from "../services/api-client";
 import { deriveFillColor } from "../presence/document-presence-identity";
 import { SectionId, type RenderSectionRef } from "../types/live-sections";
 import type { LiveSectionReplicaView } from "./useLiveSectionReplica";
+import { focusedSection } from "../status/live-document-session";
 import { useSectionFocus, type PendingFragmentCaretTarget } from "./useSectionFocus";
+import type { SectionArrowExit } from "../components/sectionEdge";
 import { useEditorRegistry } from "./useEditorRegistry";
 import { useProposalDrafting } from "./useProposalDrafting";
 
@@ -71,9 +73,8 @@ export interface UseDocumentSessionControllerReturn {
   toggleProposalSection: (target: RenderSectionRef) => Promise<void>;
   removeProposalSection: (docPath: string, headingPath: string[]) => Promise<void>;
   handleProposalSectionChange: (headingPath: readonly string[], markdown: string) => void;
-  handleCursorExit: (sectionIndex: number, direction: "up" | "down") => void;
+  handleCursorExit: (sectionIndex: number, exit: SectionArrowExit) => void;
   setEditorRef: (fragmentKey: string, handle: MilkdownEditorHandle | null) => void;
-  setRetargetCaretTarget: (target: Extract<PendingFragmentCaretTarget, { position: "retarget" }>) => void;
 }
 
 export function useDocumentSessionController(
@@ -97,14 +98,12 @@ export function useDocumentSessionController(
     presence.setPageOpen(name, deriveFillColor(name));
   }, [presence]);
 
-  // P21 — settle `active → present` when this client leaves editor mode. Focus
-  // only ever SETS `viewingSections`; without this an observer would keep the
-  // editing marker (and read as `active`) until disconnect. In observer mode we
-  // clear it so the badge falls back to the page-open `present` floor.
+  const focusedLiveSection = focusedSection(liveReplica.session);
   useEffect(() => {
     if (!presence) return;
-    if (liveReplica.mode !== "editor") presence.clearViewingSection();
-  }, [presence, liveReplica.mode]);
+    if (focusedLiveSection === null) presence.clearViewingSection();
+    else presence.setViewingSection(SectionId.text(focusedLiveSection));
+  }, [presence, focusedLiveSection]);
 
   const isSectionBlocked = useCallback((fragmentKey: string): boolean => {
     const replica = liveReplica.replica;
@@ -141,7 +140,7 @@ export function useDocumentSessionController(
     setError: params.setError,
     loadSections: params.loadSections,
     setBootstrapFocusedSectionIndex: focus.setBootstrapFocusedSectionIndex,
-    leaveLiveEditing: liveReplica.demoteToObserver,
+    leaveLiveEditing: liveReplica.stopEditing,
   });
 
   useEffect(() => {
@@ -196,6 +195,5 @@ export function useDocumentSessionController(
     handleProposalSectionChange: proposal.handleProposalSectionChange,
     handleCursorExit: focus.handleCursorExit,
     setEditorRef: registry.setEditorRef,
-    setRetargetCaretTarget: focus.setRetargetCaretTarget,
   };
 }
