@@ -166,6 +166,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   );
 
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [editAccessError, setEditAccessError] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -285,7 +286,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     (fragmentKey: string): LiveEditorBinding | undefined => {
       const replica = liveReplica.replica;
       if (!liveReplica.bound || !replica) return undefined;
-      return replica.getLiveSection(SectionId.brand(fragmentKey)).createEditorBinding();
+      return replica.findInTopology(SectionId.brand(fragmentKey))?.createEditorBinding();
     },
     [liveReplica.replica, liveReplica.bound],
   );
@@ -393,6 +394,20 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     const row = renderSections[effectiveFocusedIndex];
     return row ? SectionId.text(row.id) : null;
   }, [effectiveFocusedIndex, renderSections, proposalMode, debugLeftoverFragmentKey]);
+
+  useEffect(() => {
+    if (!liveReplica.bound || focusedFragmentKey === null) return;
+    const replica = liveReplica.replica;
+    if (!replica) return;
+    if (replica.findInTopology(SectionId.brand(focusedFragmentKey))) return;
+    const row = renderSections.find((section) => SectionId.text(section.id) === focusedFragmentKey);
+    const label = row && row.headingPath.length > 0
+      ? row.headingPath.join(" > ")
+      : "the before-first-heading section";
+    setEditAccessError(
+      `Cannot edit “${label}”. That section is not in the live document, so editing it was refused.`,
+    );
+  }, [liveReplica.bound, liveReplica.replica, liveReplica.topology, focusedFragmentKey, renderSections]);
 
   // Evict ready editors outside the mount window around the focused FRAGMENT.
   useEditorWindowEviction(renderSections, focusedFragmentKey, setReadyEditors);
@@ -726,6 +741,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const documentActivity = useDocumentActivity(transportStatus);
 
   const focusFragmentAndSetCaretTarget = useCallback((fk: string, coords?: { x: number; y: number }) => {
+    setEditAccessError(null);
     const pos = sectionsRef.current.findIndex((row) => SectionId.text(row.id) === fk);
     setBootstrapFocusedSectionIndex(pos >= 0 ? pos : fk === BEFORE_FIRST_HEADING_KEY ? 0 : null);
     pendingCaretTargetRef.current = { fragmentKey: fk, position: "start", coords };
@@ -1235,6 +1251,16 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                   {moveError}
                 </pre>
               ) : null}
+              {editAccessError ? (
+                <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono" role="alert">
+                  {editAccessError}
+                </pre>
+              ) : null}
+              {liveReplica.transportError ? (
+                <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono" role="alert">
+                  {liveReplica.transportError}
+                </pre>
+              ) : null}
               {error ? (
                 <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                   {error}
@@ -1315,6 +1341,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             onCrossSectionDrop={handleCrossSectionDrop}
             caretRequest={liveReplica.pendingPlacement}
             onCaretPlaced={liveReplica.clearPendingPlacement}
+            onEditBlocked={setEditAccessError}
           />
           </EditorSessionCommandsProvider>
 

@@ -24,7 +24,7 @@ node scripts/agents/add-campaigns.mjs
 ```
 
 ### `review-proposals.mjs`
-Lists all proposals, recent activity, document tree, and coordination heatmap. Useful for monitoring what agents have done.
+Lists all proposals, recent activity, and the document tree. Useful for monitoring what agents have done.
 
 ```bash
 node scripts/agents/review-proposals.mjs

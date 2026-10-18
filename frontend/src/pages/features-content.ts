@@ -30,7 +30,6 @@ export const userFeatures = [
   "The system protects recent human work from agent overwrites: the more recently you edited, the harder it is for an agent to change it",
   "Admin posture slider controls how aggressively agents can overwrite human work, with four presets from YOLO (30s) to Conservative (8h)",
   "Each posture setting has a plain-language explanation of its implications",
-  "Admin heatmap page shows a live system-wide view of how protected every section is, refreshing every 5-10 seconds",
   "Agents providing a per-section justification get a small bonus toward acceptance — matters more in conservative environments",
   "Long sections without sub-headings show a warning encouraging the author to break them up",
   "Documents can have deeply nested heading structures — sub-headings are automatically reorganized without losing content",

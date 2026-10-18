@@ -3,7 +3,7 @@ import { ContentPanel } from "../ContentPanel";
 import { SectionHeadingChip } from "../SectionHeadingChip";
 import { StatusPill } from "../StatusPill";
 import type { AnyProposal } from "../../types/shared.js";
-import type { AgentReadingState } from "./HeatmapTab";
+import type { AgentReadingState } from "./agent-reading-state";
 import { relativeTime } from "../../utils/relativeTime";
 
 function agentColor(actorId: string): string {

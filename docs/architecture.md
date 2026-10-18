@@ -288,11 +288,11 @@ Agents can provide a per-section justification explaining why they are overwriti
 
 ### What humans see
 
-Human-involvement scores are **not shown to regular human users** on the editing view. They are internal to the agent negotiation system. Humans can always edit freely regardless of scores. Scores are visible on the admin heatmap page and in agent proposal responses.
+Human-involvement scores are **not shown to regular human users** on the editing view. They are internal to the agent negotiation system. Humans can always edit freely regardless of scores. Scores are visible in agent proposal responses.
 
 ### Delivery mechanism
 
-Scores are included in REST API responses (computed at request time) and polled for the heatmap view. They are not pushed via WebSocket — the decay is continuous, so pushing would mean either high-frequency updates or accepting staleness. Coarse WS events (e.g. `content:committed`, the proposal-commit notification, and section block-state events) serve as hints for when to refresh.
+Scores are included in REST API responses (computed at request time). They are not pushed via WebSocket — the decay is continuous, so pushing would mean either high-frequency updates or accepting staleness. Coarse WS events (e.g. `content:committed`, the proposal-commit notification, and section block-state events) serve as hints for when to refresh.
 
 ---
 

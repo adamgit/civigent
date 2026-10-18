@@ -67,7 +67,11 @@ export interface ObserverCrdtProviderEvents {
 // ─── Provider ──────────────────────────────────────────────────────
 
 export class ObserverCrdtProvider {
-  readonly doc: Y.Doc;
+  private _doc: Y.Doc;
+
+  /** The Y.Doc this socket syncs. Replaced on a disjoint DocSession bootstrap
+   *  (`retarget`) — the socket itself stays up. */
+  get doc(): Y.Doc { return this._doc; }
 
   private _bootstrapApplied: boolean = false;
   /** True once the first live-sections bootstrap of this connection has been
@@ -105,7 +109,7 @@ export class ObserverCrdtProvider {
   ) {
     // A replica-owned doc may be passed in so the socket syncs INTO the replica's
     // single shared Y.Doc; otherwise the provider mints its own (legacy path).
-    this.doc = opts?.doc ?? new Y.Doc();
+    this._doc = opts?.doc ?? new Y.Doc();
     this.ownsDoc = opts?.doc === undefined;
     this.events = events;
     this.docPath = docPath;
@@ -142,13 +146,21 @@ export class ObserverCrdtProvider {
     this.setState("disconnected");
   }
 
+  /** Point this open socket at a fresh DocSession Y.Doc. The caller owns both
+   *  the previous doc and the new one; this does not destroy either, and it
+   *  does not close the socket. */
+  retarget(doc: Y.Doc): void {
+    if (this.destroyed) return;
+    this._doc = doc;
+  }
+
   destroy(): void {
     this.destroyed = true;
     this.cancelPageWake();
     this.disconnect();
     // Only destroy the Y.Doc if this provider minted it. A replica-owned doc
     // outlives the provider (observer → editor promotion reuses it).
-    if (this.ownsDoc) this.doc.destroy();
+    if (this.ownsDoc) this._doc.destroy();
   }
 
   // ─── Internal ─────────────────────────────────────────

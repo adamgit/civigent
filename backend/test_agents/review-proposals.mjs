@@ -87,22 +87,6 @@ async function main() {
 
   printTree(tree);
 
-  // 6. Show heatmap
-  console.log("\n─────────────────────────────────────");
-  log(PREFIX, "Fetching coordination heatmap...");
-  const heatmap = await client.get("/api/heatmap");
-  log(PREFIX, `Preset: ${heatmap.preset}`);
-  const sections = heatmap.sections ?? [];
-  log(PREFIX, `Tracked sections: ${sections.length}`);
-
-  for (const s of sections) {
-    const heading = s.heading_path?.length > 0 ? s.heading_path.join(" > ") : "(root)";
-    const score = (s.involvement_score * 100).toFixed(0);
-    const crdt = s.crdt_session_active ? " [CRDT active]" : "";
-    const blocked = s.block_reason ? ` [BLOCKED: ${s.block_reason}]` : "";
-    console.log(`  ${s.doc_path} → ${heading}: ${score}%${crdt}${blocked}`);
-  }
-
   log(PREFIX, "Review complete.");
 }
 

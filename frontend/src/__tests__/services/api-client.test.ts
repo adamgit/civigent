@@ -101,17 +101,6 @@ describe("api-client", () => {
     expect(fetchMock.calls.some((c) => String(c.input).includes("limit=50") && String(c.input).includes("days=14"))).toBe(true);
   });
 
-  it("getHeatmap calls /api/heatmap", async () => {
-    fetchMock = installFetchMock(async (input) => {
-      if (String(input).includes("/api/auth/session")) {
-        return jsonResponse({ authenticated: true, user: { id: "u" }, login_providers: [] });
-      }
-      return jsonResponse({ preset: "eager", sections: [] });
-    });
-    await apiClient.getHeatmap();
-    expect(fetchMock.calls.some((c) => String(c.input) === "/api/heatmap")).toBe(true);
-  });
-
   // ─── credentials: "include" ───────────────────────────────
 
   it('sets credentials: "include" on all fetch calls', async () => {

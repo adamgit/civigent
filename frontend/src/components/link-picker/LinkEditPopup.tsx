@@ -3,13 +3,18 @@
  * link-edit tooltip. A free-text href input (external URLs) plus a document-path
  * autocomplete fed by the workspace tree.
  *
- * Enter confirms the current input text; Escape cancels; clicking a suggestion
- * confirms with that document path. Confirm/cancel are handled by the owning
- * PluginView (option1-edit-view.ts), which applies the link mark.
+ * ArrowUp/Down highlight a suggestion without moving focus off the input.
+ * Enter confirms the highlighted path, or the typed text when nothing is
+ * highlighted. Escape cancels. Clicking a suggestion confirms that path.
+ * Confirm/cancel are handled by the owning PluginView (option1-edit-view.ts).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fetchWorkspaceFilePaths, filterDocPaths } from "./doc-paths";
+
+const SUGGESTION_LIMIT = 20;
+const VISIBLE_SUGGESTIONS = 10;
+const SUGGESTION_ROW_PX = 28;
 
 interface LinkEditPopupProps {
   initialHref: string;
@@ -20,7 +25,10 @@ interface LinkEditPopupProps {
 export function LinkEditPopup({ initialHref, onConfirm, onCancel }: LinkEditPopupProps) {
   const [value, setValue] = useState(initialHref);
   const [paths, setPaths] = useState<string[]>([]);
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const listId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +48,23 @@ export function LinkEditPopup({ initialHref, onConfirm, onCancel }: LinkEditPopu
     input.select();
   }, []);
 
-  const suggestions = useMemo(() => filterDocPaths(paths, value, 8), [paths, value]);
+  const suggestions = useMemo(
+    () => filterDocPaths(paths, value, SUGGESTION_LIMIT),
+    [paths, value],
+  );
+
+  const confirm = () => {
+    const picked = highlightedIndex != null ? suggestions[highlightedIndex] : undefined;
+    onConfirm(picked ?? value);
+  };
+
+  useEffect(() => {
+    if (highlightedIndex == null) return;
+    const row = listRef.current?.querySelector<HTMLElement>(
+      `[data-suggestion-index="${highlightedIndex}"]`,
+    );
+    row?.scrollIntoView({ block: "nearest" });
+  }, [highlightedIndex]);
 
   return (
     <div
@@ -65,13 +89,37 @@ export function LinkEditPopup({ initialHref, onConfirm, onCancel }: LinkEditPopu
           style={{ flex: 1 }}
           value={value}
           placeholder="Paste link or search documents…"
-          onChange={(e) => setValue(e.target.value)}
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-activedescendant={
+            highlightedIndex != null ? `${listId}-option-${highlightedIndex}` : undefined
+          }
+          onChange={(e) => {
+            setValue(e.target.value);
+            setHighlightedIndex(null);
+          }}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              if (suggestions.length === 0) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setHighlightedIndex((current) => {
+                if (current == null) return e.key === "ArrowDown" ? 0 : suggestions.length - 1;
+                const delta = e.key === "ArrowDown" ? 1 : -1;
+                return (current + delta + suggestions.length) % suggestions.length;
+              });
+              return;
+            }
             if (e.key === "Enter") {
               e.preventDefault();
-              onConfirm(value);
-            } else if (e.key === "Escape") {
+              e.stopPropagation();
+              confirm();
+              return;
+            }
+            if (e.key === "Escape") {
               e.preventDefault();
+              e.stopPropagation();
               onCancel();
             }
           }}
@@ -80,42 +128,65 @@ export function LinkEditPopup({ initialHref, onConfirm, onCancel }: LinkEditPopu
           type="button"
           className="link-edit-option1-confirm"
           title="Confirm link"
-          onClick={() => onConfirm(value)}
+          onClick={confirm}
           style={{ cursor: "pointer" }}
         >
           Confirm ⏎
         </button>
       </div>
       {suggestions.length > 0 ? (
-        <ul className="link-edit-option1-suggestions" style={{ listStyle: "none", margin: "6px 0 0", padding: 0, maxHeight: 180, overflowY: "auto" }}>
-          {suggestions.map((path) => (
-            <li key={path}>
-              <button
-                type="button"
-                // Mouse-down (not click) so the input's blur doesn't race the tooltip teardown.
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onConfirm(path);
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "4px 6px",
-                  border: "none",
-                  background: "transparent",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-                className="link-edit-option1-suggestion"
-              >
-                {path}
-              </button>
-            </li>
-          ))}
+        <ul
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          className="link-edit-option1-suggestions"
+          style={{
+            listStyle: "none",
+            margin: "6px 0 0",
+            padding: 0,
+            maxHeight: VISIBLE_SUGGESTIONS * SUGGESTION_ROW_PX,
+            overflowY: "auto",
+          }}
+        >
+          {suggestions.map((path, index) => {
+            const highlighted = index === highlightedIndex;
+            return (
+              <li key={path} role="presentation">
+                <button
+                  type="button"
+                  id={`${listId}-option-${index}`}
+                  role="option"
+                  aria-selected={highlighted}
+                  data-suggestion-index={index}
+                  // Mouse-down (not click) so the input's blur doesn't race the tooltip teardown.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onConfirm(path);
+                  }}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  style={{
+                    display: "block",
+                    boxSizing: "border-box",
+                    width: "100%",
+                    height: SUGGESTION_ROW_PX,
+                    textAlign: "left",
+                    padding: "4px 6px",
+                    border: "none",
+                    background: highlighted ? "var(--crepe-color-hover, rgba(0, 0, 0, 0.06))" : "transparent",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    lineHeight: `${SUGGESTION_ROW_PX - 8}px`,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  className="link-edit-option1-suggestion"
+                >
+                  {path}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </div>

@@ -103,10 +103,10 @@ async function main() {
   });
   log(PREFIX, "Proposal result:", JSON.stringify(proposal, null, 2));
 
-  // 7. Read the heatmap to see involvement scores
-  log(PREFIX, "Checking heatmap...");
-  const heatmap = await mcp.callTool("read_doc_structure", { doc_path: DOC_PATH });
-  log(PREFIX, "Updated structure:", JSON.stringify(heatmap, null, 2));
+  // 7. Re-read structure after the proposal
+  log(PREFIX, "Checking updated structure...");
+  const structure = await mcp.callTool("read_doc_structure", { doc_path: DOC_PATH });
+  log(PREFIX, "Updated structure:", JSON.stringify(structure, null, 2));
 
   // 8. Clean up
   await mcp.close();

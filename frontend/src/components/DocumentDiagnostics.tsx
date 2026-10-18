@@ -210,6 +210,11 @@ function collisionWinnerIndex(rows: DiagSectionLayerInfo[]): number {
   return rows.length - 1;
 }
 
+function formatCollisionHeading(headingPath: readonly string[]): string {
+  if (headingPath.length === 0) return "(before first heading)";
+  return headingPath.join(" > ");
+}
+
 function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
   const groups = collectCollisionGroups(sections);
   if (groups.length === 0) return null;
@@ -219,8 +224,8 @@ function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
       <p className="text-[12px] text-red-900 mb-2">
         Two sibling sections that carry the same heading text under the same parent cannot be uniquely
         addressed by a heading path — the app looks up sections by that path, so one section will hide
-        another after refresh. Every physical file below is present on disk, but only one is reachable
-        through a normal read.
+        another after refresh. Each group is labeled with that heading. Every physical file below is
+        present on disk, but only one is reachable through a normal read.
       </p>
       <details className="mb-2 text-[11px] text-red-900">
         <summary className="cursor-pointer font-semibold">Safe repair choices</summary>
@@ -235,16 +240,17 @@ function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
       <div className="space-y-3">
         {groups.map((rows) => {
           const winnerIdx = collisionWinnerIndex(rows);
-          const headingLabel = rows[0].headingKey || "(before first heading)";
+          const headingLabel = formatCollisionHeading(rows[0].headingPath);
           return (
             <div key={rows[0].headingKey} className="border border-red-200 bg-white rounded overflow-hidden">
-              <div className="px-2 py-1.5 bg-red-100 text-red-900 text-[11px] font-mono flex items-center justify-between">
-                <span>{headingLabel}</span>
-                <span className="text-[10px] font-semibold">{rows.length} physical rows</span>
+              <div className="px-2 py-1.5 bg-red-100 text-red-900 text-[12px] flex items-center justify-between gap-3">
+                <span>Duplicate heading: <span className="font-mono font-semibold">{headingLabel}</span></span>
+                <span className="text-[10px] font-semibold shrink-0">{rows.length} physical rows</span>
               </div>
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="bg-gray-50">
+                    <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Heading</th>
                     <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Fragment key</th>
                     <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Section file</th>
                     <th className="px-2 py-1 text-left text-[10px] font-semibold text-gray-600">Layer winner</th>
@@ -257,6 +263,7 @@ function renderCollisionGroups(sections: DiagSectionLayerInfo[]) {
                     const preview = row.canonical.contentPreview ?? row.crdt.contentPreview ?? "—";
                     return (
                       <tr key={row.fragmentKey} className="border-t border-red-100">
+                        <td className="px-2 py-1 text-[11px] font-mono text-gray-900">{formatCollisionHeading(row.headingPath)}</td>
                         <td className="px-2 py-1 text-[11px] font-mono text-gray-700">{row.fragmentKey}</td>
                         <td className="px-2 py-1 text-[11px] font-mono text-gray-700">{row.sectionFile || "—"}</td>
                         <td className="px-2 py-1 text-[11px] font-mono">

@@ -1514,7 +1514,7 @@ export interface SectionAgentWritePolicySummary {
   /**
    * Backend-authored prose explanation of the current write-policy state for
    * this section. The single source of truth for the human-readable line shown
-   * in the governance gutter / heatmap — clients render this verbatim rather
+   * in the governance gutter — clients render this verbatim rather
    * than synthesizing it from `canWrite` (spec 12 §"render the policy's prose
    * messages — never bare reason codes or enums").
    */
@@ -1537,26 +1537,6 @@ export interface SectionState {
   diverged: boolean;
   base_head: string | null;
   agentWritePolicy: SectionAgentWritePolicySummary;
-}
-
-// ─── Heatmap ───────────────────────────────────────────────────────
-
-export interface HeatmapEntry {
-  doc_path: string;
-  heading_path: string[];
-  agentWritePolicy: SectionAgentWritePolicySummary;
-  crdt_session_active: boolean;
-  last_human_commit_sha: string | null;
-
-  last_commit_author: string | null;
-  last_commit_timestamp: string | null;
-}
-
-export interface GetHeatmapResponse {
-  preset: HumanInvolvementPresetName;
-  humanInvolvement_midpoint_seconds: number;
-  humanInvolvement_steepness: number;
-  sections: HeatmapEntry[];
 }
 
 export interface AllSessionStatusesResponse {

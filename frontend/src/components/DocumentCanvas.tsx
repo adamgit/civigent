@@ -67,6 +67,7 @@ export interface DocumentCanvasProps {
   onCrossSectionDrop: (target: RenderSectionRef, transfer: SectionTransfer) => void;
   caretRequest?: { section: SectionId; placement: Placement } | null;
   onCaretPlaced?: () => void;
+  onEditBlocked?: (message: string) => void;
 }
 
 export function DocumentCanvas({
@@ -110,6 +111,7 @@ export function DocumentCanvas({
   onCrossSectionDrop,
   caretRequest,
   onCaretPlaced,
+  onEditBlocked,
 }: DocumentCanvasProps) {
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
   const fragmentKeyCounts = new Map<string, number>();
@@ -230,6 +232,7 @@ export function DocumentCanvas({
                 onCrossSectionDrop={onCrossSectionDrop}
                 caretRequest={caretRequest?.section === section.id ? caretRequest.placement : null}
                 onCaretPlaced={onCaretPlaced}
+                onEditBlocked={onEditBlocked}
               />
             </div>
 

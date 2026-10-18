@@ -5,6 +5,7 @@ import { ObserverCrdtProvider } from "../services/observer-crdt-provider";
 import { CrdtTransport } from "../services/crdt-transport";
 import {
   createLiveSectionReplica,
+  type LiveBootstrapInput,
   type LiveSectionReplica,
 } from "../services/live-section-replica";
 import {
@@ -159,6 +160,26 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     replicaRef.current = replica;
   }, [retireReplica]);
 
+  /** A bootstrap for a different DocSession has a disjoint Yjs history.
+   *  Applying it into this doc would duplicate every fragment. Bind it into a
+   *  fresh replica and retarget the socket that delivered it. Closing that
+   *  socket would drop the session this tab just joined. The session kind
+   *  stays as it is: an editor socket remains the editor. */
+  const adoptDisjointSessionBootstrap = useCallback((bootstrap: LiveBootstrapInput) => {
+    const conn = connectionRef.current;
+    const editing = sessionRef.current.kind === "editing";
+    mintFreshReplica();
+    const replica = replicaRef.current;
+    const doc = docRef.current;
+    const awareness = awarenessRef.current;
+    if (!replica || !doc || !awareness) return;
+    if (editing) replica.setEditingEnabled(true);
+    replica.bindToDocSession(bootstrap);
+    if (conn?.kind === "observer") conn.provider.retarget(doc);
+    else if (conn?.kind === "editor") conn.transport.retarget(doc, awareness);
+    forceRender();
+  }, [mintFreshReplica]);
+
   const destroyUnreclaimedPipeline = useCallback(() => {
     teardownConnection();
     const replica = replicaRef.current;
@@ -183,7 +204,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       rememberDocSessionId(docPathArg, bootstrap.docSessionId);
       const boundTo = replica.boundDocSessionId;
       if (boundTo !== null && boundTo !== bootstrap.docSessionId) {
-        dispatchRef.current({ type: "sessionReplaced", keepEditing: false });
+        adoptDisjointSessionBootstrap(bootstrap);
         return;
       }
       const prevTopology = replica.getTopology();
@@ -214,7 +235,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       return;
     }
     routeLiveSectionFrame(opcode, payload, replica);
-  }, []);
+  }, [adoptDisjointSessionBootstrap]);
 
   const startObserver = useCallback((docPathArg: DocPath) => {
     const isCurrent = () => connectionRef.current?.kind === "observer" && connectionRef.current.provider === provider;

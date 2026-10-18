@@ -31,7 +31,6 @@ import type {
   AcquireLocksFailure,
   SectionAgentWritePolicySummary,
   SectionState,
-  HeatmapEntry,
   SectionMeta,
   GetDocumentSectionsResponse,
   HumanInvolvementCommittedProposalMetadata,
@@ -189,16 +188,6 @@ const sectionState: SectionState = {
   agentWritePolicy: sectionSummary,
 };
 
-const heatmapEntry: HeatmapEntry = {
-  doc_path: "doc.md",
-  heading_path: ["A"],
-  agentWritePolicy: { canWrite: false, message: "Agents blocked here." },
-  crdt_session_active: false,
-  last_human_commit_sha: null,
-  last_commit_author: null,
-  last_commit_timestamp: null,
-};
-
 const sectionMeta: SectionMeta = {
   heading_path: ["A"],
   agentWritePolicy: sectionSummary,
@@ -247,7 +236,6 @@ export const __areaQTypeTestRefs = {
   blockedMessage,
   acquireFailure,
   sectionState,
-  heatmapEntry,
   sectionMeta,
   docSections,
   committedMeta,

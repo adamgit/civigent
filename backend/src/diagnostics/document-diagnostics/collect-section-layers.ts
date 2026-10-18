@@ -5,7 +5,7 @@ import { resolvePersistedSectionLayout, type LiveSectionLayoutEntry } from "../.
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import type { FlatEntry } from "../../storage/document-skeleton.js";
-import { isBodyHolderShape } from "../../storage/section-shape.js";
+import { isDocumentBeforeFirstHeading, type BodyHolderEntryInput } from "../../storage/section-shape.js";
 import { findInProgressProposalForDoc } from "../../storage/proposal-repository.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import type { SectionBody } from "../../storage/section-formatting.js";
@@ -56,12 +56,18 @@ function absentLayer(): DiagLayerStatus {
   return { exists: false, byteLength: null, contentPreview: null, error: null };
 }
 
-function entryIsBfh(entry: FlatEntry): boolean {
-  return isBodyHolderShape(entry);
+/**
+ * Fragment key for a canonical flat entry. A nested body-holder (empty heading,
+ * level 0, non-empty heading path) is NOT the document before-first-heading
+ * fragment — keying it that way collides it with `section::__beforeFirstHeading__`
+ * and hides the real heading. Same predicate the live layout uses.
+ */
+export function diagnosticFragmentKeyForEntry(entry: BodyHolderEntryInput & { sectionFile: string }): string {
+  return fragmentKeyFromSectionFile(entry.sectionFile, isDocumentBeforeFirstHeading(entry));
 }
 
 function fragmentKeyForEntry(entry: FlatEntry): string {
-  return fragmentKeyFromSectionFile(entry.sectionFile, entryIsBfh(entry));
+  return diagnosticFragmentKeyForEntry(entry);
 }
 
 interface UnionRow {
