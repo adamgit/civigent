@@ -239,7 +239,9 @@ export function installCsrfGuard(router: Router): void {
  * Shape an agent-write-policy result into a REST response body. Surfaces the
  * policy's prose `message`s (top-level + per-target) rather than bare codes.
  */
-export function agentWritePolicyRouteBody(result: AgentWritePolicyResult) {
+export function agentWritePolicyRouteBody<TPolicyDetails, TTargetDetails>(
+  result: AgentWritePolicyResult<TPolicyDetails, TTargetDetails>,
+) {
   return {
     can_write: result.canWrite,
     message: result.message,
