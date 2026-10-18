@@ -104,6 +104,26 @@ function trimTrailingNewlines(s: string): string {
   return s.replace(/\n+$/, "");
 }
 
+function headingTextIsEmpty(heading: string): boolean {
+  return heading.replace(/[\s\u200B\u200C\u200D\uFEFF]/g, "") === "";
+}
+
+/** Empty ATX (`#`, `## `, …) is a heading node with no text, not a body line. */
+function stripEmptyAtxPrefix(raw: string): string {
+  return raw.replace(/^(?:#{1,6}[ \t]*)(?:\n+|$)/, "").replace(/^\n+/, "");
+}
+
+function orphanedBodyFromHeadlessParsed(parsed: readonly ParsedSection[]): SectionBody {
+  return bodyFromStructuralAssembly(
+    stripEmptyAtxPrefix(
+      parsed
+        .filter((s) => s.headingPath.length === 0)
+        .map((s) => s.body)
+        .join("\n"),
+    ),
+  );
+}
+
 function toDescriptor(section: ParsedSection): SubsectionDescriptor {
   return {
     headingPath: [...section.headingPath],
@@ -210,6 +230,9 @@ export function classifyStructuralChange(
 
   if (!isRoot && realSections.length === 1) {
     const section = realSections[0];
+    if (headingTextIsEmpty(section.heading)) {
+      return { kind: "heading-deletion", orphanedBody: bodyFromStructuralAssembly(section.body) };
+    }
     // Heading rename (same level, different text).
     if (!headingsEqual(section.heading, identity.heading) && section.headingLevel === identity.headingLevel) {
       return { kind: "heading-rename", newHeading: section.heading, headingLevel: section.headingLevel };
@@ -250,13 +273,7 @@ export function classifyStructuralChange(
   // CANNOT reach this branch. This branch is therefore only ever a genuine heading
   // deletion (→ merge into the predecessor), as intended.
   if (!isRoot && realSections.length === 0) {
-    const orphanedBody = bodyFromStructuralAssembly(
-      parsed
-        .filter((s) => s.headingPath.length === 0)
-        .map((s) => s.body)
-        .join("\n"),
-    );
-    return { kind: "heading-deletion", orphanedBody };
+    return { kind: "heading-deletion", orphanedBody: orphanedBodyFromHeadlessParsed(parsed) };
   }
 
   // Unrecognized pattern — treat as a no-op for safety (old dispatch fallback).

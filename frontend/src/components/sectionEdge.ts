@@ -15,6 +15,9 @@ import type { EditorView } from "@milkdown/prose/view";
 export interface SectionArrowExit {
   toward: "up" | "down";
   column: number | null;
+  /** Shift-arrow / mouse-drag extend, not a collapsed caret handoff. */
+  extend?: boolean;
+  pointer?: { x: number; y: number };
 }
 
 export function selectionAtSectionEdge(doc: Node, edge: "start" | "end"): Selection {

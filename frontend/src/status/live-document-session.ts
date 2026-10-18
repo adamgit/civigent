@@ -35,6 +35,7 @@ export type SessionCommand =
   | { type: "openEditor"; section: SectionId; coords: ClickCoords }
   | { type: "moveCaretToPoint"; section: SectionId; coords: ClickCoords }
   | { type: "moveCaretToEdge"; section: SectionId; edge: "start" | "end"; column: number | null }
+  | { type: "focusSection"; section: SectionId }
   | { type: "retargetCaret"; section: SectionId; retarget: SplitCaretPlacement }
   | { type: "stopEditing"; cause?: "socket-stopped" }
   | { type: "pipeChanged"; pipe: EditPipe }
@@ -57,6 +58,7 @@ export function reduceSession(prev: LiveDocumentSession, cmd: SessionCommand): L
       return editing(cmd.section, CONNECTING, prev.paused);
     case "moveCaretToPoint":
     case "moveCaretToEdge":
+    case "focusSection":
     case "retargetCaret":
       if (prev.kind === "viewing") return prev;
       return editing(cmd.section, prev.pipe, prev.paused);

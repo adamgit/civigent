@@ -57,6 +57,7 @@ export interface LiveSectionReplicaView {
   openEditor: (section: SectionId, coords: ClickCoords) => void;
   moveCaretToPoint: (section: SectionId, coords: ClickCoords) => void;
   moveCaretToEdge: (section: SectionId, edge: "start" | "end", column: number | null) => void;
+  focusSection: (section: SectionId) => void;
   retargetCaret: (section: SectionId, retarget: SplitCaretPlacement) => void;
   stopEditing: () => void;
   pendingPlacement: { section: SectionId; placement: Placement } | null;
@@ -391,6 +392,10 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         };
         break;
       }
+      case "focusSection": {
+        pendingPlacementRef.current = null;
+        break;
+      }
       case "retargetCaret": {
         if (prev.kind !== "editing") break;
         pendingPlacementRef.current = { section: cmd.section, placement: { retarget: cmd.retarget } };
@@ -503,6 +508,11 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     dispatch({ type: "moveCaretToEdge", section, edge, column });
   }, [docPath, dispatch]);
 
+  const focusSection = useCallback((section: SectionId) => {
+    if (!docPath) return;
+    dispatch({ type: "focusSection", section });
+  }, [docPath, dispatch]);
+
   const retargetCaret = useCallback((section: SectionId, retarget: SplitCaretPlacement) => {
     if (!docPath) return;
     dispatch({ type: "retargetCaret", section, retarget });
@@ -546,6 +556,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     openEditor,
     moveCaretToPoint,
     moveCaretToEdge,
+    focusSection,
     retargetCaret,
     stopEditing,
     pendingPlacement: pendingPlacementRef.current,

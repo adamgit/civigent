@@ -18,6 +18,7 @@ import {
   type LiveDocumentSession,
   type Placement,
 } from "../status/live-document-session";
+import { useCrossSectionSpanKeys } from "./crossSectionSelection";
 import { SummaryWhoChangedThisSection } from "./SummaryWhoChangedThisSection.js";
 import {
   DocumentSectionReadNotes,
@@ -113,6 +114,8 @@ export function DocumentCanvas({
   onCaretPlaced,
   onEditBlocked,
 }: DocumentCanvasProps) {
+  const spanKeys = useCrossSectionSpanKeys();
+  const spanKeySet = new Set(spanKeys);
   const orderedFragmentKeys = sections.map((s) => SectionId.text(s.id));
   const fragmentKeyCounts = new Map<string, number>();
   for (const fragmentKey of orderedFragmentKeys) {
@@ -155,14 +158,16 @@ export function DocumentCanvas({
         const renderKey = hasDuplicateIdentity ? `${fk}::duplicate-row-${sectionIndex}` : fk;
         const sectionLabel = headingPathToLabel(headingPath);
         const crdtBlocked = isSectionBlocked(fk);
-        const inProposalMountWindow = proposalMode && shouldMountEditorForFragment(
-          fk,
-          focusedFragmentKey,
-          orderedFragmentKeys,
-          focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey),
+        const inProposalMountWindow = proposalMode && (
+          shouldMountEditorForFragment(
+            fk,
+            focusedFragmentKey,
+            orderedFragmentKeys,
+            focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey),
+          ) || spanKeySet.has(fk)
         );
         const inLiveMountWindow = !proposalMode && session !== undefined && !crdtBlocked
-          && mountEditor(session, section.id, orderedFragmentKeys, sessionFocusedReady);
+          && (mountEditor(session, section.id, orderedFragmentKeys, sessionFocusedReady) || spanKeySet.has(fk));
         // A corrupt legacy draft can reference one physical fragment from more
         // than one visible row. Mounting the same Y.XmlFragment in both rows makes
         // their refs and selection bindings fight: the last row wins every focus

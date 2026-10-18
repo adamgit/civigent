@@ -18,6 +18,7 @@ import { DocumentLoadingSkeleton } from "../components/DocumentLoadingSkeleton";
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentSectionRenderer } from "../components/DocumentSectionRenderer";
 import type { SectionArrowExit } from "../components/sectionEdge";
+import { runExtendedCursorExit, useCrossSectionSpanKeys } from "../components/crossSectionSelection";
 import { docPaperSectionScrollOffsetPx } from "../components/DocumentPaperStickyHeader";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
 import { useForcePublish } from "../hooks/useForcePublish";
@@ -377,6 +378,8 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
   // Evict ready editors outside the mount window around the focused FRAGMENT.
   useEditorWindowEviction(renderSections, focusedFragmentKey, setReadyEditors);
+  const spanKeys = useCrossSectionSpanKeys();
+  const spanKeySet = useMemo(() => new Set(spanKeys), [spanKeys]);
 
   caretHandoff.configRef.current = {
     editorMode: isEditing,
@@ -701,6 +704,32 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
   const handleSectionCursorExit = useCallback((fk: string, exit: SectionArrowExit) => {
     const rows = sectionsRef.current;
+    const orderedKeys = rows.map((row) => SectionId.text(row.id));
+    if (exit.extend) {
+      runExtendedCursorExit({
+        sourceFk: fk,
+        exit,
+        orderedKeys,
+        canFocusKey: (key) => {
+          const row = rows.find((r) => SectionId.text(r.id) === key);
+          return canFocusSection(row);
+        },
+        getView: (key) => editorRefs.current.get(key)?.getView() ?? null,
+        focusDest: (destFk) => {
+          const dest = rows.find((row) => SectionId.text(row.id) === destFk);
+          if (!dest) return;
+          if (proposalMode) {
+            const idx = rows.findIndex((row) => SectionId.text(row.id) === destFk);
+            if (idx < 0) return;
+            setBootstrapFocusedSectionIndex(idx);
+            publishViewingSection(destFk);
+            return;
+          }
+          liveReplica.focusSection(dest.id);
+        },
+      });
+      return;
+    }
     const pos = rows.findIndex((row) => SectionId.text(row.id) === fk);
     if (pos < 0) return;
     if (proposalMode) {
@@ -710,7 +739,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     const target = rows[exit.toward === "up" ? pos - 1 : pos + 1];
     if (!target || !canFocusSection(target)) return;
     liveReplica.moveCaretToEdge(target.id, exit.toward === "up" ? "end" : "start", exit.column);
-  }, [proposalMode, handleCursorExit, canFocusSection, liveReplica.moveCaretToEdge]);
+  }, [proposalMode, handleCursorExit, canFocusSection, liveReplica.moveCaretToEdge, liveReplica.focusSection, editorRefs, setBootstrapFocusedSectionIndex, publishViewingSection]);
 
   const handleDocumentBoundary = useCallback((boundary: "start" | "end") => {
     const rows = sectionsRef.current;
@@ -1033,8 +1062,8 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       mountEditor={
                         proposalMode
                           ? (activeProposalStatus === "inprogress" && isInProposal
-                              && shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys, focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey)))
-                          : (!crdtBlocked && mountEditor(liveReplica.session, section.id, orderedRenderKeys, liveFocusedReady))
+                              && (spanKeySet.has(fk) || shouldMountEditorForFragment(fk, focusedFragmentKey, orderedRenderKeys, focusedFragmentKey !== null && readyEditors.has(focusedFragmentKey))))
+                          : (!crdtBlocked && (spanKeySet.has(fk) || mountEditor(liveReplica.session, section.id, orderedRenderKeys, liveFocusedReady)))
                       }
                       readOnly={rowReadOnly(liveReplica.session, section.id, crdtBlocked)}
                       isInProposal={isInProposal}

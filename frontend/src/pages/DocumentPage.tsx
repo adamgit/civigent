@@ -15,6 +15,7 @@ import { DocumentConnectionBanner } from "../components/DocumentConnectionBanner
 import { DocumentLoadErrorView } from "../components/DocumentLoadErrorView";
 import { DocumentCanvas } from "../components/DocumentCanvas";
 import type { SectionArrowExit } from "../components/sectionEdge";
+import { runExtendedCursorExit } from "../components/crossSectionSelection";
 import { SharedDraftBanner } from "../components/SharedDraftBanner";
 import { useForcePublish } from "../hooks/useForcePublish";
 import { buildUnpublishedHistoryRow } from "../models/unpublished-history";
@@ -786,6 +787,32 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
   const handleSectionCursorExit = useCallback((fk: string, exit: SectionArrowExit) => {
     const rows = sectionsRef.current;
+    const orderedKeys = rows.map((row) => SectionId.text(row.id));
+    if (exit.extend) {
+      runExtendedCursorExit({
+        sourceFk: fk,
+        exit,
+        orderedKeys,
+        canFocusKey: (key) => {
+          const row = rows.find((r) => SectionId.text(r.id) === key);
+          return canFocusSection(row);
+        },
+        getView: (key) => editorRefs.current.get(key)?.getView() ?? null,
+        focusDest: (destFk) => {
+          const dest = rows.find((row) => SectionId.text(row.id) === destFk);
+          if (!dest) return;
+          if (proposalMode) {
+            const idx = rows.findIndex((row) => SectionId.text(row.id) === destFk);
+            if (idx < 0) return;
+            setBootstrapFocusedSectionIndex(idx);
+            publishViewingSection(destFk);
+            return;
+          }
+          liveReplica.focusSection(dest.id);
+        },
+      });
+      return;
+    }
     const pos = rows.findIndex((row) => SectionId.text(row.id) === fk);
     if (pos < 0) return;
     if (proposalMode) {
@@ -795,7 +822,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     const target = rows[exit.toward === "up" ? pos - 1 : pos + 1];
     if (!target || !canFocusSection(target)) return;
     liveReplica.moveCaretToEdge(target.id, exit.toward === "up" ? "end" : "start", exit.column);
-  }, [proposalMode, handleCursorExit, canFocusSection, liveReplica.moveCaretToEdge]);
+  }, [proposalMode, handleCursorExit, canFocusSection, liveReplica.moveCaretToEdge, liveReplica.focusSection, editorRefs, setBootstrapFocusedSectionIndex, publishViewingSection]);
 
   const handleDocumentBoundary = useCallback((boundary: "start" | "end") => {
     const rows = sectionsRef.current;

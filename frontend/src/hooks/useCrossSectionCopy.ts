@@ -20,6 +20,7 @@
 import { useEffect } from "react";
 import { proseMirrorNodeToMarkdown } from "@ks/milkdown-serializer";
 import type { MilkdownEditorHandle } from "../components/MilkdownEditor";
+import { getActiveCrossSectionSpan } from "../components/crossSectionSelection";
 
 export interface CrossSectionCopySection {
   fragment_key: string;
@@ -92,6 +93,21 @@ function collectIntersectedSections(
  * Uses posAtDOM to map DOM range endpoints to ProseMirror positions,
  * then slices the document and serializes.
  */
+function extractRangeMarkdown(handle: MilkdownEditorHandle, from: number, to: number): string | null {
+  const view = handle.getView();
+  if (!view) return null;
+  try {
+    const { doc } = view.state;
+    const start = Math.max(0, Math.min(from, to, doc.content.size));
+    const end = Math.max(0, Math.min(Math.max(from, to), doc.content.size));
+    const slice = doc.slice(start, end);
+    const docNode = doc.type.create(null, slice.content);
+    return proseMirrorNodeToMarkdown(docNode);
+  } catch {
+    return null;
+  }
+}
+
 function extractPartialMarkdown(
   handle: MilkdownEditorHandle,
   rangeNode: Node,
@@ -129,6 +145,31 @@ export function useCrossSectionCopy({
     if (!container) return;
 
     function handleCopy(event: ClipboardEvent): void {
+      const span = getActiveCrossSectionSpan();
+      if (span && span.keys.length > 1) {
+        const rowByFragmentKey = new Map(displayRows.map((s) => [s.fragment_key, s]));
+        const markdownParts: string[] = [];
+        for (let i = 0; i < span.keys.length; i++) {
+          const fragmentKey = span.keys[i];
+          const fallback = rowByFragmentKey.get(fragmentKey)?.displayMarkdown
+            ?? getLiveMarkdown?.(fragmentKey);
+          if (fallback === undefined) return;
+          const handle = editorRefs.current?.get(fragmentKey);
+          const isFirst = i === 0;
+          const isLast = i === span.keys.length - 1;
+          if (isFirst && handle) {
+            markdownParts.push(extractRangeMarkdown(handle, span.startPos, Number.POSITIVE_INFINITY) ?? fallback);
+          } else if (isLast && handle) {
+            markdownParts.push(extractRangeMarkdown(handle, 0, span.endPos) ?? fallback);
+          } else {
+            markdownParts.push(fallback);
+          }
+        }
+        event.preventDefault();
+        event.clipboardData?.setData("text/plain", markdownParts.join("\n\n"));
+        return;
+      }
+
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
 

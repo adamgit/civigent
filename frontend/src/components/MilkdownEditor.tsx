@@ -43,6 +43,8 @@ import { normalizeMarkdown, resolveHeadingPathFromDoc } from "./milkdown-utils";
 import type { SectionTransfer, DropVerdict } from "../services/section-transfer";
 import { crossSectionDropPlugin } from "./crossSectionDropPlugin";
 import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
+import { emptyHeadingKeyPlugin } from "./emptyHeadingKeyPlugin";
+import { crossSectionHighlightPlugin } from "./crossSectionSelection";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
 import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
 import { caretScrollClearancePlugin } from "./caretScrollClearancePlugin";
@@ -497,6 +499,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // ── Cross-section cursor exit keymap ────────────────
 
     crepe.editor.use(crossSectionNavigationPlugin({ onCursorExitRef }));
+    crepe.editor.use(emptyHeadingKeyPlugin());
+    crepe.editor.use(crossSectionHighlightPlugin());
 
     crepe.editor.use(documentBoundaryPlugin({ onDocumentBoundaryRef }));
 

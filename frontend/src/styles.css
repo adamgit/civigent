@@ -1481,6 +1481,13 @@ html.grip-drag-active .prosemirror-dropcursor-inline {
 .milkdown .ProseMirror {
   padding: 0;
 }
+.milkdown .ProseMirror .cross-section-selection {
+  background: rgba(45, 122, 138, 0.22);
+}
+.milkdown .ProseMirror .cross-section-selection-block {
+  background: rgba(45, 122, 138, 0.18);
+  border-radius: 2px;
+}
 .milkdown .ProseMirror > *:not(.milkdown-table-block) {
   /* Removed: this seems to have no benefit, and reduces quality of reading: max-width: 588px; */
 }
