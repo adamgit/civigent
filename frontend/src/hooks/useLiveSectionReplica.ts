@@ -35,7 +35,6 @@ export interface UseLiveSectionReplicaParams {
   onSessionEnded?: (completeSessionEndHandoff: () => void) => void;
   onSessionReinit?: () => void;
   onDocumentReplacementNotice?: (payload: DocumentReplacementNoticePayload) => void;
-  onSuperseded?: () => void;
   onDocumentDeleted?: () => void;
   caretFrameHooks?: CaretFrameHooks;
 }
@@ -108,8 +107,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
   onSessionReinitRef.current = params.onSessionReinit;
   const onDocumentReplacementNoticeRef = useRef(params.onDocumentReplacementNotice);
   onDocumentReplacementNoticeRef.current = params.onDocumentReplacementNotice;
-  const onSupersededRef = useRef(params.onSuperseded);
-  onSupersededRef.current = params.onSuperseded;
   const onDocumentDeletedRef = useRef(params.onDocumentDeleted);
   onDocumentDeletedRef.current = params.onDocumentDeleted;
   const caretFrameHooksRef = useRef(params.caretFrameHooks);
@@ -285,7 +282,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       onStateChange: (state) => {
         if (!isCurrent()) return;
         if (state === "connected") dispatchRef.current({ type: "pipeChanged", pipe: { phase: "live" } });
-        else if (state === "disconnected") dispatchRef.current({ type: "stopEditing", cause: "socket-stopped" });
+        else if (state === "disconnected") dispatchRef.current({ type: "editorDisconnected" });
         else dispatchRef.current({ type: "pipeChanged", pipe: { phase: state } });
       },
       onError: (reason) => {
@@ -312,7 +309,6 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       onSuperseded: () => {
         if (!isCurrent()) return;
         dispatchRef.current({ type: "superseded" });
-        onSupersededRef.current?.();
       },
       onDocumentDeleted: () => {
         if (!isCurrent()) return;
@@ -372,7 +368,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
     };
     switch (cmd.type) {
       case "openEditor": {
-        if (prev.kind !== "viewing") break;
+        if (prev.kind === "editing") break;
         teardownConnection();
         startEditor(pipelineDocPath());
         replicaRef.current?.setEditingEnabled(true);
@@ -403,6 +399,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       }
       case "stopEditing":
       case "superseded":
+      case "editorDisconnected":
         if (prev.kind === "editing") {
           teardownConnection();
           startObserver(pipelineDocPath());
@@ -427,7 +424,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       case "topologyChanged":
         break;
     }
-    if (next.kind === "viewing") pendingPlacementRef.current = null;
+    if (next.kind !== "editing") pendingPlacementRef.current = null;
   }, [mintFreshReplica, runSessionEndHandoff, startEditor, startObserver, teardownConnection]);
 
   const dispatch = useCallback((cmd: SessionCommand) => {
@@ -449,7 +446,7 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
       parked === docPath &&
       replicaRef.current !== null &&
       connectionRef.current?.kind === "observer" &&
-      sessionRef.current.kind === "viewing";
+      sessionRef.current.kind !== "editing";
 
     if (reclaimed) {
       forceRender();

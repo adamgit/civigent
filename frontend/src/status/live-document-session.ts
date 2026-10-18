@@ -14,7 +14,9 @@ export interface EditPipe {
 
 export type LiveDocumentSession =
   | { readonly kind: "viewing"; readonly pipe: ViewPipe; readonly paused: boolean }
-  | { readonly kind: "editing"; readonly pipe: EditPipe; readonly paused: boolean; readonly section: SectionId };
+  | { readonly kind: "editing"; readonly pipe: EditPipe; readonly paused: boolean; readonly section: SectionId }
+  | { readonly kind: "superseded"; readonly pipe: ViewPipe; readonly paused: boolean }
+  | { readonly kind: "socketStopped"; readonly pipe: ViewPipe; readonly paused: boolean };
 
 export function viewing(pipe: ViewPipe, paused: boolean): LiveDocumentSession {
   return { kind: "viewing", pipe, paused };
@@ -22,6 +24,24 @@ export function viewing(pipe: ViewPipe, paused: boolean): LiveDocumentSession {
 
 export function editing(section: SectionId, pipe: EditPipe, paused: boolean): LiveDocumentSession {
   return { kind: "editing", pipe, paused, section };
+}
+
+export function superseded(pipe: ViewPipe, paused: boolean): LiveDocumentSession {
+  return { kind: "superseded", pipe, paused };
+}
+
+export function socketStopped(pipe: ViewPipe, paused: boolean): LiveDocumentSession {
+  return { kind: "socketStopped", pipe, paused };
+}
+
+type NonEditingSession = Exclude<LiveDocumentSession, { kind: "editing" }>;
+
+function nonEditing(prev: NonEditingSession, pipe: ViewPipe, paused: boolean): LiveDocumentSession {
+  switch (prev.kind) {
+    case "viewing": return viewing(pipe, paused);
+    case "superseded": return superseded(pipe, paused);
+    case "socketStopped": return socketStopped(pipe, paused);
+  }
 }
 
 export type Placement =
@@ -37,7 +57,8 @@ export type SessionCommand =
   | { type: "moveCaretToEdge"; section: SectionId; edge: "start" | "end"; column: number | null }
   | { type: "focusSection"; section: SectionId }
   | { type: "retargetCaret"; section: SectionId; retarget: SplitCaretPlacement }
-  | { type: "stopEditing"; cause?: "socket-stopped" }
+  | { type: "stopEditing" }
+  | { type: "editorDisconnected" }
   | { type: "pipeChanged"; pipe: EditPipe }
   | { type: "sessionReplaced"; keepEditing: boolean }
   | { type: "superseded" }
@@ -60,28 +81,37 @@ export function reduceSession(prev: LiveDocumentSession, cmd: SessionCommand): L
     case "moveCaretToEdge":
     case "focusSection":
     case "retargetCaret":
-      if (prev.kind === "viewing") return prev;
+      if (prev.kind !== "editing") return prev;
       return editing(cmd.section, prev.pipe, prev.paused);
     case "stopEditing":
-    case "superseded":
       if (prev.kind === "editing") return viewing(CONNECTING, prev.paused);
       return prev;
+    case "superseded":
+      if (prev.kind === "editing") return superseded(CONNECTING, prev.paused);
+      return prev;
+    case "editorDisconnected":
+      if (prev.kind === "editing") return socketStopped(CONNECTING, prev.paused);
+      return prev;
     case "sessionEnded":
-      return viewing(CONNECTING, prev.paused);
+      if (prev.kind === "editing") return socketStopped(CONNECTING, prev.paused);
+      if (prev.kind === "viewing") return viewing(CONNECTING, prev.paused);
+      return nonEditing(prev, CONNECTING, prev.paused);
     case "sessionReplaced":
       if (cmd.keepEditing && prev.kind === "editing") return editing(prev.section, CONNECTING, prev.paused);
-      return viewing(CONNECTING, prev.paused);
+      if (prev.kind === "editing") return socketStopped(CONNECTING, prev.paused);
+      if (prev.kind === "viewing") return viewing(CONNECTING, prev.paused);
+      return nonEditing(prev, CONNECTING, prev.paused);
     case "pipeChanged":
       if (prev.kind === "editing") return editing(prev.section, cmd.pipe, prev.paused);
       if (cmd.pipe.phase === "error") {
-        throw new Error(`reduceSession: a viewing session cannot receive pipe phase "error" (prev: ${JSON.stringify(prev)})`);
+        throw new Error(`reduceSession: a ${prev.kind} session cannot receive pipe phase "error" (prev: ${JSON.stringify(prev)})`);
       }
-      return viewing({ phase: cmd.pipe.phase }, prev.paused);
+      return nonEditing(prev, { phase: cmd.pipe.phase }, prev.paused);
     case "pauseChanged":
       if (prev.kind === "editing") return editing(prev.section, prev.pipe, cmd.paused);
-      return viewing(prev.pipe, cmd.paused);
+      return nonEditing(prev, prev.pipe, cmd.paused);
     case "topologyChanged": {
-      if (prev.kind === "viewing") return prev;
+      if (prev.kind !== "editing") return prev;
       const survivor = resolveFocusAfterTopologyChange(cmd.prev, cmd.next, prev.section);
       if (survivor === null) return viewing(viewPipeFromEditPipe(prev.pipe), prev.paused);
       if (survivor === prev.section) return prev;
@@ -105,7 +135,7 @@ export function onActivateRow(
   blocked: boolean,
 ): ActivateRow | null {
   if (s.paused || blocked) return null;
-  if (s.kind === "viewing") return { type: "openEditor", section: row, coords };
+  if (s.kind !== "editing") return { type: "openEditor", section: row, coords };
   return { type: "moveCaretToPoint", section: row, coords };
 }
 

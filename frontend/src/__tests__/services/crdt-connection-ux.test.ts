@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { CrdtConnectionState } from "../../services/crdt-provider";
-import { editing, viewing } from "../../status/live-document-session";
+import { editing, socketStopped, superseded, viewing } from "../../status/live-document-session";
 import { SectionId } from "../../types/live-sections";
 import {
   crdtConnectionPhase,
@@ -88,5 +88,30 @@ describe("connectionBannerInfo (editing vs viewing)", () => {
     const info = connectionBannerInfo(viewing({ phase: "reconnecting" }, false))!;
     expect(info.message.toLowerCase()).not.toContain("saved");
     expect(info.tone).toBe("amber");
+  });
+});
+
+describe("connectionBannerInfo lost editing", () => {
+  it("shows a banner on a live superseded session", () => {
+    const info = connectionBannerInfo(superseded({ phase: "live" }, false))!;
+    expect(info.message).toBe("Editing moved to another tab — this tab can no longer change the document");
+    expect(info.sectionLabel).toBe("Editing moved to another tab");
+    expect(info.tone).toBe("amber");
+  });
+
+  it("shows a banner on a live socketStopped session", () => {
+    const info = connectionBannerInfo(socketStopped({ phase: "live" }, false))!;
+    expect(info.message).toBe("This tab's editing session ended — click a section to start editing again");
+    expect(info.sectionLabel).toBe("Editing session ended");
+    expect(info.tone).toBe("amber");
+  });
+
+  it("shows no banner on a live viewing session", () => {
+    expect(connectionBannerInfo(viewing({ phase: "live" }, false))).toBeNull();
+  });
+
+  it("lets a reconnecting pipe win over superseded and socketStopped", () => {
+    expect(connectionBannerInfo(superseded({ phase: "reconnecting" }, false))!.message).toMatch(/reconnect/i);
+    expect(connectionBannerInfo(socketStopped({ phase: "reconnecting" }, false))!.message).toMatch(/reconnect/i);
   });
 });

@@ -48,6 +48,26 @@ export function crdtBannerInfo(state: CrdtConnectionState): CrdtBannerInfo | nul
   }
 }
 
+function lostEditingBannerInfo(session: LiveDocumentSession): CrdtBannerInfo | null {
+  switch (session.kind) {
+    case "superseded":
+      return {
+        tone: "amber",
+        message: "Editing moved to another tab — this tab can no longer change the document",
+        sectionLabel: "Editing moved to another tab",
+      };
+    case "socketStopped":
+      return {
+        tone: "amber",
+        message: "This tab's editing session ended — click a section to start editing again",
+        sectionLabel: "Editing session ended",
+      };
+    case "viewing":
+    case "editing":
+      return null;
+  }
+}
+
 export function connectionBannerInfo(session: LiveDocumentSession): CrdtBannerInfo | null {
   if (session.kind === "editing") {
     switch (session.pipe.phase) {
@@ -62,8 +82,6 @@ export function connectionBannerInfo(session: LiveDocumentSession): CrdtBannerIn
     }
   }
   switch (session.pipe.phase) {
-    case "live":
-      return null;
     case "connecting":
       return {
         tone: "amber",
@@ -76,5 +94,7 @@ export function connectionBannerInfo(session: LiveDocumentSession): CrdtBannerIn
         message: "Connection lost — live updates paused, reconnecting…",
         sectionLabel: "Reconnecting…",
       };
+    case "live":
+      return lostEditingBannerInfo(session);
   }
 }

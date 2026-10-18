@@ -247,7 +247,7 @@ describe("useLiveSectionReplica", () => {
     });
 
     expect(freshEditor.destroy).toHaveBeenCalled();
-    expect(result.current.session.kind).toBe("viewing");
+    expect(result.current.session.kind).toBe("socketStopped");
     const freshObserver = providers[providers.length - 1];
     expect(freshObserver.doc).not.toBe(freshEditor.doc);
     expect(freshObserver.connect).toHaveBeenCalled();

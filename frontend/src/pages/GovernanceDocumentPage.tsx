@@ -137,7 +137,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const loadStartedAtRef = useRef<number | null>(null);
 
   // ── Metadata state ───────────────────────────────────────
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [editAccessError, setEditAccessError] = useState<string | null>(null);
 
@@ -194,9 +193,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
       },
     );
   }, [docPath, resourceModel, sectionsLoading]);
-  const handleSuperseded = useCallback(() => {
-    setStatusMessage("Editing moved to another tab. This tab is now read-only.");
-  }, []);
   const caretHandoff = useSplitCaretHandoff();
   const liveReplica = useLiveSectionReplica({
     docPath,
@@ -204,7 +200,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     // 4022 restore / 4024 force-rebuild: the hook replaces the live pipeline;
     // reseed canonical so cold previews reflect the replaced content.
     onSessionReinit: handleLiveSessionReinit,
-    onSuperseded: handleSuperseded,
     caretFrameHooks: caretHandoff.caretFrameHooks,
   });
   const liveReplicaReadyRef = useRef(false);
@@ -958,7 +953,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
             ) : null}
 
             {/* Status / error */}
-            {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
             {moveError ? (
               <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                 {moveError}
@@ -1122,8 +1116,10 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
       <DocumentFooter
         docPath={docPath}
-        isEditing={isEditing}
-        focusedHeadingPath={focusedHeadingPath}
+        session={liveReplica.session}
+        headingLabel={focusedHeadingPath === null ? null : headingPathToLabel(focusedHeadingPath)}
+        proposalMode={proposalMode}
+        transportError={liveReplica.transportError}
         loadDurationMs={loadDurationMs}
       />
 

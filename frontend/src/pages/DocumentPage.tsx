@@ -166,7 +166,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     [],
   );
 
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [editAccessError, setEditAccessError] = useState<string | null>(null);
 
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
@@ -214,9 +213,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
       },
     );
   }, [docPath, resourceModel, sectionsLoading]);
-  const handleSuperseded = useCallback(() => {
-    setStatusMessage("Editing moved to another tab. This tab is now read-only.");
-  }, []);
   // 4026: the document was deleted out from under this tab. There is nothing to
   // reseed and nothing to edit — leave for the parent folder rather than sitting
   // on a document that no longer exists.
@@ -231,7 +227,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     // reseed canonical so cold previews reflect the replaced content.
     onSessionReinit: handleLiveSessionReinit,
     onDocumentReplacementNotice: handleDocumentReplacementNotice,
-    onSuperseded: handleSuperseded,
     onDocumentDeleted: handleDocumentDeleted,
     caretFrameHooks: caretHandoff.caretFrameHooks,
   });
@@ -1267,7 +1262,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
               ) : null}
 
               {/* Status / error */}
-              {statusMessage ? <p className="text-xs text-status-green mb-2">{statusMessage}</p> : null}
               {deleteError ? (
                 <pre className="text-xs text-status-red mb-2 whitespace-pre-wrap break-words font-mono">
                   {deleteError}
@@ -1427,8 +1421,10 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
       <DocumentFooter
         docPath={docPath}
-        isEditing={isEditing}
-        focusedHeadingPath={focusedHeadingPath}
+        session={liveReplica.session}
+        headingLabel={focusedHeadingPath === null ? null : headingPathToLabel(focusedHeadingPath)}
+        proposalMode={proposalMode}
+        transportError={liveReplica.transportError}
         loadDurationMs={loadDurationMs}
       />
 
