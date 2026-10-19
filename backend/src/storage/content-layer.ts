@@ -5,7 +5,8 @@ import {
   DocumentSkeletonInternal,
   resolveSkeletonPath,
   skeletonFileExists,
-  tombstoneFileExists,
+  skeletonFileExistsSync,
+  tombstoneFileExistsSync,
   writeTombstoneMarker,
   generateSectionFilename,
   generateBeforeFirstHeadingFilename,
@@ -19,7 +20,7 @@ import {
   type StructuralMutationPlan,
 } from "./document-skeleton.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
-import { directoryExists, pathExists } from "./fs-primitives.js";
+import { directoryExists, directoryExistsSync, pathExists, readFileIfExistsSync } from "./fs-primitives.js";
 import { staleHeadingPath } from "./skeleton-errors.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { DocPath, HeadingLevel } from "../types/shared.js";
@@ -411,8 +412,8 @@ export class ContentLayer {
   }
 
   private async readSkeleton(docPath: DocPath): Promise<DocumentSkeleton> {
-    if (!(await skeletonFileExists(docPath, this.contentRoot))) {
-      if (await directoryExists(resolveSkeletonPath(docPath, this.contentRoot))) {
+    if (!skeletonFileExistsSync(docPath, this.contentRoot)) {
+      if (directoryExistsSync(resolveSkeletonPath(docPath, this.contentRoot))) {
         throw new DirectoryAtDocPathError(directoryAtDocPathMessage(docPath));
       }
       throw new DocumentNotFoundError(`No skeleton found for document: ${docPath}`);
@@ -471,14 +472,13 @@ export class ContentLayer {
       throw new SectionNotFoundError((err as Error).message);
     }
 
-    try {
-      return bodyFromDisk(await readFile(entry.absolutePath, "utf8"));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    const raw = readFileIfExistsSync(entry.absolutePath);
+    if (raw === null) {
       throw new SectionNotFoundError(
         `Section not found: (${ref.docPath}, [${ref.headingPath.join(" > ")}]).`,
       );
     }
+    return bodyFromDisk(raw);
   }
 
   async readSubtree(
@@ -629,11 +629,11 @@ export class ProposalShadowContentLayer {
   }
 
   async getDocumentState(docPath: DocPath): Promise<ProposalDocumentState> {
-    if (this.overlayRoot !== this.canonicalRoot && (await tombstoneFileExists(docPath, this.overlayRoot))) {
+    if (this.overlayRoot !== this.canonicalRoot && tombstoneFileExistsSync(docPath, this.overlayRoot)) {
       return "tombstone";
     }
-    if (await skeletonFileExists(docPath, this.overlayRoot)) return "live";
-    if (await skeletonFileExists(docPath, this.canonicalRoot)) return "live";
+    if (skeletonFileExistsSync(docPath, this.overlayRoot)) return "live";
+    if (skeletonFileExistsSync(docPath, this.canonicalRoot)) return "live";
     return "missing";
   }
 
@@ -663,7 +663,7 @@ export class ProposalShadowContentLayer {
   }
 
   private async loadWritableSkeleton(docPath: DocPath): Promise<DocumentSkeletonInternal> {
-    const structureRoot = (await skeletonFileExists(docPath, this.overlayRoot))
+    const structureRoot = skeletonFileExistsSync(docPath, this.overlayRoot)
       ? this.overlayRoot
       : this.canonicalRoot;
     const nodes = await DocumentSkeletonInternal.loadNodesFromRoot(docPath, structureRoot);
@@ -1394,22 +1394,14 @@ export class ProposalShadowContentLayer {
     return bodyFromDisk(content);
   }
 
-  private async readEffectiveSectionBody(proposalBodyPath: string): Promise<string | null> {
-    try {
-      return await readFile(proposalBodyPath, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
+  private readEffectiveSectionBody(proposalBodyPath: string): string | null {
+    const overlayContent = readFileIfExistsSync(proposalBodyPath);
+    if (overlayContent !== null) return overlayContent;
     const canonicalPath = path.join(
       this.canonicalRoot,
       path.relative(this.overlayRoot, proposalBodyPath),
     );
-    try {
-      return await readFile(canonicalPath, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    return null;
+    return readFileIfExistsSync(canonicalPath);
   }
 
   private async requireEffectiveSectionBody(

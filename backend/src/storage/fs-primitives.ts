@@ -16,6 +16,7 @@
  * state, …) propagates unchanged. These helpers never swallow such errors and
  * never log-and-continue.
  */
+import { accessSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 
@@ -45,6 +46,11 @@ export async function pathExists(targetPath: string): Promise<boolean> {
   return accessPathIfExists(targetPath);
 }
 
+/** Same as `pathExists`, completed on the calling thread. */
+export function pathExistsSync(targetPath: string): boolean {
+  return accessPathIfExistsSync(targetPath);
+}
+
 /**
  * Check access to a path. Returns `true` if accessible under `mode`, `false`
  * if the path is missing. Non-missing errors (permission, I/O) propagate.
@@ -52,6 +58,16 @@ export async function pathExists(targetPath: string): Promise<boolean> {
 export async function accessPathIfExists(targetPath: string, mode?: number): Promise<boolean> {
   try {
     await access(targetPath, mode);
+    return true;
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+export function accessPathIfExistsSync(targetPath: string, mode?: number): boolean {
+  try {
+    accessSync(targetPath, mode);
     return true;
   } catch (error) {
     if (isMissingPathError(error)) return false;
@@ -76,6 +92,15 @@ export async function directoryExists(targetPath: string): Promise<boolean> {
   }
 }
 
+export function directoryExistsSync(targetPath: string): boolean {
+  try {
+    return statSync(targetPath).isDirectory();
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
 /**
  * Read a UTF-8 text file, or `null` if it does not exist.
  * Non-missing errors (permission, I/O, corrupt state) propagate.
@@ -83,6 +108,15 @@ export async function directoryExists(targetPath: string): Promise<boolean> {
 export async function readFileIfExists(targetPath: string): Promise<string | null> {
   try {
     return await readFile(targetPath, "utf8");
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
+  }
+}
+
+export function readFileIfExistsSync(targetPath: string): string | null {
+  try {
+    return readFileSync(targetPath, "utf8");
   } catch (error) {
     if (isMissingPathError(error)) return null;
     throw error;
@@ -138,6 +172,18 @@ export async function readDirentsIfExists(
 ): Promise<Dirent[]> {
   try {
     return await readdir(targetPath, { withFileTypes: true, recursive: options?.recursive ?? false });
+  } catch (error) {
+    if (isMissingPathError(error)) return [];
+    throw error;
+  }
+}
+
+export function readDirentsIfExistsSync(
+  targetPath: string,
+  options?: { recursive?: boolean },
+): Dirent[] {
+  try {
+    return readdirSync(targetPath, { withFileTypes: true, recursive: options?.recursive ?? false });
   } catch (error) {
     if (isMissingPathError(error)) return [];
     throw error;

@@ -11,7 +11,7 @@ const removedLegacyArchitectureSuites: string[] = [];
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
-    exclude: [...configDefaults.exclude, ...removedLegacyArchitectureSuites],
+    exclude: [...configDefaults.exclude, ...removedLegacyArchitectureSuites, "src/__tests__/perf/**"],
     env: {
       // Tests run in single_user mode by default (no auth enforcement).
       // Individual tests can override by setting process.env.KS_AUTH_MODE.

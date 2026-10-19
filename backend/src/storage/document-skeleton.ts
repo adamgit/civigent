@@ -47,7 +47,7 @@
 
 import path from "node:path";
 import { writeFile, mkdir, rm } from "node:fs/promises";
-import { pathExists, readFileIfExists } from "./fs-primitives.js";
+import { pathExists, pathExistsSync, readFileIfExistsSync } from "./fs-primitives.js";
 import type { DocStructureNode } from "../types/shared.js";
 import { DocPath, HeadingLevel } from "../types/shared.js";
 import { docPathToContentRelativeFsPath } from "./path-utils.js";
@@ -161,6 +161,10 @@ export async function skeletonFileExists(docPath: DocPath, contentRoot: string):
   return fileExists(resolveSkeletonPath(docPath, contentRoot));
 }
 
+export function skeletonFileExistsSync(docPath: DocPath, contentRoot: string): boolean {
+  return pathExistsSync(resolveSkeletonPath(docPath, contentRoot));
+}
+
 /**
  * Single-root tombstone-marker existence check. A storage primitive — it makes
  * no proposal/canonical fallback decision. The proposal subsystem composes it
@@ -169,6 +173,10 @@ export async function skeletonFileExists(docPath: DocPath, contentRoot: string):
  */
 export async function tombstoneFileExists(docPath: DocPath, contentRoot: string): Promise<boolean> {
   return fileExists(resolveTombstonePath(docPath, contentRoot));
+}
+
+export function tombstoneFileExistsSync(docPath: DocPath, contentRoot: string): boolean {
+  return pathExistsSync(resolveTombstonePath(docPath, contentRoot));
 }
 
 /**
@@ -897,7 +905,7 @@ export class DocumentSkeleton {
    * fallback via the effective-load `fromDisk(...)`.
    */
   static async fromSingleRoot(docPath: DocPath, contentRoot: string): Promise<DocumentSkeleton> {
-    const nodes = await readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
+    const nodes = readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return new DocumentSkeleton(docPath, nodes, contentRoot);
   }
@@ -921,7 +929,7 @@ export class DocumentSkeleton {
     canonicalRoot: string,
     deletedSectionFiles?: ReadonlySet<string>,
   ): Promise<DocumentSkeleton> {
-    const nodes = await buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
+    const nodes = buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
     validateNoDuplicateRoots(nodes, docPath);
     return new DocumentSkeleton(docPath, nodes, overlayRoot);
   }
@@ -1808,7 +1816,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    * passes the result to `fromNodes(...)`; DS itself never chooses between roots.
    */
   static async loadNodesFromRoot(docPath: DocPath, contentRoot: string): Promise<SkeletonNode[]> {
-    const nodes = await readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
+    const nodes = readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
     validateNoDuplicateRoots(nodes, docPath);
     return nodes;
   }
@@ -1929,19 +1937,19 @@ export async function resolveEffectiveSkeletonNodes(
   return buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
 }
 
-async function buildSkeletonTree(
+function buildSkeletonTree(
   docPath: DocPath,
   overlayRoot: string,
   canonicalRoot: string,
   deletedSectionFiles?: ReadonlySet<string>,
-): Promise<SkeletonNode[]> {
+): SkeletonNode[] {
   const overlayPath = resolveSkeletonPath(docPath, overlayRoot);
   const canonicalPath = resolveSkeletonPath(docPath, canonicalRoot);
 
   // The ONLY non-merge path (U5): reading canonical itself (`overlayRoot ===
   // canonicalRoot`). Read the single root wholesale.
   if (overlayRoot === canonicalRoot) {
-    if (!(await pathExists(canonicalPath))) return [];
+    if (!pathExistsSync(canonicalPath)) return [];
     return readSkeletonRootTree(canonicalPath);
   }
 
@@ -1965,22 +1973,22 @@ async function buildSkeletonTree(
 
   // Effective-load fallback resolution: a proposal tombstone shadows canonical
   // as an empty (pending-deletion) document.
-  if (await fileExists(resolveTombstonePath(docPath, overlayRoot))) {
+  if (pathExistsSync(resolveTombstonePath(docPath, overlayRoot))) {
     return [];
   }
 
-  const canonicalNodes = (await pathExists(canonicalPath))
-    ? await readSkeletonRootTree(canonicalPath)
+  const canonicalNodes = pathExistsSync(canonicalPath)
+    ? readSkeletonRootTree(canonicalPath)
     : [];
 
   // Body-only (sparse) proposal: no overlay skeleton → structure is fully
   // inherited from current canonical (the trivial merge: nothing claimed
   // structurally).
-  if (!(await pathExists(overlayPath))) {
+  if (!pathExistsSync(overlayPath)) {
     return canonicalNodes;
   }
 
-  const overlayNodes = await readSkeletonRootTree(overlayPath);
+  const overlayNodes = readSkeletonRootTree(overlayPath);
 
   // No canonical to inherit (proposal-created document) → overlay is the whole
   // structure.
@@ -2083,8 +2091,8 @@ function canonicalInsertPosition(
  * by the file system (sub-skeleton files in .sections/ directories), NOT by
  * heading level numbers within a file.
  */
-async function readSkeletonRootTree(skeletonPath: string): Promise<SkeletonNode[]> {
-  const content = await readFileIfExists(skeletonPath);
+function readSkeletonRootTree(skeletonPath: string): SkeletonNode[] {
+  const content = readFileIfExistsSync(skeletonPath);
   if (content === null) return [];
   if (content === "") return [];
   if (parseSkeletonToEntries(content).length === 0) {
@@ -2096,8 +2104,8 @@ async function readSkeletonRootTree(skeletonPath: string): Promise<SkeletonNode[
   return readChildTreeTreatingLeafBodiesAsChildless(skeletonPath);
 }
 
-async function readChildTreeTreatingLeafBodiesAsChildless(skeletonPath: string): Promise<SkeletonNode[]> {
-  const content = await readFileIfExists(skeletonPath);
+function readChildTreeTreatingLeafBodiesAsChildless(skeletonPath: string): SkeletonNode[] {
+  const content = readFileIfExistsSync(skeletonPath);
   if (content === null) return [];
 
   const entries = parseSkeletonToEntries(content);
@@ -2117,7 +2125,7 @@ async function readChildTreeTreatingLeafBodiesAsChildless(skeletonPath: string):
     // Children come from sub-skeleton files, NOT from level numbers.
     // A section file that itself contains {{section:}} markers is a sub-skeleton.
     const subSkeletonPath = path.join(sectionsDir, entry.sectionFile);
-    node.children = await readChildTreeTreatingLeafBodiesAsChildless(subSkeletonPath);
+    node.children = readChildTreeTreatingLeafBodiesAsChildless(subSkeletonPath);
 
     nodes.push(node);
   }
@@ -2143,8 +2151,8 @@ export async function listSkeletonEntriesAtRoot(
   root: string,
 ): Promise<FlatEntry[] | null> {
   const skeletonPath = resolveSkeletonPath(docPath, root);
-  if (!(await pathExists(skeletonPath))) return null;
-  const rootNodes = await readSkeletonRootTree(skeletonPath);
+  if (!pathExistsSync(skeletonPath)) return null;
+  const rootNodes = readSkeletonRootTree(skeletonPath);
   const out: FlatEntry[] = [];
   const walk = (nodes: SkeletonNode[], parentPath: string[], parentSkeletonPath: string): void => {
     const sectionsDir = `${parentSkeletonPath}.sections`;

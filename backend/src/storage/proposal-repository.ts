@@ -1,7 +1,8 @@
 import path from "node:path";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile, rename, mkdir, rm } from "node:fs/promises";
-import { pathExists, readDirentsIfExists } from "./fs-primitives.js";
+import { pathExists, pathExistsSync, readDirentsIfExists, readDirentsIfExistsSync } from "./fs-primitives.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { mintProposalManifest, unionDeletedSectionFiles, type ProposalManifest } from "./proposal-manifest.js";
 import {
@@ -186,12 +187,12 @@ export function effectiveSkeletonRootPair(
  * the trust boundary (see {@link decodeProposal}): a malformed/invalid file throws.
  */
 async function readProposalFile(filePath: string, status: ProposalStatus): Promise<AnyProposal> {
-  const content = await readFile(filePath, "utf8");
+  const content = readFileSync(filePath, "utf8");
   return decodeProposal(parseJson(content), status);
 }
 
 async function readActiveProposalFile(filePath: string, status: ActiveProposalStatus): Promise<ActiveProposal> {
-  const content = await readFile(filePath, "utf8");
+  const content = readFileSync(filePath, "utf8");
   return decodeActiveProposal(parseJson(content), status);
 }
 
@@ -234,7 +235,7 @@ async function writeJsonFile(
 async function locateProposal(id: ProposalId): Promise<{ status: ProposalStatus; filePath: string }> {
   for (const status of ALL_STATUSES) {
     const filePath = proposalPath(status, id);
-    if (await pathExists(filePath)) {
+    if (pathExistsSync(filePath)) {
       return { status, filePath };
     }
   }
@@ -247,7 +248,7 @@ export async function readRawProposalMeta(
   const located = await locateProposal(id);
   return {
     status: located.status,
-    rawMeta: await readFile(located.filePath, "utf8"),
+    rawMeta: readFileSync(located.filePath, "utf8"),
   };
 }
 
@@ -337,7 +338,7 @@ export async function readProposal(id: ProposalId): Promise<AnyProposal> {
     const filePath = proposalPath(status, id);
     // Absence in this status dir is a normal lookup miss; a present-but-corrupt
     // meta.json must surface (decoding throws, not a silent miss).
-    if (!(await pathExists(filePath))) continue;
+    if (!pathExistsSync(filePath)) continue;
     return readProposalFile(filePath, status);
   }
   throw new ProposalNotFoundError(`Proposal not found: ${id}`);
@@ -577,15 +578,15 @@ export async function listActiveProposalsByStatuses(
   const proposals: ActiveProposal[] = [];
 
   for (const currentStatus of statuses) {
-    const entries = await readDirentsIfExists(statusDir(currentStatus));
+    const entries = readDirentsIfExistsSync(statusDir(currentStatus));
     for (const entry of entries) {
       if (!entry.isDirectory()) {
         continue;
       }
       const metaPath = path.join(statusDir(currentStatus), entry.name, "meta.json");
-      if (!(await pathExists(metaPath))) continue;
+      if (!pathExistsSync(metaPath)) continue;
       if (claimScope !== undefined) {
-        const raw = parseJson(await readFile(metaPath, "utf8"));
+        const raw = parseJson(readFileSync(metaPath, "utf8"));
         const claims = proposalJsonClaimsAnyDoc(raw, claimScope);
         if (claims === null) {
           throw new Error(
