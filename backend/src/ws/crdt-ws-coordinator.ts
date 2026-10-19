@@ -1526,6 +1526,13 @@ interface LiveEditAcceptanceResult {
    * the still-bound client off, rather than fataling.
    */
   removedTargetFragmentKeys: string[];
+  /**
+   * `resolveLiveSectionLayout` result from this gate invocation. The classify
+   * step below must use this array — it must not call `resolveLiveSectionLayout`
+   * again in the same turn (disk has not changed; a second resolve is the same
+   * walk).
+   */
+  layout: LiveSectionLayoutEntry[];
 }
 
 /**
@@ -1560,7 +1567,7 @@ async function runLiveEditAcceptanceGate(
   touchedKeys: ReadonlySet<string>,
   preUpdateMarkdownByKey: ReadonlyMap<string, FragmentContent>,
 ): Promise<LiveEditAcceptanceResult> {
-  const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys: [] };
+  const empty: LiveEditAcceptanceResult = { acceptedFragmentKeys: [], rejectionGroups: [], removedTargetFragmentKeys: [], layout: [] };
   if (touchedKeys.size === 0) return empty;
 
   const ownProposalId = session.generator.getCurrentProposalId();
@@ -1607,7 +1614,7 @@ async function runLiveEditAcceptanceGate(
   }
 
   if (targets.length === 0) {
-    return { acceptedFragmentKeys: [], rejectionGroups: untargetableRejections, removedTargetFragmentKeys };
+    return { acceptedFragmentKeys: [], rejectionGroups: untargetableRejections, removedTargetFragmentKeys, layout };
   }
 
   const lockResult = await checkProposalLocks({
@@ -1679,6 +1686,7 @@ async function runLiveEditAcceptanceGate(
     acceptedFragmentKeys,
     rejectionGroups: [...untargetableRejections, ...rejectionGroups],
     removedTargetFragmentKeys,
+    layout,
   };
 }
 
@@ -1961,7 +1969,7 @@ export async function processArbitratedClientUpdate(
       recordAcceptedHumanDocumentWrite(docPath, acceptedWriterIdentity);
       notifyDocumentActivityChanged(docPath);
     }
-    const layout = await resolveLiveSectionLayout(session);
+    const layout = acceptance.layout;
     const capturedByKey = new Map(
       captureLiveFragments(layout, (key) => session.liveFragments.readFragmentString(key))
         .map((captured) => [captured.identity.fragmentKey, captured] as const),

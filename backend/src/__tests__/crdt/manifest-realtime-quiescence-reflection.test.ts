@@ -34,6 +34,7 @@ import {
   setCrdtEventHandler,
 } from "../../ws/crdt-ws-coordinator.js";
 import { BEFORE_FIRST_HEADING_KEY, getBackendSchema } from "../../crdt/ydoc-fragments.js";
+import { buildWireLiveSectionsState } from "../../crdt/live-sections-wire-state.js";
 import { buildFragmentContent } from "../../storage/section-formatting.js";
 import type { FragmentContent, SectionBody } from "../../storage/section-formatting.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -369,6 +370,38 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       const claimed = await claimedHeadingKeys(proposalId);
       expect(claimed).toContain(SectionRef.headingKey(["Strategic Overview"]));
       expect(claimed).toContain(SectionRef.headingKey(["Overview"]));
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it("a quiescence check that still sees activity does not drop an accepted sibling split", async () => {
+    vi.useFakeTimers();
+    const session = await openSession();
+    const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
+    try {
+      session.liveFragments.replaceFragmentString(
+        OVERVIEW_KEY,
+        "## Overview\n\nbase overview body\n\n## Second Section\n\nbrand new sibling body" as FragmentContent,
+      );
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
+      await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+
+      const threshold = session.generator.publishTriggerPolicy.quiescenceThresholdMs;
+      armQuiescenceTimer(session);
+      // The fragment is still inside the quiet window when this armed pass fires.
+      session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now() + 1);
+
+      await vi.advanceTimersByTimeAsync(threshold);
+      await session.enqueue(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(threshold + 50);
+      await session.enqueue(() => undefined);
+
+      const wire = await session.enqueue(() => buildWireLiveSectionsState(session));
+      expect(
+        wire.topology.some((ref) => ref.heading_path.length === 1 && ref.heading_path[0] === "Second Section"),
+      ).toBe(true);
     } finally {
       editor.dispose();
     }
