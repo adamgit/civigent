@@ -967,21 +967,48 @@ async function runPublishAttemptInner(session: DocSession): Promise<PublishAttem
 
 
 
-export function armQuiescenceTimer(session: DocSession): void {
+function partitionFragmentsByQuiescence(
+  session: DocSession,
+  now: number,
+): {
+  quiescentKeys: string[];
+  stillActiveKeys: string[];
+  nextWakeDelayMs: number | null;
+} {
+  const policy = session.generator.publishTriggerPolicy;
+  const quiescentKeys: string[] = [];
+  const stillActiveKeys: string[] = [];
+  let nextWakeDelayMs: number | null = null;
+  for (const fragmentKey of session.liveFragments.getFragmentKeys()) {
+    const lastActivity = session.fragmentLastActivity.get(fragmentKey);
+    if (lastActivity === undefined || policy.isFragmentQuiescent(lastActivity, now)) {
+      quiescentKeys.push(fragmentKey);
+      continue;
+    }
+    stillActiveKeys.push(fragmentKey);
+    const remaining = policy.msUntilQuiescent(lastActivity, now);
+    if (nextWakeDelayMs === null || remaining < nextWakeDelayMs) {
+      nextWakeDelayMs = remaining;
+    }
+  }
+  return { quiescentKeys, stillActiveKeys, nextWakeDelayMs };
+}
+
+export function armQuiescenceTimer(session: DocSession, delayMs?: number): void {
   const docPath = session.docPath;
   // A delete command owns the lane and the bound proposal; re-arming the
   // settled-frontier publish would race it for the same proposal.
   if (documentDeleteInFlight.has(docPath)) return;
   const existing = quiescenceTimers.get(docPath);
   if (existing) clearTimeout(existing);
-  const thresholdMs = session.generator.publishTriggerPolicy.quiescenceThresholdMs;
+  const waitMs = delayMs ?? session.generator.publishTriggerPolicy.quiescenceThresholdMs;
   const timer = setTimeout(() => {
     quiescenceTimers.delete(docPath);
     
     const live = lookupDocSession(docPath);
     if (!live) return;
     void live.enqueue(() => runQuiescenceCommand(live));
-  }, thresholdMs);
+  }, waitMs);
   
   if (typeof timer.unref === "function") timer.unref();
   quiescenceTimers.set(docPath, timer);
@@ -1074,6 +1101,18 @@ interface QuiescedStructureNormalizationResult {
   removedFragments: Array<{ fragmentKey: string; headingPath: string[] }>;
 }
 
+async function settleLiveFragments(session: DocSession, keys: readonly string[]): Promise<boolean> {
+  if (!session.generator.hasCurrentProposal()) return false;
+  const settled = await normalizeQuiescedStructure(session, keys);
+  if (settled.sessionDiscarded) return false;
+  if (!settled.applied) return false;
+  for (const removed of settled.removedFragments) {
+    session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
+  }
+  await emitLiveSectionsUpdateFrame(session);
+  return true;
+}
+
 /**
  * Drive live structure to a settled state and fan the result out.
  *
@@ -1089,18 +1128,13 @@ interface QuiescedStructureNormalizationResult {
  * to know); the layout must be re-resolved afterwards when it did.
  */
 async function settleLiveStructure(session: DocSession): Promise<boolean> {
-  if (!session.generator.hasCurrentProposal()) return false;
-  const settled = await normalizeQuiescedStructure(session);
-  if (settled.sessionDiscarded) return false;
-  if (!settled.applied) return false;
-  for (const removed of settled.removedFragments) {
-    session.removedFragmentTombstones.set(removed.fragmentKey, removed.headingPath);
-  }
-  await emitLiveSectionsUpdateFrame(session);
-  return true;
+  return settleLiveFragments(session, [...session.liveFragments.getFragmentKeys()]);
 }
 
-async function normalizeQuiescedStructure(session: DocSession): Promise<QuiescedStructureNormalizationResult> {
+async function normalizeQuiescedStructure(
+  session: DocSession,
+  fragmentKeys: readonly string[],
+): Promise<QuiescedStructureNormalizationResult> {
   // Coordinator-driven quiescence normalization is only reachable through
   // `runQuiescenceCommand` after `hasCurrentProposal()` — the first-edit
   // canonical seed case runs through proposal creation/materialization first,
@@ -1126,7 +1160,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
   const removedFragments: Array<{ fragmentKey: string; headingPath: string[] }> = [];
 
 
-  for (const fragmentKey of [...session.liveFragments.getFragmentKeys()]) {
+  for (const fragmentKey of fragmentKeys) {
     const identity = effectiveLayout.find((e) => e.fragmentKey === fragmentKey);
     if (!identity) {
       // Client-touched untargetable fragments are the ingress acceptance gate's
@@ -1266,7 +1300,7 @@ async function normalizeQuiescedStructure(session: DocSession): Promise<Quiesced
 }
 
 export async function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
-  return (await normalizeQuiescedStructure(session)).applied;
+  return (await normalizeQuiescedStructure(session, [...session.liveFragments.getFragmentKeys()])).applied;
 }
 
 function activeEditorSocketStates(docPath: DocPath): CrdtSocketState[] {
@@ -1282,18 +1316,10 @@ function activeEditorSocketStates(docPath: DocPath): CrdtSocketState[] {
 
 async function runQuiescenceCommand(session: DocSession): Promise<void> {
   if (session.state !== "active") return;
-  const policy = session.generator.publishTriggerPolicy;
   const now = Date.now();
-  const proposalId = session.generator.getCurrentProposalId();
 
   
-  const fragmentKeys = session.liveFragments.getFragmentKeys();
-  let anyStillActive = false;
-  for (const fragmentKey of fragmentKeys) {
-    const lastActivity = session.fragmentLastActivity.get(fragmentKey);
-    if (lastActivity === undefined) continue; 
-    if (!policy.isFragmentQuiescent(lastActivity, now)) anyStillActive = true;
-  }
+  const observed = partitionFragmentsByQuiescence(session, now);
 
   
   
@@ -1311,8 +1337,12 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   
   
   
-  const appliedAnyStructural = anyStillActive ? false : await settleLiveStructure(session);
+  const appliedAnyStructural =
+    observed.quiescentKeys.length === 0
+      ? false
+      : await settleLiveFragments(session, observed.quiescentKeys);
   if (session.state !== "active") return;
+  if (observed.nextWakeDelayMs !== null) armQuiescenceTimer(session, observed.nextWakeDelayMs);
 
   // AUTONOMOUS-publish gate. Unlike the last-editor leave-path and explicit
   // PublishNow (which may flush an adopted proposal), the quiescence timer may
@@ -1333,7 +1363,7 @@ async function runQuiescenceCommand(session: DocSession): Promise<void> {
   const layout = await resolveLiveSectionLayout(session);
   const decision = session.generator.evaluatePublishTrigger(
     buildQuiescencePublishSignals(session, layout, activeEditorSocketStates(session.docPath), {
-      allFragmentsQuiescent: !anyStillActive,
+      allFragmentsQuiescent: observed.stillActiveKeys.length === 0,
       structuralApplyInThisCommand: appliedAnyStructural,
       nowMs: now,
     }),

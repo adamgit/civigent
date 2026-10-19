@@ -375,7 +375,7 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     }
   });
 
-  it("a quiescence check that still sees activity does not drop an accepted sibling split", async () => {
+  it("an accepted sibling split settles when that section's window elapses even if another section is still active", async () => {
     vi.useFakeTimers();
     const session = await openSession();
     const editor = registerFakeEditorSocketForTest(SAMPLE_DOC_PATH, "editor-sock");
@@ -387,16 +387,30 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
       session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
       await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
 
-      const threshold = session.generator.publishTriggerPolicy.quiescenceThresholdMs;
+      const policy = session.generator.publishTriggerPolicy;
+      const threshold = policy.quiescenceThresholdMs;
       armQuiescenceTimer(session);
-      // The fragment is still inside the quiet window when this armed pass fires.
+      // First fire is +threshold. Overview lastActivity = now+1 → still 1ms
+      // inside its window at that fire. Timeline is a later clock so it is
+      // still inside ITS window both then and just after Overview's remaining
+      // 1ms elapses. Two clocks: document-wide anyStillActive ≠ Overview quiet.
       session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now() + 1);
+      session.fragmentLastActivity.set(TIMELINE_KEY, Date.now() + Math.floor(threshold / 2));
 
       await vi.advanceTimersByTimeAsync(threshold);
       await session.enqueue(() => undefined);
 
-      await vi.advanceTimersByTimeAsync(threshold + 50);
+      const afterEarlyPass = await session.enqueue(() => buildWireLiveSectionsState(session));
+      expect(
+        afterEarlyPass.topology.some((ref) => ref.heading_path.length === 1 && ref.heading_path[0] === "Second Section"),
+      ).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1 + 50);
       await session.enqueue(() => undefined);
+
+      const now = Date.now();
+      expect(policy.isFragmentQuiescent(session.fragmentLastActivity.get(OVERVIEW_KEY)!, now)).toBe(true);
+      expect(policy.isFragmentQuiescent(session.fragmentLastActivity.get(TIMELINE_KEY)!, now)).toBe(false);
 
       const wire = await session.enqueue(() => buildWireLiveSectionsState(session));
       expect(

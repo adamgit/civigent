@@ -36,7 +36,7 @@ import {
 } from "./constants.js";
 import { plantConcurrencyDocument } from "./fixture.js";
 import { HarnessCrdtClient, type PauseClock } from "./human-client.js";
-import { isEmptyYUpdate, summarizeMs } from "./metrics.js";
+import { summarizeMs } from "./metrics.js";
 import { runWave } from "./prng.js";
 import { HEARTBEAT_MS, HarnessWatch, STALL_MS, harnessLog, watchOr } from "./progress.js";
 import {
@@ -105,20 +105,90 @@ function newPauseClock(humanCount: number): PauseClock {
   };
 }
 
+interface DecodedYStruct {
+  constructor: { name: string };
+  id?: { client: number; clock: number };
+  length?: number;
+  content?: {
+    constructor: { name: string };
+    str?: string;
+    arr?: unknown;
+    type?: { nodeName?: string };
+  } | null;
+}
+
+interface DecodedYUpdate {
+  structs: DecodedYStruct[];
+  ds: { clients: Map<number, Array<{ clock: number; len: number }>> };
+}
+
+function yContentDetail(content: DecodedYStruct["content"]): string {
+  if (!content) return "none";
+  const name = content.constructor.name;
+  if (typeof content.str === "string") return `${name} ${JSON.stringify(content.str)}`;
+  if (Array.isArray(content.arr)) return `${name} ${JSON.stringify(content.arr)}`;
+  if (typeof content.type?.nodeName === "string") return `${name} <${content.type.nodeName}>`;
+  return name;
+}
+
+function decodeYUpdate(update: Uint8Array): DecodedYUpdate | null {
+  try {
+    return Y.decodeUpdate(update) as unknown as DecodedYUpdate;
+  } catch {
+    return null;
+  }
+}
+
+/** Hex plus the Yjs structs and delete set inside one diff. */
+function describeYUpdate(update: Uint8Array): string {
+  const hex = Buffer.from(update).toString("hex");
+  const decoded = decodeYUpdate(update);
+  if (!decoded) return `hex=${hex} decode-failed`;
+  const structs = decoded.structs.map((struct) => {
+    const client = struct.id?.client ?? "?";
+    const clock = struct.id?.clock ?? "?";
+    const length = struct.length ?? 0;
+    return `${struct.constructor.name} ${client}:${clock}+${length} ${yContentDetail(struct.content)}`;
+  });
+  const deletes: string[] = [];
+  for (const [client, items] of decoded.ds.clients) {
+    for (const item of items) deletes.push(`${client}:${item.clock}+${item.len}`);
+  }
+  return `hex=${hex} structs=[${structs.join("; ")}] deletes=[${deletes.join("; ")}]`;
+}
+
+/**
+ * `encodeStateAsUpdate` filters missing structs by the other state vector, then appends the
+ * whole delete set even when the other document already has those deletions. Copies agree
+ * when neither is missing structs and both deletion records are the same.
+ */
+function replicasAgree(toClient: Uint8Array, toServer: Uint8Array): boolean {
+  const missingOnClient = decodeYUpdate(toClient);
+  const extraOnClient = decodeYUpdate(toServer);
+  if (!missingOnClient || !extraOnClient) return false;
+  if (missingOnClient.structs.length > 0 || extraOnClient.structs.length > 0) return false;
+  return Buffer.from(toClient).equals(Buffer.from(toServer));
+}
+
 function docsAgree(session: DocSession, clients: HarnessCrdtClient[]): string | null {
   const serverSV = Y.encodeStateVector(session.ydoc);
-  const parts: string[] = [];
+  const groups = new Map<string, string[]>();
   for (const client of clients) {
     const toClient = Y.encodeStateAsUpdate(session.ydoc, Y.encodeStateVector(client.doc));
     const toServer = Y.encodeStateAsUpdate(client.doc, serverSV);
-    if (!isEmptyYUpdate(toClient) || !isEmptyYUpdate(toServer)) {
-      parts.push(
-        `h${pad2(client.clientIndex)} missingOnClient=${toClient.byteLength}B extraOnClient=${toServer.byteLength}B`,
-      );
-    }
+    if (replicasAgree(toClient, toServer)) continue;
+    const body = [
+      `missingOnClient=${toClient.byteLength}B ${describeYUpdate(toClient)}`,
+      `extraOnClient=${toServer.byteLength}B ${describeYUpdate(toServer)}`,
+    ].join("\n");
+    const ids = groups.get(body) ?? [];
+    ids.push(`h${pad2(client.clientIndex)}`);
+    groups.set(body, ids);
   }
-  if (parts.length === 0) return null;
-  return `Y.Doc disagreement (${parts.length} of ${clients.length}): ${parts.join("; ")}`;
+  if (groups.size === 0) return null;
+  const disagreeCount = [...groups.entries()].reduce((n, [, ids]) => n + ids.length, 0);
+  const blocks = [...groups.entries()].map(([body, ids]) => `${ids.join(",")}\n${body}`);
+  return `Y.Doc disagreement (${disagreeCount} of ${clients.length}):\n${blocks.join("\n")}`;
 }
 
 async function canonicalMatchesLive(session: DocSession): Promise<string | null> {

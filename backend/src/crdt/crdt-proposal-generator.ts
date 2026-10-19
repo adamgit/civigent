@@ -253,6 +253,12 @@ export class PublishTriggerPolicy {
     return nowMs - lastActivityMs >= this.quiescenceThresholdMs;
   }
 
+  /** Remaining ms until the fragment is quiet; 0 if the window has already elapsed. */
+  msUntilQuiescent(lastActivityMs: number, nowMs = Date.now()): number {
+    const remaining = this.quiescenceThresholdMs - (nowMs - lastActivityMs);
+    return remaining > 0 ? remaining : 0;
+  }
+
   /**
    * Evaluate the rule-ordered policy. The first applicable rule fires.
    *
