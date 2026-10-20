@@ -198,6 +198,7 @@ Scenario B gives several people one shared identity; this gives each of them the
 **Key settings:**
 ```env
 KS_AUTH_MODE=local_users
+KS_CREDENTIALS_PASSWORD=<the admin's login password>
 KS_AUTH_SECRET=<openssl rand -hex 32>
 KS_ADMIN_NAME=Your Name
 KS_ADMIN_EMAIL=you@example.com
@@ -205,7 +206,7 @@ KS_ADMIN_ID=human-admin
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
-The `KS_ADMIN_*` triple is required here and configures this install's admin, the same hard-coded admin those vars configure in single-user and credentials modes. `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still count until renamed. It is a separate identity from every local account, so an admin exists from the first boot and there is no bootstrap step. Startup refuses if any of the three is unset.
+The `KS_ADMIN_*` triple is required here and configures this install's admin, the same hard-coded admin those vars configure in single-user and credentials modes. `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still count until renamed. It is a separate identity from every local account, so an admin exists from the first boot and there is no bootstrap step. That admin signs in with `KS_CREDENTIALS_PASSWORD` through the same credentials login as credentials mode, so that variable is required here too. Startup refuses if any of those four is unset.
 
 No extra mount and no path variable: the accounts file lives at `auth/local-users.json` inside the data directory you already bind-mount, and it starts absent. The admin signs in and adds each person at **Admin → Accounts**. A stray accounts file while `KS_AUTH_MODE` is any other mode refuses startup, since local accounts are only consulted in this one. Details: [Authentication — Local users mode](authentication.md#local-users-mode-experimental).
 

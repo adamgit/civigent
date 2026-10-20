@@ -319,9 +319,12 @@ export function validateOAuthConfig(): void {
     }
   }
 
-  if (authMode === "credentials" && !readEnvVar("KS_CREDENTIALS_PASSWORD")) {
+  if (
+    (authMode === "credentials" || authMode === "local_users") &&
+    !readEnvVar("KS_CREDENTIALS_PASSWORD")
+  ) {
     throw new Error(
-      `FATAL: KS_CREDENTIALS_PASSWORD is required when KS_AUTH_MODE is "credentials".\n` +
+      `FATAL: KS_CREDENTIALS_PASSWORD is required when KS_AUTH_MODE is "${authMode}".\n` +
       `Set it to the shared password humans must present at login.\n` +
       `Note: KS_AUTH_SECRET signs session JWTs and is not the login password.`,
     );

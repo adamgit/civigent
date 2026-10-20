@@ -100,10 +100,10 @@ export function LoginPage() {
 
   const authMode = supportsSingleUser
     ? "single_user"
-    : supportsCredentials
-      ? "credentials"
-      : supportsLocalUsers
-        ? "local_users"
+    : supportsLocalUsers
+      ? "local_users"
+      : supportsCredentials
+        ? "credentials"
         : supportsOidc
           ? "oidc"
           : (methods.length === 0 ? "loading" : "unknown");

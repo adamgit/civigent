@@ -83,7 +83,7 @@ function providerAllowedInMode(provider: LoginInput["provider"], mode: RuntimeAu
     return provider === "credentials";
   }
   if (mode === "local_users") {
-    return provider === "local_users";
+    return provider === "local_users" || provider === "credentials";
   }
   // oidc: human login via POST is not used (OIDC redirects handle it)
   return false;
@@ -141,7 +141,7 @@ export function listAuthMethods(): Array<"oidc" | "single_user" | "credentials" 
     return ["credentials"];
   }
   if (mode === "local_users") {
-    return ["local_users"];
+    return ["local_users", "credentials"];
   }
   return ["oidc"];
 }
@@ -381,7 +381,11 @@ export async function exchangeRefreshToken(refreshToken: string): Promise<Issued
       } as ShareSessionScope,
     );
   }
-  if (claims.type === "human" && readRuntimeAuthMode() === "local_users") {
+  if (
+    claims.type === "human" &&
+    readRuntimeAuthMode() === "local_users" &&
+    claims.sub !== getSingleUserIdentity().id
+  ) {
     const row = readValidatedLocalUsers().find((candidate) => candidate.id === claims.sub);
     if (!row) {
       throw new InvalidRefreshTokenError("unauthorized: that account no longer exists.");

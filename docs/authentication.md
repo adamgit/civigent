@@ -68,11 +68,17 @@ Local users mode gives a handful of humans their own username and password witho
 
 ```env
 KS_AUTH_MODE=local_users
+KS_CREDENTIALS_PASSWORD=<the admin's login password>
 KS_AUTH_SECRET=<openssl rand -hex 32>
+KS_ADMIN_NAME=Your Name
+KS_ADMIN_EMAIL=you@example.com
+KS_ADMIN_ID=human-admin
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
 The `KS_ADMIN_NAME` / `KS_ADMIN_EMAIL` / `KS_ADMIN_ID` triple is required in this mode, exactly as it configures the hard-coded admin in single-user and credentials modes. `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still count until renamed. That admin is a separate identity from every local account — the two never overlap — so an admin exists from the first boot and there is no bootstrap step of any kind here. Startup refuses if any of the three is unset.
+
+That admin signs in with the shared password in `KS_CREDENTIALS_PASSWORD`, through the same credentials login as credentials mode, and becomes the env-configured identity. `KS_CREDENTIALS_PASSWORD` is therefore required in this mode too, and startup refuses without it. The login page shows two forms: the shared password for the admin, and username and password for everyone else. `KS_AUTH_SECRET` signs session JWTs and is neither login password.
 
 Local accounts are ordinary humans. They are never admin by virtue of being local accounts; admin is the env-configured identity, plus anyone an admin later grants the role to in **Permissions** (`roles.json` is merged on top in this mode rather than ignored).
 

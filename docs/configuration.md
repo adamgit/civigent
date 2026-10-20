@@ -144,7 +144,7 @@ Operator `.env` only sets `KS_BACKUP_GIT_REMOTE`, `KS_BACKUP_GIT_AUTH_MODE`, and
 | `KS_ADMIN_NAME` | Admin display name (`single_user`, `credentials`, and `local_users`). `KS_USER_NAME` still supplies it until renamed. | `Local User` |
 | `KS_ADMIN_EMAIL` | Admin email (same modes). `KS_USER_EMAIL` still supplies it until renamed. | `local-user@ks.local` |
 | `KS_ADMIN_ID` | Admin id (same modes). `KS_USER_ID` still supplies it until renamed. `local_users` refuses to start unless this field is set by either name. In the other two modes an unset id is `human-ui`. A new id is a different person. | `human-ui` |
-| `KS_CREDENTIALS_PASSWORD` | Shared login password. Required when `KS_AUTH_MODE=credentials`. This is what the human types at login — not `KS_AUTH_SECRET`. | (none) |
+| `KS_CREDENTIALS_PASSWORD` | Shared login password. Required when `KS_AUTH_MODE=credentials`, and when `KS_AUTH_MODE=local_users` (where it is the admin's login). This is what the human types at login — not `KS_AUTH_SECRET`. | (none) |
 | `KS_AGENT_AUTH_POLICY` | Agent auth policy: `open` (anonymous allowed), `approve` (anonymous + one-time human Approve at first connection; incompatible with `KS_AUTH_MODE=single_user`; compatible with `credentials` and `oidc`), `confidential` (admin-created identity + client_secret required). Any other value refuses startup. | `open` (localhost) / `confidential` (public hostname) |
 | `KS_AGENT_ANON_SALT` | Salt for signing anonymous agent tokens (change to revoke all) | (auto-generated) |
 | `KS_DATA_ROOT` | Override the root data directory | (built-in default) |
