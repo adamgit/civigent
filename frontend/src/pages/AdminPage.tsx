@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { SharedPageHeader } from "../components/SharedPageHeader";
+import { useLegacyAdminEnv } from "../contexts/CurrentUserContext";
 import { SEARCH_MAX_RESULTS } from "./search/search-request-defaults";
 import { apiClient, resolveWriterId } from "../services/api-client";
 import type { AdminConfig, HumanInvolvementPresetName, GetAdminSnapshotHealthResponse, AnyProposal } from "../types/shared.js";
@@ -24,11 +25,11 @@ const AUTH_MODE_CURRENT_COPY: Record<HumanAuthMode, string> = {
   single_user:
     "No login. Anyone who can open this URL is the admin. That is the intended setup on localhost and is refused on a public hostname. Agent policy approve cannot be combined with this mode, because a request with no cookie already is the local human. To require a login, set KS_AUTH_MODE=credentials and KS_CREDENTIALS_PASSWORD.",
   credentials:
-    "Humans sign in with the shared password from KS_CREDENTIALS_PASSWORD. The env-configured user (KS_USER_NAME / KS_USER_EMAIL / KS_USER_ID) is always admin after login; there is no bootstrap code and no user table. This mode is allowed on a public hostname. KS_AUTH_SECRET signs session JWTs and is not the login password. Agents are a separate setting (KS_AGENT_AUTH_POLICY); on a public host the default is confidential.",
+    "Humans sign in with the shared password from KS_CREDENTIALS_PASSWORD. The env-configured user (KS_ADMIN_NAME / KS_ADMIN_EMAIL / KS_ADMIN_ID) is always admin after login; there is no bootstrap code and no user table. KS_USER_NAME, KS_USER_EMAIL, and KS_USER_ID still supply those fields until renamed. This mode is allowed on a public hostname. KS_AUTH_SECRET signs session JWTs and is not the login password. Agents are a separate setting (KS_AGENT_AUTH_POLICY); on a public host the default is confidential.",
   oidc:
     "Humans sign in through the configured OIDC provider. The first admin is claimed with the one-time bootstrap code printed at startup; further admins are granted in Permissions. There is no local password.",
   local_users:
-    "Humans sign in with a username and password of their own. Each account is its own identity, and the accounts live in auth/local-users.json inside the data directory, beside roles.json. The env-configured user (KS_USER_NAME / KS_USER_EMAIL / KS_USER_ID) is this install's admin, exactly as in single-user and credentials modes, and is a separate identity from every local account; startup refuses if those vars are unset. Local accounts are ordinary humans, added and removed by an admin in Accounts; further admins are granted in Permissions. This mode is experimental and opt-in — SSO (KS_AUTH_MODE=oidc) remains the safer path for multiple humans.",
+    "Humans sign in with a username and password of their own. Each account is its own identity, and the accounts live in auth/local-users.json inside the data directory, beside roles.json. The env-configured user (KS_ADMIN_NAME / KS_ADMIN_EMAIL / KS_ADMIN_ID) is this install's admin, exactly as in single-user and credentials modes, and is a separate identity from every local account; startup refuses if those vars are unset. KS_USER_NAME, KS_USER_EMAIL, and KS_USER_ID still supply those fields until renamed. Local accounts are ordinary humans, added and removed by an admin in Accounts; further admins are granted in Permissions. This mode is experimental and opt-in — SSO (KS_AUTH_MODE=oidc) remains the safer path for multiple humans.",
 };
 
 const AUTH_MODE_ONE_LINERS: Array<{ mode: HumanAuthMode; text: string }> = [
@@ -69,6 +70,18 @@ function ConfigCardFallback({ configLoaded, configError }: { configLoaded: boole
       {configError && (
         <p className="mt-1 text-[12px] text-status-red font-mono whitespace-pre-wrap">{configError}</p>
       )}
+    </div>
+  );
+}
+
+function LegacyAdminEnvBanner() {
+  const names = useLegacyAdminEnv();
+  if (names.length === 0) return null;
+  const next = names.map((name) => name.replace("KS_USER_", "KS_ADMIN_"));
+  return (
+    <div className="mb-4 p-3 bg-status-red-light border border-status-red/25 text-status-red rounded text-[12px]" role="status">
+      Rename {names.join(", ")} to {next.join(", ")}. Copy the values unchanged, remove the old lines, and restart.
+      When both names are set, KS_ADMIN_* is the one in use. A new id is a different person.
     </div>
   );
 }
@@ -199,6 +212,7 @@ export function AdminPage() {
     <div className="flex flex-col">
       <SharedPageHeader title="Administration" backTo="/" />
       <div className="p-4 font-ui">
+        <LegacyAdminEnvBanner />
         <p className="text-[12px] text-text-muted mb-4">
           Operational status, human-involvement preset configuration, and local frontend controls.
         </p>

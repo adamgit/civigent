@@ -23,7 +23,7 @@
 import path from "node:path";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { getAuthRoot } from "../storage/data-root.js";
-import { isSingleUserMode, type AuthenticatedWriter } from "./context.js";
+import { configuredAdminId, isSingleUserMode, type AuthenticatedWriter } from "./context.js";
 import { readEnvVar } from "../env.js";
 import { getExportedSkillsConfig } from "../exported-skills-config.js";
 import {
@@ -94,7 +94,7 @@ export function invalidateCache(): void {
 }
 
 function getSingleUserId(): string {
-  return readEnvVar("KS_USER_ID", "human-ui");
+  return configuredAdminId();
 }
 
 function isCredentialsMode(): boolean {

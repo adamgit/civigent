@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { useCurrentUser } from "../contexts/CurrentUserContext";
+import { useCurrentUser, useLegacyAdminEnv } from "../contexts/CurrentUserContext";
 import { SEARCH_MAX_RESULTS } from "../pages/search/search-request-defaults";
 import { docsRouteForStoredPath, folderHref } from "../app/docs-location";
 import { FolderPath } from "../types/shared";
@@ -151,10 +151,18 @@ function AdminLocalUsersLink() {
 }
 
 function AdminFlyout({ onOpenWsDiagnostics }: { onOpenWsDiagnostics?: () => void }) {
+  const legacyAdminEnv = useLegacyAdminEnv();
   return (
     <div className="relative group/admin">
       <Link to="/admin" className={linkClass}>
         <span className="text-xs w-4 text-center opacity-50">&#9881;</span> Admin
+        {legacyAdminEnv.length > 0 ? (
+          <span
+            className="inline-block h-2 w-2 shrink-0 rounded-full bg-status-red"
+            title="Rename KS_USER_* to KS_ADMIN_*"
+            aria-label="Admin environment names need renaming"
+          />
+        ) : null}
         <span className="ml-auto text-[10px] opacity-40 group-hover/admin:opacity-70" aria-hidden="true">
           &#9656;
         </span>

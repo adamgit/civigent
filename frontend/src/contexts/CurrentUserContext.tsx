@@ -11,13 +11,25 @@ import type { AuthUser } from "../types/shared.js";
 
 interface CurrentUserContextValue {
   currentUser: AuthUser | null;
+  legacyAdminEnv: readonly string[];
 }
 
-const CurrentUserContext = createContext<CurrentUserContextValue>({ currentUser: null });
+const CurrentUserContext = createContext<CurrentUserContextValue>({
+  currentUser: null,
+  legacyAdminEnv: [],
+});
 
-export function CurrentUserProvider({ currentUser, children }: { currentUser: AuthUser | null; children: ReactNode }) {
+export function CurrentUserProvider({
+  currentUser,
+  legacyAdminEnv = [],
+  children,
+}: {
+  currentUser: AuthUser | null;
+  legacyAdminEnv?: readonly string[];
+  children: ReactNode;
+}) {
   return (
-    <CurrentUserContext.Provider value={{ currentUser }}>
+    <CurrentUserContext.Provider value={{ currentUser, legacyAdminEnv }}>
       {children}
     </CurrentUserContext.Provider>
   );
@@ -25,4 +37,8 @@ export function CurrentUserProvider({ currentUser, children }: { currentUser: Au
 
 export function useCurrentUser(): AuthUser | null {
   return useContext(CurrentUserContext).currentUser;
+}
+
+export function useLegacyAdminEnv(): readonly string[] {
+  return useContext(CurrentUserContext).legacyAdminEnv;
 }

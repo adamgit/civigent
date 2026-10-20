@@ -15,6 +15,7 @@ import { detectAndRecoverCrash } from "./storage/crash-recovery.js";
 import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-content-seed.js";
 import { loadFatalState } from "./storage/fatal-state.js";
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
+import { legacyAdminEnvWarningLine } from "./auth/context.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
 import { assertLocalUsersModeConsistency } from "./auth/local-users.js";
 import { getSystemState, isSystemReady, setSystemFatal, setSystemReady } from "./startup-state.js";
@@ -218,6 +219,11 @@ server.on("upgrade", (request, socket, head) => {
 validateOAuthConfig();
 
 assertLocalUsersModeConsistency();
+
+const legacyAdminEnvWarning = legacyAdminEnvWarningLine();
+if (legacyAdminEnvWarning) {
+  console.log(`\n${ANSI_BOLD_YELLOW}  ${legacyAdminEnvWarning}${ANSI_RESET}\n`);
+}
 
 // Parse+validate KS_FATAL_ERRORS_MODE eagerly so an invalid value fails at
 // startup rather than the first time a fatal fires.

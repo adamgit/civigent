@@ -2565,6 +2565,11 @@ export interface SessionInfoResponse {
   app_name: string;
   /** True when `KS_AUTH_MODE=single_user` — no login; any visitor is the admin. */
   single_user: boolean;
+  /**
+   * Legacy `KS_USER_*` names still set in `single_user`, `credentials`, or `local_users`.
+   * Empty when those names are unset, and empty in `oidc`.
+   */
+  legacy_admin_env: string[];
 }
 
 // ─── API Errors ────────────────────────────────────────────────────

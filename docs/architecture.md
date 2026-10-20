@@ -379,8 +379,9 @@ All three files are cached in-memory; cache is invalidated immediately after any
 
 **Admin bootstrap by auth mode:**
 - `single_user`: The singleton env-var identity is always admin — no `roles.json` lookup needed.
-- `credentials`: The env-var user is always admin after login (same identity as single-user: `KS_USER_NAME` / `KS_USER_EMAIL` / `KS_USER_ID`).
-- `oidc`: A one-time bootstrap code printed at server startup is claimed on the home page to create the first admin. After that, admins grant further roles (including `admin`) via the `/admin/permissions` UI; editing `roles.json` directly remains an offline/ops fallback.
+- `credentials`: The env-var user is always admin after login (same identity as single-user: `KS_ADMIN_NAME` / `KS_ADMIN_EMAIL` / `KS_ADMIN_ID`). `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still supply those fields until renamed. When both names are set, `KS_ADMIN_*` wins.
+- `local_users`: That same env identity is admin, and Permissions can grant admin to other accounts. All three fields must be set. The legacy `KS_USER_*` names still count until renamed.
+- `oidc`: A one-time bootstrap code printed at server startup is claimed on the home page to create the first admin. After that, admins grant further roles (including `admin`) via the `/admin/permissions` UI; editing `roles.json` directly remains an offline/ops fallback. These env names are not read in this mode.
 
 **Route guards:**
 - `requireAdmin()`: Requires an authenticated human with the "admin" role. Agents are structurally excluded (agents never appear in `roles.json`).

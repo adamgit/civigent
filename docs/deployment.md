@@ -110,8 +110,8 @@ This is the simplest deployment. Use the [Quickstart guide](quickstart.md) — i
 **Key settings:**
 ```env
 KS_AUTH_MODE=single_user
-KS_USER_NAME=Your Name
-KS_USER_EMAIL=you@example.com
+KS_ADMIN_NAME=Your Name
+KS_ADMIN_EMAIL=you@example.com
 ```
 
 No public URL, no OIDC, no agent keys needed. OAuth auto-approves for agents. Any agent running on your local machine can self-register.
@@ -130,8 +130,8 @@ This is single-user identity with a login. Anyone who can open the URL is **not*
 KS_AUTH_MODE=credentials
 KS_CREDENTIALS_PASSWORD=<the shared login password>
 KS_AUTH_SECRET=<openssl rand -hex 32>
-KS_USER_NAME=Your Name
-KS_USER_EMAIL=you@example.com
+KS_ADMIN_NAME=Your Name
+KS_ADMIN_EMAIL=you@example.com
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
@@ -199,13 +199,13 @@ Scenario B gives several people one shared identity; this gives each of them the
 ```env
 KS_AUTH_MODE=local_users
 KS_AUTH_SECRET=<openssl rand -hex 32>
-KS_USER_NAME=Your Name
-KS_USER_EMAIL=you@example.com
-KS_USER_ID=human-admin
+KS_ADMIN_NAME=Your Name
+KS_ADMIN_EMAIL=you@example.com
+KS_ADMIN_ID=human-admin
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
-The `KS_USER_*` triple is required here and configures this install's admin, the same hard-coded admin those vars configure in single-user and credentials modes. It is a separate identity from every local account, so an admin exists from the first boot and there is no bootstrap step. Startup refuses if any of the three is unset.
+The `KS_ADMIN_*` triple is required here and configures this install's admin, the same hard-coded admin those vars configure in single-user and credentials modes. `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still count until renamed. It is a separate identity from every local account, so an admin exists from the first boot and there is no bootstrap step. Startup refuses if any of the three is unset.
 
 No extra mount and no path variable: the accounts file lives at `auth/local-users.json` inside the data directory you already bind-mount, and it starts absent. The admin signs in and adds each person at **Admin → Accounts**. A stray accounts file while `KS_AUTH_MODE` is any other mode refuses startup, since local accounts are only consulted in this one. Details: [Authentication — Local users mode](authentication.md#local-users-mode-experimental).
 
@@ -222,6 +222,8 @@ The server validates its configuration at startup and refuses to start if critic
 | Non-single-user mode without `KS_OIDC_PUBLIC_URL` or `KS_EXTERNAL_HOSTNAME` | **Refuses to start** with instructions |
 | Non-single-user mode without `KS_AUTH_SECRET` | **Refuses to start** with instructions |
 | `credentials` mode without `KS_CREDENTIALS_PASSWORD` | **Refuses to start** with instructions |
+| `local_users` without `KS_ADMIN_NAME`, `KS_ADMIN_EMAIL`, and `KS_ADMIN_ID` | **Refuses to start**. The matching `KS_USER_*` name still counts until renamed. |
+| `KS_USER_NAME`, `KS_USER_EMAIL`, or `KS_USER_ID` still set in `single_user`, `credentials`, or `local_users` | Still accepted. The Admin page warns until they are renamed to `KS_ADMIN_*`. Copy the values unchanged; a new id is a different person. |
 | Missing `KS_EXTERNAL_PORT` (any mode) | **Refuses to start** — running outside a compose environment is not supported. Both compose files set this automatically. |
 | Single-user mode without `KS_OIDC_PUBLIC_URL` | Auto-derives from `KS_EXTERNAL_HOSTNAME` + `KS_EXTERNAL_PORT`. Scheme is `https` for non-localhost hostnames, `http` for localhost/127.0.0.1. Port omitted for standard ports (80/443). Set `KS_OIDC_PUBLIC_URL` explicitly to override. |
 | Single-user mode without `KS_AUTH_SECRET` | Uses development default (acceptable for localhost) |

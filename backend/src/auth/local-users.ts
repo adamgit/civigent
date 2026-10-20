@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { expectJsonObject, parseJson, type JsonObject, type JsonValue } from "../types/shared.js";
 import { readEnvVar } from "../env.js";
+import { missingEnvAdminVars } from "./context.js";
 import { getLocalUsersFilePath } from "../storage/data-root.js";
 import { pathExistsSync } from "../storage/fs-primitives.js";
 import { InvalidCredentialsError } from "./service.js";
@@ -25,8 +26,6 @@ const SCRYPT_PARALLEL = 1;
 const SCRYPT_HASH_SHAPE = /^scrypt:[0-9a-f]+:[0-9a-f]+$/;
 
 const LOCAL_USER_ROW_KEYS: readonly string[] = ["username", "id", "displayName", "password_hash"];
-
-const ENV_ADMIN_VARS: readonly string[] = ["KS_USER_NAME", "KS_USER_EMAIL", "KS_USER_ID"];
 
 function scryptAsync(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -343,11 +342,12 @@ export function assertLocalUsersModeConsistency(): void {
   const mode = (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase();
 
   if (mode === "local_users") {
-    const missing = ENV_ADMIN_VARS.filter((name) => readEnvVar(name) === undefined);
+    const missing = missingEnvAdminVars();
     if (missing.length > 0) {
       throw new Error(
         `FATAL: KS_AUTH_MODE=local_users requires the hard-coded admin identity to be configured.\n` +
         `Unset or empty: ${missing.join(", ")}.\n` +
+        `KS_USER_NAME, KS_USER_EMAIL, and KS_USER_ID still count until renamed. When both names are set, KS_ADMIN_* is used.\n` +
         `That identity is this install's admin and is separate from every local account.\n` +
         `Local accounts are ordinary humans; the admin adds and removes them in Admin -> Accounts.`,
       );

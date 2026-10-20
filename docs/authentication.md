@@ -25,22 +25,22 @@ In single-user mode, human authentication is bypassed entirely. A fixed identity
 
 ```env
 KS_AUTH_MODE=single_user
-KS_USER_NAME=Alice
-KS_USER_EMAIL=alice@example.com
+KS_ADMIN_NAME=Alice
+KS_ADMIN_EMAIL=alice@example.com
 ```
 
 Agents still go through full OAuth even in single-user mode — they just get auto-approved at the consent step.
 
 ### Credentials mode
 
-Credentials mode is the public-host equivalent of a single human: the same env-configured identity (`KS_USER_NAME` / `KS_USER_EMAIL` / `KS_USER_ID`), but the browser must present a shared password. There is no user table and no OIDC. Unauthenticated requests are unauthenticated — the singleton is **not** synthesized.
+Credentials mode is the public-host equivalent of a single human: the same env-configured identity (`KS_ADMIN_NAME` / `KS_ADMIN_EMAIL` / `KS_ADMIN_ID`), but the browser must present a shared password. There is no user table and no OIDC. Unauthenticated requests are unauthenticated — the singleton is **not** synthesized.
 
 ```env
 KS_AUTH_MODE=credentials
 KS_CREDENTIALS_PASSWORD=<the shared login password>
 KS_AUTH_SECRET=<openssl rand -hex 32>
-KS_USER_NAME=Alice
-KS_USER_EMAIL=alice@example.com
+KS_ADMIN_NAME=Alice
+KS_ADMIN_EMAIL=alice@example.com
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
@@ -72,7 +72,7 @@ KS_AUTH_SECRET=<openssl rand -hex 32>
 KS_EXTERNAL_HOSTNAME=wiki.example.com
 ```
 
-The `KS_USER_NAME` / `KS_USER_EMAIL` / `KS_USER_ID` triple is required in this mode, exactly as it configures the hard-coded admin in single-user and credentials modes. That admin is a separate identity from every local account — the two never overlap — so an admin exists from the first boot and there is no bootstrap step of any kind here. Startup refuses if any of the three is unset.
+The `KS_ADMIN_NAME` / `KS_ADMIN_EMAIL` / `KS_ADMIN_ID` triple is required in this mode, exactly as it configures the hard-coded admin in single-user and credentials modes. `KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still count until renamed. That admin is a separate identity from every local account — the two never overlap — so an admin exists from the first boot and there is no bootstrap step of any kind here. Startup refuses if any of the three is unset.
 
 Local accounts are ordinary humans. They are never admin by virtue of being local accounts; admin is the env-configured identity, plus anyone an admin later grants the role to in **Permissions** (`roles.json` is merged on top in this mode rather than ignored).
 
@@ -84,7 +84,7 @@ That file is the store, and it is optional: absent or holding zero accounts is a
 
 Two rules are enforced at startup, before the port opens, because either one means a corrupt setup:
 
-- `KS_AUTH_MODE=local_users` with any of the admin env vars unset.
+- `KS_AUTH_MODE=local_users` with any of `KS_ADMIN_NAME`, `KS_ADMIN_EMAIL`, or `KS_ADMIN_ID` unset. The matching `KS_USER_*` name still counts until renamed.
 - An `auth/local-users.json` that exists while `KS_AUTH_MODE` is anything other than `local_users`. Local accounts are only ever consulted in this mode, so a stray accounts file in another mode is refused rather than left to spring into life on a later mode switch.
 
 A command-line account creator exists for recovery and development. From a source checkout, pointing `KS_DATA_ROOT` at the data directory the server uses:
@@ -278,9 +278,14 @@ Both humans and agents use the same token lifetime settings. Agents refresh auto
 
 ## Env var reference
 
+`KS_USER_NAME`, `KS_USER_EMAIL`, and `KS_USER_ID` still supply the admin identity in `single_user`, `credentials`, and `local_users` until renamed. When both names are set, `KS_ADMIN_*` wins. Copy the values unchanged. The Admin page warns until the old names are removed. `oidc` does not read them.
+
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `KS_AUTH_MODE` | Auth mode: `single_user`, `credentials`, `oidc`, or `local_users` (required) | (none — required) |
+| `KS_ADMIN_NAME` | Admin display name in `single_user`, `credentials`, and `local_users` | `Local User` |
+| `KS_ADMIN_EMAIL` | Admin email in those modes | `local-user@ks.local` |
+| `KS_ADMIN_ID` | Admin id in those modes. `local_users` requires it. A new id is a different person. | `human-ui` |
 | `KS_AUTH_SECRET` | JWT signing secret — required in credentials and oidc modes | (insecure dev default) |
 | `KS_CREDENTIALS_PASSWORD` | Shared login password — required in credentials mode. Not `KS_AUTH_SECRET`. | (none) |
 | `KS_OIDC_ISSUER` | OIDC provider URL for human login | (none — required in oidc mode) |

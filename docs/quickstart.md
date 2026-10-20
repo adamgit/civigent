@@ -61,12 +61,12 @@ Edit the new file in a text editor and uncommment / set the following:
 
 ```env
 KS_AUTH_MODE=single_user
-KS_USER_NAME=Your Name
-KS_USER_EMAIL=you@example.com
+KS_ADMIN_NAME=Your Name
+KS_ADMIN_EMAIL=you@example.com
 ```
 
 * "KS_AUTH_MODE" = tells it to disable login/passwords for humans (great for quickstart). For a public hostname without SSO, use `credentials` instead of `single_user`. For multiple human users, use `oidc`.
-* "KS_USER_NAME", "KS_USER_EMAIL" = every change you make is saved to the audit-log, these values will be written in as the 'author' of each change
+* "KS_ADMIN_NAME", "KS_ADMIN_EMAIL" = every change you make is saved to the audit-log, these values will be written in as the 'author' of each change. `KS_USER_NAME` and `KS_USER_EMAIL` still work until renamed; copy the values unchanged.
 
 **OPTIONAL:** Change the default port (from 8080)
 

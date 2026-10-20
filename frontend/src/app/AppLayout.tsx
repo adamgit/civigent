@@ -157,6 +157,7 @@ export function AppLayout() {
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [newDocError, setNewDocError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [legacyAdminEnv, setLegacyAdminEnv] = useState<readonly string[]>([]);
   // Install label for tab titles (`KS_APP_NAME` or public URL). Seeded from the
   // browser origin so the first paint is already disambiguated before session loads.
   const [appName, setAppName] = useState(() => window.location.origin);
@@ -497,6 +498,7 @@ export function AppLayout() {
           setAppName(session.app_name.trim());
         }
         setSingleUser(session.single_user === true);
+        setLegacyAdminEnv(Array.isArray(session.legacy_admin_env) ? session.legacy_admin_env : []);
         // A clean read clears any prior degraded banner.
         setSessionError(null);
       })
@@ -516,6 +518,7 @@ export function AppLayout() {
         // Soft fallback in every case: identity falls back to signed-out.
         clearWriterId();
         setCurrentUser(null);
+        setLegacyAdminEnv([]);
         // A 401 has already fired the unauthorized handler — that's a normal
         // not-signed-in, not a degraded server state, so no banner for it. A
         // genuine 500 / network / malformed failure on the AUTHORITATIVE initial
@@ -631,6 +634,7 @@ export function AppLayout() {
       } else if (msg === "logout") {
         clearWriterId();
         setCurrentUser(null);
+        setLegacyAdminEnv([]);
       }
     };
     channel.addEventListener("message", handleMessage);
@@ -805,7 +809,7 @@ export function AppLayout() {
   }
 
   return (
-    <CurrentUserProvider currentUser={currentUser}>
+    <CurrentUserProvider currentUser={currentUser} legacyAdminEnv={legacyAdminEnv}>
     <div
       className="flex min-h-dvh"
       data-sidebar-mode={sidebarAutoHide ? "autohide" : "expanded"}

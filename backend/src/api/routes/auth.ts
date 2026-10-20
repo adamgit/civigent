@@ -2,7 +2,7 @@ import { type Request, type Response, type Router } from "express";
 import { randomUUID } from "node:crypto";
 import type { AuthMethod, GetShareDiaryResponse, RedeemShareGrantResponse, SessionInfoResponse, ShareTarget } from "../../types/shared.js";
 import { FolderPath } from "../../types/shared.js";
-import { isSingleUserMode, resolveAuthenticatedWriter } from "../../auth/context.js";
+import { isSingleUserMode, legacyAdminEnvInUse, resolveAuthenticatedWriter } from "../../auth/context.js";
 import { isAdmin } from "../../auth/acl.js";
 import { listAuthMethods, buildOidcIdentity, isBootstrapAvailable, redeemBootstrapCode, exchangeRefreshToken, loginHuman, InvalidCredentialsError, redeemShareGrant, InvalidShareGrantError } from "../../auth/service.js";
 import { issueTokenPair } from "../../auth/tokens.js";
@@ -213,11 +213,13 @@ export function registerAuthRoutes(router: Router): void {
       const writer = resolveAuthenticatedWriter(req);
       const app_name = getAppName();
       const single_user = isSingleUserMode();
+      const legacy_admin_env = [...legacyAdminEnvInUse()];
       const response: SessionInfoResponse = writer
         ? {
             authenticated: true,
             app_name,
             single_user,
+            legacy_admin_env,
             user: {
               id: writer.id,
               type: writer.type,
@@ -234,7 +236,7 @@ export function registerAuthRoutes(router: Router): void {
                 : {}),
             },
           }
-        : { authenticated: false, app_name, single_user };
+        : { authenticated: false, app_name, single_user, legacy_admin_env };
       res.json(response);
     } catch (error) {
       next(error);

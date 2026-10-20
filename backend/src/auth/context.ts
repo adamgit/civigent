@@ -99,15 +99,56 @@ export function isSingleUserMode(): boolean {
   return (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "single_user";
 }
 
+const ADMIN_ENV_FIELDS = [
+  { canonical: "KS_ADMIN_NAME", legacy: "KS_USER_NAME", fallback: "Local User" },
+  { canonical: "KS_ADMIN_EMAIL", legacy: "KS_USER_EMAIL", fallback: "local-user@ks.local" },
+  { canonical: "KS_ADMIN_ID", legacy: "KS_USER_ID", fallback: "human-ui" },
+] as const;
+
+function adminEnvAliasMode(): boolean {
+  const mode = (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase();
+  return mode === "single_user" || mode === "credentials" || mode === "local_users";
+}
+
+function resolveAdminEnvField(field: (typeof ADMIN_ENV_FIELDS)[number]): string {
+  return readEnvVar(field.canonical) ?? readEnvVar(field.legacy) ?? field.fallback;
+}
+
+/** Canonical names for which neither KS_ADMIN_* nor KS_USER_* is set. Defaults do not count. */
+export function missingEnvAdminVars(): readonly string[] {
+  return ADMIN_ENV_FIELDS.filter(
+    (field) => readEnvVar(field.canonical) === undefined && readEnvVar(field.legacy) === undefined,
+  ).map((field) => field.canonical);
+}
+
+/** Legacy names still set, in the modes that use this identity. Empty in oidc. */
+export function legacyAdminEnvInUse(): readonly string[] {
+  if (!adminEnvAliasMode()) return [];
+  return ADMIN_ENV_FIELDS.filter((field) => readEnvVar(field.legacy) !== undefined).map((field) => field.legacy);
+}
+
+export function legacyAdminEnvWarningLine(): string | null {
+  const legacy = legacyAdminEnvInUse();
+  if (legacy.length === 0) return null;
+  const canonical = legacy.map((name) => name.replace("KS_USER_", "KS_ADMIN_"));
+  const verb = legacy.length === 1 ? "is" : "are";
+  return (
+    `WARNING: ${legacy.join(", ")} ${verb} still set. ` +
+    `Copy the values to ${canonical.join(", ")}, remove the old names, and restart. ` +
+    `When both names are set, KS_ADMIN_* is the one in use. A new id is a different person.`
+  );
+}
+
+export function configuredAdminId(): string {
+  return resolveAdminEnvField(ADMIN_ENV_FIELDS[2]);
+}
+
 export function getSingleUserIdentity(): AuthenticatedWriter {
-  const defaultName = readEnvVar("KS_USER_NAME", "Local User");
-  const defaultEmail = readEnvVar("KS_USER_EMAIL", "local-user@ks.local");
-  const defaultId = readEnvVar("KS_USER_ID", "human-ui");
   return {
-    id: defaultId,
+    id: resolveAdminEnvField(ADMIN_ENV_FIELDS[2]),
     type: "human",
-    displayName: defaultName,
-    email: defaultEmail,
+    displayName: resolveAdminEnvField(ADMIN_ENV_FIELDS[0]),
+    email: resolveAdminEnvField(ADMIN_ENV_FIELDS[1]),
   };
 }
 
