@@ -4,6 +4,7 @@ import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { SEARCH_MAX_RESULTS } from "../pages/search/search-request-defaults";
 import { docsRouteForStoredPath, folderHref } from "../app/docs-location";
 import { FolderPath } from "../types/shared";
+import { apiClient } from "../services/api-client";
 
 const linkClass =
   "flex items-center gap-[7px] px-1.5 py-[5px] rounded-[5px] text-xs text-sidebar-text hover:bg-white/45 hover:text-sidebar-text-hover transition-all";
@@ -122,6 +123,33 @@ function SidebarSearch() {
   );
 }
 
+function AdminLocalUsersLink() {
+  const [modeHasLocalUsers, setModeHasLocalUsers] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .getAuthMethods()
+      .then((response) => {
+        if (cancelled) return;
+        const methods = Array.isArray(response.methods) ? response.methods : [];
+        setModeHasLocalUsers(methods.some((method) => method.type === "local_users"));
+      })
+      .catch(() => {
+        if (!cancelled) setModeHasLocalUsers(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!modeHasLocalUsers) return null;
+  return (
+    <Link to="/admin/local-users" role="menuitem" className={linkClass}>
+      <span className="text-xs w-4 text-center opacity-50">&#128100;</span>
+      Accounts
+    </Link>
+  );
+}
+
 function AdminFlyout({ onOpenWsDiagnostics }: { onOpenWsDiagnostics?: () => void }) {
   return (
     <div className="relative group/admin">
@@ -148,6 +176,7 @@ function AdminFlyout({ onOpenWsDiagnostics }: { onOpenWsDiagnostics?: () => void
               {item.label}
             </Link>
           ))}
+          <AdminLocalUsersLink />
           {onOpenWsDiagnostics ? (
             <button
               type="button"

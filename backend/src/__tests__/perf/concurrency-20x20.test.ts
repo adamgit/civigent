@@ -30,6 +30,7 @@ import {
   scenarioHasFlood,
   scenarioHasHumans,
   scenarioHasPause,
+  scenarioIsUntested,
   scenarioSendsAwareness,
   startingFragmentKey,
   type ScenarioName,
@@ -272,7 +273,8 @@ describe("20x20 concurrency harness", () => {
     const pause = newPauseClock(HUMAN_COUNT);
     const agentResults: Array<AgentPublishRecord | undefined> = [];
     let watch: HarnessWatch | undefined;
-    harnessLog(`${identity.scenario} seed=${identity.seed} ${identity.bfh} ${identity.kind}`);
+    const testedNote = scenarioIsUntested(identity.scenario) ? " not-tested" : "";
+    harnessLog(`${identity.scenario} seed=${identity.seed} ${identity.bfh} ${identity.kind}${testedNote}`);
 
     try {
       watch = new HarnessWatch({

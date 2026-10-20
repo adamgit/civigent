@@ -12,6 +12,7 @@ import { getSingleUserIdentity, isSingleUserMode, type AuthenticatedWriter } fro
 import { hasAnyAdmin, grantAdmin } from "./acl.js";
 import { isOidcConfigured } from "./oauth-config.js";
 import { readEnvVar } from "../env.js";
+import { readValidatedLocalUsers, verifyLocalUser } from "./local-users.js";
 import type { ShareTarget } from "../types/shared.js";
 
 export interface AgentRegistrationInput {
@@ -20,7 +21,8 @@ export interface AgentRegistrationInput {
 }
 
 export interface LoginInput {
-  provider: "single_user" | "credentials";
+  provider: "single_user" | "credentials" | "local_users";
+  username?: string;
   email?: string;
   name?: string;
   password?: string;
@@ -30,26 +32,32 @@ function assertNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-type RuntimeAuthMode = "single_user" | "credentials" | "oidc";
+type RuntimeAuthMode = "single_user" | "credentials" | "oidc" | "local_users";
 
-const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set(["single_user", "credentials", "oidc"]);
+const LEGAL_AUTH_MODES: ReadonlySet<string> = new Set([
+  "single_user",
+  "credentials",
+  "oidc",
+  "local_users",
+]);
 
 export function readRuntimeAuthMode(): RuntimeAuthMode {
   const raw = readEnvVar("KS_AUTH_MODE")?.toLowerCase() ?? "";
   if (!raw) {
     throw new Error(
       `FATAL: KS_AUTH_MODE is not set.\n` +
-      `You must explicitly choose an auth mode. Legal values: single_user, credentials, oidc.\n` +
+      `You must explicitly choose an auth mode. Legal values: single_user, credentials, oidc, local_users.\n` +
       `  single_user — no login; anyone who can open the URL is the user (localhost only)\n` +
       `  credentials — one shared password (KS_CREDENTIALS_PASSWORD); public hostname allowed\n` +
       `  oidc        — SSO through the configured OIDC provider only\n` +
+      `  local_users — username and password per account, from the accounts file (experimental)\n` +
       `Example: KS_AUTH_MODE=single_user`,
     );
   }
   if (!LEGAL_AUTH_MODES.has(raw)) {
     throw new Error(
       `FATAL: KS_AUTH_MODE="${raw}" is not a recognised auth mode.\n` +
-      `Legal values: single_user, credentials, oidc.`,
+      `Legal values: single_user, credentials, oidc, local_users.`,
     );
   }
   return raw as RuntimeAuthMode;
@@ -73,6 +81,9 @@ function providerAllowedInMode(provider: LoginInput["provider"], mode: RuntimeAu
   }
   if (mode === "credentials") {
     return provider === "credentials";
+  }
+  if (mode === "local_users") {
+    return provider === "local_users";
   }
   // oidc: human login via POST is not used (OIDC redirects handle it)
   return false;
@@ -121,13 +132,16 @@ export function buildOidcIdentity(claims: OidcIdentityClaims): AuthenticatedWrit
   };
 }
 
-export function listAuthMethods(): Array<"oidc" | "single_user" | "credentials"> {
+export function listAuthMethods(): Array<"oidc" | "single_user" | "credentials" | "local_users"> {
   const mode = readRuntimeAuthMode();
   if (mode === "single_user" || isSingleUserMode()) {
     return ["single_user"];
   }
   if (mode === "credentials") {
     return ["credentials"];
+  }
+  if (mode === "local_users") {
+    return ["local_users"];
   }
   return ["oidc"];
 }
@@ -168,12 +182,12 @@ function timingSafeStringEqual(a: string, b: string): boolean {
   return timingSafeEqual(digestA, digestB);
 }
 
-export function loginHuman(input: LoginInput): {
+export async function loginHuman(input: LoginInput): Promise<{
   token: string;
   access_token: string;
   refresh_token: string;
   identity: AuthenticatedWriter;
-} {
+}> {
   if (isSingleUserMode()) {
     const identity = getSingleUserIdentity();
     const tokenPair = issueTokenPair(identity);
@@ -203,6 +217,22 @@ export function loginHuman(input: LoginInput): {
       throw new InvalidCredentialsError("unauthorized: invalid credentials.");
     }
     const identity = getSingleUserIdentity();
+    const tokenPair = issueTokenPair(identity);
+    return {
+      token: tokenPair.access_token,
+      access_token: tokenPair.access_token,
+      refresh_token: tokenPair.refresh_token,
+      identity,
+    };
+  }
+
+  if (input.provider === "local_users") {
+    const username = typeof input.username === "string" ? input.username.trim() : "";
+    const presentedPassword = typeof input.password === "string" ? input.password : "";
+    if (username.length === 0 || presentedPassword.length === 0) {
+      throw new InvalidCredentialsError("unauthorized: invalid credentials.");
+    }
+    const identity = await verifyLocalUser(username, presentedPassword);
     const tokenPair = issueTokenPair(identity);
     return {
       token: tokenPair.access_token,
@@ -308,7 +338,7 @@ export function _setBootstrapCode(code: string | null): void {
  */
 export class InvalidRefreshTokenError extends Error {}
 
-export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair {
+export async function exchangeRefreshToken(refreshToken: string): Promise<IssuedAuthTokenPair> {
   let claims;
   try {
     claims = decodeAndValidateToken(refreshToken);
@@ -351,6 +381,18 @@ export function exchangeRefreshToken(refreshToken: string): IssuedAuthTokenPair 
       } as ShareSessionScope,
     );
   }
+  if (claims.type === "human" && readRuntimeAuthMode() === "local_users") {
+    const row = readValidatedLocalUsers().find((candidate) => candidate.id === claims.sub);
+    if (!row) {
+      throw new InvalidRefreshTokenError("unauthorized: that account no longer exists.");
+    }
+    return issueTokenPair({
+      id: row.id,
+      type: "human",
+      displayName: row.displayName,
+    });
+  }
+
   return issueTokenPair({
     id: claims.sub,
     type: claims.type,

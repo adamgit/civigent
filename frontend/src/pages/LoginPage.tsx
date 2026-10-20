@@ -29,6 +29,8 @@ export function LoginPage() {
   const supportsCredentials = !!credentialsMethod;
   const oidcMethod = methods.find((m) => m.type === "oidc");
   const supportsOidc = !!oidcMethod;
+  const localUsersMethod = methods.find((m) => m.type === "local_users");
+  const supportsLocalUsers = !!localUsersMethod;
 
   useEffect(() => {
     apiClient.getAuthMethods()
@@ -68,6 +70,21 @@ export function LoginPage() {
     }
   };
 
+  const handleLocalUserLogin = async (username: string, password: string) => {
+    setWorking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const login = await apiClient.loginLocalUser(username, password);
+      setMessage(`Authenticated as ${login.identity.displayName}.`);
+      navigate(returnToTarget);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const handleLogout = async () => {
     setWorking(true);
     try {
@@ -85,9 +102,11 @@ export function LoginPage() {
     ? "single_user"
     : supportsCredentials
       ? "credentials"
-      : supportsOidc
-        ? "oidc"
-        : (methods.length === 0 ? "loading" : "unknown");
+      : supportsLocalUsers
+        ? "local_users"
+        : supportsOidc
+          ? "oidc"
+          : (methods.length === 0 ? "loading" : "unknown");
 
   return (
     <div className="flex flex-col">
@@ -213,6 +232,80 @@ export function LoginPage() {
                       >
                         Sign in
                       </button>
+                    </div>
+                  </form>
+                ) : null}
+
+                {supportsLocalUsers ? (
+                  <form
+                    data-testid="login-local-users-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const form = new FormData(e.currentTarget);
+                      const username = form.get("username");
+                      const password = form.get("password");
+                      if (typeof username !== "string" || username.length === 0) {
+                        return;
+                      }
+                      if (typeof password !== "string" || password.length === 0) {
+                        return;
+                      }
+                      void handleLocalUserLogin(username, password);
+                    }}
+                    className="w-full mb-2"
+                    style={{
+                      padding: "12px 16px",
+                      border: "1px solid #eae7e2",
+                      borderRadius: 8,
+                      background: "white",
+                    }}
+                  >
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <span style={{ fontSize: 18, width: 24, textAlign: "center" }}>&#128273;</span>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>
+                        {localUsersMethod?.displayName ?? "Username and password"}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <input
+                        data-testid="login-local-username"
+                        name="username"
+                        type="text"
+                        autoComplete="username"
+                        required
+                        placeholder="Username"
+                        style={{
+                          padding: "8px 10px",
+                          border: "1px solid #eae7e2",
+                          borderRadius: 6,
+                          fontSize: 13,
+                        }}
+                      />
+                      <div className="flex gap-2">
+                        <input
+                          data-testid="login-local-password"
+                          name="password"
+                          type="password"
+                          autoComplete="current-password"
+                          required
+                          placeholder="Password"
+                          className="flex-1"
+                          style={{
+                            padding: "8px 10px",
+                            border: "1px solid #eae7e2",
+                            borderRadius: 6,
+                            fontSize: 13,
+                          }}
+                        />
+                        <button
+                          data-testid="login-local-users"
+                          type="submit"
+                          disabled={working}
+                          className="btn-secondary"
+                        >
+                          Sign in
+                        </button>
+                      </div>
                     </div>
                   </form>
                 ) : null}

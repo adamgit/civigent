@@ -9,6 +9,9 @@ interface HomeAuthModeBadgeProps {
 export function HomeAuthModeBadge({ mode, className }: HomeAuthModeBadgeProps) {
   if (!mode) return null;
   const ui = AUTH_MODE_UI[mode];
+  const popupModes: readonly LoginProvider[] = AUTH_MODE_ORDER.includes(mode)
+    ? AUTH_MODE_ORDER
+    : [...AUTH_MODE_ORDER, mode];
 
   return (
     <span className={`home-auth-mode${className ? ` ${className}` : ""}`}>
@@ -16,7 +19,7 @@ export function HomeAuthModeBadge({ mode, className }: HomeAuthModeBadgeProps) {
       <div className="home-auth-popup" role="tooltip" aria-label="Human login modes">
         <div className="home-auth-popup__kicker">Human login mode</div>
         <ul className="home-auth-popup__list">
-          {AUTH_MODE_ORDER.map((entry) => {
+          {popupModes.map((entry) => {
             const row = AUTH_MODE_UI[entry];
             const current = entry === mode;
             return (

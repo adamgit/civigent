@@ -548,7 +548,7 @@ async function handleRefreshGrant(request: OAuthRefreshTokenRequest, res: Respon
 
   const { exchangeRefreshToken, InvalidRefreshTokenError } = await import("../../auth/service.js");
   try {
-    const tokens = exchangeRefreshToken(refreshToken);
+    const tokens = await exchangeRefreshToken(refreshToken);
     const response: OAuthTokenResponse = {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,

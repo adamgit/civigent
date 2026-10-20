@@ -34,4 +34,11 @@ export const AUTH_MODE_UI: Record<
     env: "KS_AUTH_MODE=oidc",
     modifier: "sso",
   },
+  local_users: {
+    label: "Accounts",
+    description: "Humans sign in with a username and password of their own.",
+    detail: "Distinct accounts in an operator-maintained file. Experimental.",
+    env: "KS_AUTH_MODE=local_users",
+    modifier: "password",
+  },
 };

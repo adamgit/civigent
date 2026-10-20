@@ -27,12 +27,15 @@ const AUTH_MODE_CURRENT_COPY: Record<HumanAuthMode, string> = {
     "Humans sign in with the shared password from KS_CREDENTIALS_PASSWORD. The env-configured user (KS_USER_NAME / KS_USER_EMAIL / KS_USER_ID) is always admin after login; there is no bootstrap code and no user table. This mode is allowed on a public hostname. KS_AUTH_SECRET signs session JWTs and is not the login password. Agents are a separate setting (KS_AGENT_AUTH_POLICY); on a public host the default is confidential.",
   oidc:
     "Humans sign in through the configured OIDC provider. The first admin is claimed with the one-time bootstrap code printed at startup; further admins are granted in Permissions. There is no local password.",
+  local_users:
+    "Humans sign in with a username and password of their own. Each account is its own identity, and the accounts live in auth/local-users.json inside the data directory, beside roles.json. The env-configured user (KS_USER_NAME / KS_USER_EMAIL / KS_USER_ID) is this install's admin, exactly as in single-user and credentials modes, and is a separate identity from every local account; startup refuses if those vars are unset. Local accounts are ordinary humans, added and removed by an admin in Accounts; further admins are granted in Permissions. This mode is experimental and opt-in — SSO (KS_AUTH_MODE=oidc) remains the safer path for multiple humans.",
 };
 
 const AUTH_MODE_ONE_LINERS: Array<{ mode: HumanAuthMode; text: string }> = [
   { mode: "single_user", text: "no login, localhost only, anyone who can open the URL is admin." },
   { mode: "credentials", text: "one shared password, public hostname allowed." },
   { mode: "oidc", text: "SSO only, no local password." },
+  { mode: "local_users", text: "a username and password per account, from an operator file; experimental." },
 ];
 
 function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {

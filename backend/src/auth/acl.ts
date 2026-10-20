@@ -101,6 +101,10 @@ function isCredentialsMode(): boolean {
   return (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "credentials";
 }
 
+function isLocalUsersMode(): boolean {
+  return (readEnvVar("KS_AUTH_MODE") ?? "").toLowerCase() === "local_users";
+}
+
 /**
  * Returns true if the given writer ID has the "admin" role.
  *
@@ -112,6 +116,10 @@ export async function isAdmin(writerId: string): Promise<boolean> {
   // single_user / credentials: the env-configured identity is always admin
   if (isSingleUserMode() || isCredentialsMode()) {
     return writerId === getSingleUserId();
+  }
+
+  if (isLocalUsersMode() && writerId === getSingleUserId()) {
+    return true;
   }
 
   const cache = await loadCache();
@@ -263,7 +271,10 @@ async function getEffectiveRoles(writer: AuthenticatedWriter | null): Promise<st
   if (writer.scope) return roles;
 
   // In single_user and credentials modes, the env-configured user is always admin
-  if ((isSingleUserMode() || isCredentialsMode()) && writer.id === getSingleUserId()) {
+  if (
+    (isSingleUserMode() || isCredentialsMode() || isLocalUsersMode()) &&
+    writer.id === getSingleUserId()
+  ) {
     roles.push(ADMIN);
   }
 

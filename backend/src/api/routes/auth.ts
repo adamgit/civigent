@@ -109,6 +109,9 @@ export function registerAuthRoutes(router: Router): void {
         if (m === "credentials") {
           return { type: "credentials", displayName: "Shared password" };
         }
+        if (m === "local_users") {
+          return { type: "local_users", displayName: "Username and password" };
+        }
         return { type: "single_user", displayName: "Single-user session" };
       });
       res.json({ methods, bootstrap_available: isBootstrapAvailable() });
@@ -117,15 +120,16 @@ export function registerAuthRoutes(router: Router): void {
     }
   });
 
-  router.post("/auth/login", (req, res, next) => {
+  router.post("/auth/login", async (req, res, next) => {
     try {
-      const { provider, password } = req.body ?? {};
-      if (provider !== "single_user" && provider !== "credentials") {
+      const { provider, username, password } = req.body ?? {};
+      if (provider !== "single_user" && provider !== "credentials" && provider !== "local_users") {
         sendApiError(res, 400, `Unknown login provider: ${JSON.stringify(provider ?? null)}.`);
         return;
       }
-      const result = loginHuman({
+      const result = await loginHuman({
         provider,
+        ...(typeof username === "string" ? { username } : {}),
         ...(typeof password === "string" ? { password } : {}),
       });
       setAuthCookies(req, res, result.access_token, result.refresh_token);
@@ -366,7 +370,7 @@ export function registerAuthRoutes(router: Router): void {
     }
   });
 
-  router.post("/auth/token/refresh", (req, res) => {
+  router.post("/auth/token/refresh", async (req, res) => {
     const rawCookie = req.headers.cookie;
     let refreshToken: string | null = null;
     if (typeof rawCookie === "string") {
@@ -385,7 +389,7 @@ export function registerAuthRoutes(router: Router): void {
       return;
     }
     try {
-      const { access_token, refresh_token } = exchangeRefreshToken(refreshToken);
+      const { access_token, refresh_token } = await exchangeRefreshToken(refreshToken);
       setAuthCookies(req, res, access_token, refresh_token);
       res.json({ authenticated: true });
     } catch {

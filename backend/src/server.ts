@@ -16,6 +16,7 @@ import { bootstrapContentSeedFromDirectoryIfNeeded } from "./storage/bootstrap-c
 import { loadFatalState } from "./storage/fatal-state.js";
 import { validateOAuthConfig, getMCPPublicURL, getOidcPublicUrl, isMCPPublicURLFromHeadersEnabled } from "./auth/oauth-config.js";
 import { maybeGenerateBootstrapCode } from "./auth/service.js";
+import { assertLocalUsersModeConsistency } from "./auth/local-users.js";
 import { getSystemState, isSystemReady, setSystemFatal, setSystemReady } from "./startup-state.js";
 import { isDevSupervised, WORKER_HEARTBEAT_INTERVAL_MS } from "./runtime/system-state.js";
 import type { WorkerIpcMessage } from "./runtime/system-state.js";
@@ -215,6 +216,8 @@ server.on("upgrade", (request, socket, head) => {
 
 // Validate OAuth config before anything else — fail fast on misconfiguration
 validateOAuthConfig();
+
+assertLocalUsersModeConsistency();
 
 // Parse+validate KS_FATAL_ERRORS_MODE eagerly so an invalid value fails at
 // startup rather than the first time a fatal fires.

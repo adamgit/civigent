@@ -90,6 +90,10 @@ export function getAuthRoot(): string {
   return path.join(getDataRoot(), "auth");
 }
 
+export function getLocalUsersFilePath(): string {
+  return path.join(getAuthRoot(), "local-users.json");
+}
+
 // ─── Snapshots ─────────────────────────────────────────────────────
 
 export function getSnapshotRoot(): string {

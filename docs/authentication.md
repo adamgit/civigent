@@ -10,7 +10,7 @@ Civigent has two distinct authentication systems — one for **humans** and one 
 
 | Actor | Auth method | Identity source |
 |-------|-------------|-----------------|
-| Human | Browser login (OIDC, shared password) or bypass (single-user) | OIDC provider, `KS_CREDENTIALS_PASSWORD`, or configured name |
+| Human | Browser login (OIDC, shared password, local account) or bypass (single-user) | OIDC provider, `KS_CREDENTIALS_PASSWORD`, `auth/local-users.json`, or configured name |
 | Agent | OAuth 2.1 with PKCE | Anonymous self-registration or pre-registered key |
 
 Both systems produce JWTs that the server validates on every request. Humans carry their token in a cookie; agents carry theirs as a `Bearer` token in the `Authorization` header.
@@ -61,6 +61,53 @@ KS_OIDC_CLIENT_SECRET=<your-oidc-secret>
 Any provider with a standard OIDC discovery document works: Google Workspace, Microsoft Entra ID, Keycloak, Authentik, Okta, Auth0, and others. See [SSO Setup](sso-setup.md) for step-by-step instructions per provider.
 
 Each human gets a deterministic UUID derived from their OIDC subject identifier. The same person always gets the same UUID regardless of which machine they use.
+
+### Local users mode (experimental)
+
+Local users mode gives a handful of humans their own username and password without standing up an SSO provider. Each account is its own identity — distinct names in the audit log, distinct permissions in `roles.json` — unlike credentials mode, where everyone shares one identity.
+
+```env
+KS_AUTH_MODE=local_users
+KS_AUTH_SECRET=<openssl rand -hex 32>
+KS_EXTERNAL_HOSTNAME=wiki.example.com
+```
+
+The `KS_USER_NAME` / `KS_USER_EMAIL` / `KS_USER_ID` triple is required in this mode, exactly as it configures the hard-coded admin in single-user and credentials modes. That admin is a separate identity from every local account — the two never overlap — so an admin exists from the first boot and there is no bootstrap step of any kind here. Startup refuses if any of the three is unset.
+
+Local accounts are ordinary humans. They are never admin by virtue of being local accounts; admin is the env-configured identity, plus anyone an admin later grants the role to in **Permissions** (`roles.json` is merged on top in this mode rather than ignored).
+
+Admins manage accounts in the product at **Admin → Accounts** (`/admin/local-users`): list, add, rename, change a display name, set a password, delete.
+
+There is no path to configure. The accounts file lives at `auth/local-users.json` inside the data directory, beside `roles.json` and `agents.keys`, so it is covered by the same bind mount, the same ownership, and the same backup and restore as every other auth file.
+
+That file is the store, and it is optional: absent or holding zero accounts is a normal state, because the admin fills it in from the Accounts page. It is a JSON array of `{ username, id, displayName, password_hash }`, where each `password_hash` is a Node scrypt hash (`scrypt:<salt-hex>:<hash-hex>`). A plaintext password in that field, a duplicate username or id, or malformed JSON fails loudly at the point it is read — a login attempt or an Accounts page action — rather than at startup.
+
+Two rules are enforced at startup, before the port opens, because either one means a corrupt setup:
+
+- `KS_AUTH_MODE=local_users` with any of the admin env vars unset.
+- An `auth/local-users.json` that exists while `KS_AUTH_MODE` is anything other than `local_users`. Local accounts are only ever consulted in this mode, so a stray accounts file in another mode is refused rather than left to spring into life on a later mode switch.
+
+A command-line account creator exists for recovery and development. From a source checkout, pointing `KS_DATA_ROOT` at the data directory the server uses:
+
+```bash
+KS_DATA_ROOT=./dev-data printf 'a-password' | node --import tsx src/auth/add-local-user.ts alice
+```
+
+From a running container, where only the compiled output is present:
+
+```bash
+printf 'a-password' | docker compose run --rm -T backend \
+  node dist/backend/src/auth/add-local-user.js alice
+```
+
+It writes only the accounts file, creating it and the `auth/` directory if needed. It mints the account's id, hashes the password, defaults the display name to the username, and does not grant admin.
+
+Two things that page states and that are worth repeating here:
+
+- Deleting an account leaves that person's current access token valid until it expires (30 minutes). Their next refresh fails.
+- Setting a password does not end their current sessions.
+
+This mode is experimental and opt-in. It is also removable: nothing else depends on it, so switching back to another mode is a change of `KS_AUTH_MODE`. For more than a handful of humans, SSO (`KS_AUTH_MODE=oidc`) remains the safer path — it keeps passwords, lockout, and account recovery in a system built for them.
 
 ### Human session tokens
 
@@ -233,7 +280,7 @@ Both humans and agents use the same token lifetime settings. Agents refresh auto
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KS_AUTH_MODE` | Auth mode: `single_user`, `credentials`, or `oidc` (required) | (none — required) |
+| `KS_AUTH_MODE` | Auth mode: `single_user`, `credentials`, `oidc`, or `local_users` (required) | (none — required) |
 | `KS_AUTH_SECRET` | JWT signing secret — required in credentials and oidc modes | (insecure dev default) |
 | `KS_CREDENTIALS_PASSWORD` | Shared login password — required in credentials mode. Not `KS_AUTH_SECRET`. | (none) |
 | `KS_OIDC_ISSUER` | OIDC provider URL for human login | (none — required in oidc mode) |

@@ -188,6 +188,29 @@ KS_AGENT_AUTH_POLICY=approve
 
 The removed `register` / `verify` values refuse startup. See [Authentication — Agent auth policy](authentication.md#agent-authentication-policy) for details on all three levels and migration notes.
 
+### Scenario E: A handful of humans with their own accounts, no SSO (experimental)
+
+**Profile:** A few named humans who each need their own identity, and no OIDC provider to point at.
+**Deployment method:** Quickstart (pre-built image) in local users mode, behind a reverse proxy.
+
+Scenario B gives several people one shared identity; this gives each of them their own. Audit-log attribution, per-document permissions, and share-link history are all per account.
+
+**Key settings:**
+```env
+KS_AUTH_MODE=local_users
+KS_AUTH_SECRET=<openssl rand -hex 32>
+KS_USER_NAME=Your Name
+KS_USER_EMAIL=you@example.com
+KS_USER_ID=human-admin
+KS_EXTERNAL_HOSTNAME=wiki.example.com
+```
+
+The `KS_USER_*` triple is required here and configures this install's admin, the same hard-coded admin those vars configure in single-user and credentials modes. It is a separate identity from every local account, so an admin exists from the first boot and there is no bootstrap step. Startup refuses if any of the three is unset.
+
+No extra mount and no path variable: the accounts file lives at `auth/local-users.json` inside the data directory you already bind-mount, and it starts absent. The admin signs in and adds each person at **Admin → Accounts**. A stray accounts file while `KS_AUTH_MODE` is any other mode refuses startup, since local accounts are only consulted in this one. Details: [Authentication — Local users mode](authentication.md#local-users-mode-experimental).
+
+This mode is experimental. For more than a handful of humans, prefer Scenario C — an SSO provider keeps password policy, lockout, and account recovery in a system built for them.
+
 ---
 
 ## Startup validation

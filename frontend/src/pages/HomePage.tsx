@@ -100,7 +100,11 @@ export function HomePage() {
         if (cancelled) return;
         setBootstrapAvailable(!!response.bootstrap_available);
         const type = response.methods?.[0]?.type;
-        setAuthMode(type === "single_user" || type === "credentials" || type === "oidc" ? type : null);
+        setAuthMode(
+          type === "single_user" || type === "credentials" || type === "oidc" || type === "local_users"
+            ? type
+            : null,
+        );
       })
       .catch(() => {
         /* non-fatal background fetch */

@@ -107,7 +107,6 @@ import {
 } from "../status/live-document-session";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { DocPath, HeadingLevel } from "../types/shared";
-import { LeftoverFocusLockTrigger } from "../debug/LeftoverFocusLockTrigger";
 
 function topbarConnectionState(pipe: EditPipe): CrdtConnectionState {
   switch (pipe.phase) {
@@ -156,7 +155,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showOverwrite, setShowOverwrite] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
-  const [debugLeftoverFragmentKey, setDebugLeftoverFragmentKey] = useState<string | null>(null);
   const [loadDurationMs, setLoadDurationMs] = useState<number | null>(null);
   const loadStartedAtRef = useRef<number | null>(null);
 
@@ -384,12 +382,10 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   // the stored cold index) — the currency for hover/mount/eviction windows.
   // Positions are derived from the ordered rows per pass, never stored.
   const focusedFragmentKey = useMemo(() => {
-    if (effectiveFocusedIndex === null) {
-      return proposalMode ? null : debugLeftoverFragmentKey;
-    }
+    if (effectiveFocusedIndex === null) return null;
     const row = renderSections[effectiveFocusedIndex];
     return row ? SectionId.text(row.id) : null;
-  }, [effectiveFocusedIndex, renderSections, proposalMode, debugLeftoverFragmentKey]);
+  }, [effectiveFocusedIndex, renderSections]);
 
   useEffect(() => {
     if (!liveReplica.bound || focusedFragmentKey === null) return;
@@ -1405,19 +1401,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           onClose={() => setSectionNavOverlayOpen(false)}
         />
       ) : null}
-
-      <LeftoverFocusLockTrigger
-        session={liveReplica.session}
-        bound={liveReplica.bound}
-        focusedFragmentKey={focusedFragmentKey}
-        firstSectionId={renderSections[0]?.id ?? null}
-        orderedFragmentKeys={renderSections.map((s) => SectionId.text(s.id))}
-        focusedEditorReady={liveFocusedSection !== null && readyEditors.has(SectionId.text(liveFocusedSection))}
-        leftoverFragmentKey={debugLeftoverFragmentKey}
-        stopEditing={liveReplica.stopEditing}
-        injectLeftoverFocus={setDebugLeftoverFragmentKey}
-        clearLeftoverFocus={() => setDebugLeftoverFragmentKey(null)}
-      />
 
       <DocumentFooter
         docPath={docPath}

@@ -7,6 +7,7 @@ import { ProposalDetailPage } from "../pages/ProposalDetailPage";
 import { AdminPage } from "../pages/AdminPage";
 import { AgentKeysPage } from "../pages/AgentKeysPage";
 import { PermissionsPage } from "../pages/PermissionsPage";
+import { LocalUsersPage } from "../pages/LocalUsersPage";
 import { CoordinationPage } from "../pages/CoordinationPage";
 import { SharePage } from "../pages/SharePage";
 import { ShareDiaryPage } from "../pages/ShareDiaryPage";
@@ -45,6 +46,7 @@ export const routeConfig: RouteObject[] = [
       { path: "admin/proposals/:id", element: <ProposalDetailPage /> },
       { path: "admin/agents-auth", element: <AgentKeysPage /> },
       { path: "admin/permissions", element: <PermissionsPage /> },
+      { path: "admin/local-users", element: <LocalUsersPage /> },
       { path: "admin/snapshots", element: <SnapshotsPage /> },
       { path: "admin/agent-mcp-logs", element: <AgentMcpLogsPage /> },
       { path: "admin/agent-mcp-analysis", element: <AgentMcpAnalysisPage /> },

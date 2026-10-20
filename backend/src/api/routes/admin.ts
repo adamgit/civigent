@@ -19,6 +19,14 @@ import {
   aclPathParamOf,
 } from "./middleware.js";
 import { resolveAuthenticatedWriter } from "../../auth/context.js";
+import { readRuntimeAuthMode } from "../../auth/service.js";
+import {
+  addLocalUser,
+  deleteLocalUser,
+  listLocalUsers,
+  updateLocalUser,
+  LocalUserWriteError,
+} from "../../auth/local-users.js";
 import { getAgentAuthPolicy } from "../../auth/oauth-config.js";
 import { getToolKeyCatalog } from "../application/setup.js";
 import {
@@ -594,4 +602,81 @@ export function registerAdminRoutes(
       next(error);
     }
   });
+
+  if (readRuntimeAuthMode() === "local_users") {
+    router.get("/admin/local-users", async (req, res, next) => {
+      try {
+        const admin = await requireAdmin(req, res);
+        if (!admin) return;
+        res.json(listLocalUsers());
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post("/admin/local-users", async (req, res, next) => {
+      try {
+        const admin = await requireAdmin(req, res);
+        if (!admin) return;
+        const { username, displayName, password } = req.body ?? {};
+        if (typeof username !== "string" || typeof displayName !== "string" || typeof password !== "string") {
+          sendApiError(res, 400, "username, displayName, and password are all required strings.");
+          return;
+        }
+        res.json(await addLocalUser({ username, displayName, password }));
+      } catch (error) {
+        if (error instanceof LocalUserWriteError) {
+          sendApiError(res, 400, error.message);
+          return;
+        }
+        next(error);
+      }
+    });
+
+    router.patch("/admin/local-users/:id", async (req, res, next) => {
+      try {
+        const admin = await requireAdmin(req, res);
+        if (!admin) return;
+        const { username, displayName, password } = req.body ?? {};
+        if (username !== undefined && typeof username !== "string") {
+          sendApiError(res, 400, "username must be a string when present.");
+          return;
+        }
+        if (displayName !== undefined && typeof displayName !== "string") {
+          sendApiError(res, 400, "displayName must be a string when present.");
+          return;
+        }
+        if (password !== undefined && typeof password !== "string") {
+          sendApiError(res, 400, "password must be a string when present.");
+          return;
+        }
+        res.json(await updateLocalUser(req.params.id, {
+          ...(username !== undefined ? { username } : {}),
+          ...(displayName !== undefined ? { displayName } : {}),
+          ...(password !== undefined ? { password } : {}),
+        }));
+      } catch (error) {
+        if (error instanceof LocalUserWriteError) {
+          sendApiError(res, 400, error.message);
+          return;
+        }
+        next(error);
+      }
+    });
+
+    router.delete("/admin/local-users/:id", async (req, res, next) => {
+      try {
+        const admin = await requireAdmin(req, res);
+        if (!admin) return;
+        await deleteLocalUser(req.params.id);
+        res.json({ ok: true });
+      } catch (error) {
+        if (error instanceof LocalUserWriteError) {
+          sendApiError(res, 400, error.message);
+          return;
+        }
+        next(error);
+      }
+    });
+  }
 }

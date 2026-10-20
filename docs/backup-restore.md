@@ -53,7 +53,7 @@ Civigent can push canonical published content history and durable auth/RBAC stat
 ### What the backup covers
 
 - Canonical content Git history (the existing `data/.git` object graph, pushed exactly as-is — no rewrite, no rebase, no extra audit commit)
-- Durable auth/RBAC state (`data/auth/defaults.json`, `roles.json`, `acl.json`, `custom-roles.json`, `agents.keys`), pushed on `refs/heads/auth/main`: each run builds a commit against a fresh throwaway index and parents it on the previous `auth/main` tip (first backup has no parent; later backups are normal fast-forwards). Restore still only checks out the tip — the chain exists so repeated backups can push without force
+- Durable auth/RBAC state (`data/auth/defaults.json`, `roles.json`, `acl.json`, `custom-roles.json`, `agents.keys`, `local-users.json`), pushed on `refs/heads/auth/main`: each run builds a commit against a fresh throwaway index and parents it on the previous `auth/main` tip (first backup has no parent; later backups are normal fast-forwards). Restore still only checks out the tip — the chain exists so repeated backups can push without force
 
 ### What the backup does NOT cover
 
@@ -155,7 +155,7 @@ Restore is a one-directional import: the target `data/` must be virgin. Restore 
 
 - the local Git repo has one or more content commits
 - `content/` contains any files
-- `auth/` contains any durable file (`defaults.json`, `roles.json`, `acl.json`, `custom-roles.json`, `agents.keys`)
+- `auth/` contains any durable file (`defaults.json`, `roles.json`, `acl.json`, `custom-roles.json`, `agents.keys`, `local-users.json`)
 
 Wipe the target `data/` before restoring; the admin page shows a red-state message with the specific reason when the target is not virgin.
 

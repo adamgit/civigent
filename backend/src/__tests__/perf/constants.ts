@@ -5,8 +5,11 @@ export const HUMAN_COUNT = 20;
 export const AGENT_COUNT = 20;
 export const HUMAN_TXN_COUNT = 50;
 
-export const SCENARIOS = [
-  "humans-disjoint",
+/** Run and debugged. */
+const TESTED_SCENARIOS = ["humans-disjoint"] as const;
+
+/** Implemented in the harness. Not run, not debugged. */
+export const UNTESTED_SCENARIOS = [
   "humans-one-section",
   "agents-disjoint",
   "join-storm",
@@ -16,7 +19,13 @@ export const SCENARIOS = [
   "join-and-agents",
 ] as const;
 
+export const SCENARIOS = [...TESTED_SCENARIOS, ...UNTESTED_SCENARIOS] as const;
+
 export type ScenarioName = (typeof SCENARIOS)[number];
+
+export function scenarioIsUntested(scenario: ScenarioName): boolean {
+  return (UNTESTED_SCENARIOS as readonly string[]).includes(scenario);
+}
 export type BfhFlag = "bfh" | "no-bfh";
 export type HumanEditKind = "body" | "split" | "mix";
 

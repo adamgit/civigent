@@ -97,6 +97,12 @@ export interface AgentMcpPulseAction {
   heading_path: string[] | null;
 }
 
+export interface LocalUserAccount {
+  username: string;
+  id: string;
+  displayName: string;
+}
+
 export interface ImportStagingInfo {
   import_id: string;
   staging_path: string;
@@ -757,6 +763,35 @@ export const apiClient = {
     });
   },
 
+  async listLocalUsers(): Promise<LocalUserAccount[]> {
+    return requestJson("/api/admin/local-users");
+  },
+
+  async addLocalUser(input: { username: string; displayName: string; password: string }): Promise<LocalUserAccount> {
+    return requestJson("/api/admin/local-users", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updateLocalUser(
+    id: string,
+    changes: { username?: string; displayName?: string; password?: string },
+  ): Promise<LocalUserAccount> {
+    return requestJson(`/api/admin/local-users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+  },
+
+  async deleteLocalUser(id: string): Promise<{ ok: boolean }> {
+    return requestJson(`/api/admin/local-users/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  },
+
   async rotateAgentSecret(agentId: string): Promise<{ agent_id: string; display_name: string; secret: string }> {
     return requestJson(`/api/admin/agents/${encodeURIComponent(agentId)}/rotate-secret`, {
       method: "POST",
@@ -821,6 +856,29 @@ export const apiClient = {
         },
         body: JSON.stringify({
           provider: "credentials",
+          password,
+        }),
+      },
+      false,
+    );
+    if (response.identity?.id) {
+      setWriterId(response.identity.id);
+      broadcastAuthEvent("login");
+    }
+    return response;
+  },
+
+  async loginLocalUser(username: string, password: string): Promise<AuthTokenResponse> {
+    const response = await requestJson<AuthTokenResponse>(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: "local_users",
+          username,
           password,
         }),
       },

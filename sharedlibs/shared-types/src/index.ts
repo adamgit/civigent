@@ -900,7 +900,7 @@ export interface AdminConfig {
   snapshot_enabled: boolean;
   governance_mode: GovernanceMode;
   agent_auth_policy: AgentAuthPolicy;
-  auth_mode: "single_user" | "credentials" | "oidc";
+  auth_mode: "single_user" | "credentials" | "oidc" | "local_users";
   exportedSkills: ExportedSkillsAdminConfig;
   shareLinks: ShareLinksAdminConfig;
 }
@@ -2537,10 +2537,10 @@ export interface GetShareDiaryResponse {
 
 // ─── Auth ──────────────────────────────────────────────────────────
 
-export type LoginProvider = "single_user" | "credentials" | "oidc";
+export type LoginProvider = "single_user" | "credentials" | "oidc" | "local_users";
 
 export interface AuthMethod {
-  type: "single_user" | "credentials" | "oidc";
+  type: "single_user" | "credentials" | "oidc" | "local_users";
   displayName: string;
   authUrl?: string; // only present for "oidc"
 }
