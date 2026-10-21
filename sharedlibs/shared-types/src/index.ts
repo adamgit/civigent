@@ -1594,6 +1594,11 @@ export interface GetDocumentResponse {
 
 export interface GetDocumentSectionsResponse {
   doc_path: string;
+  /**
+   * Whether the requesting writer may edit this document. Set on the workspace
+   * section list. Absent on other section-list responses.
+   */
+  can_write?: boolean;
   sections: Array<{
     heading: string;
     heading_path: string[];

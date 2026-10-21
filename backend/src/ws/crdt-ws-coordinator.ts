@@ -2469,15 +2469,15 @@ async function handleMessage(
   const participant = participants.get(state.clientInstanceId);
   const effectiveRole = participant?.clientRole ?? state.socketRole;
 
+  // A read-only socket, or an editor transition that was refused, can still
+  // receive a local keystroke. Drop it. Applying it is wrong, and throwing
+  // here is a process fatal for one client's frame.
   if (effectiveRole === "observer") {
     if (
       msgType === MSG_YJS_UPDATE ||
       msgType === MSG_DOC_PUBLISH_READY
     ) {
-      throw new Error(
-        `Observer socket sent write message (type 0x${msgType.toString(16)}) for ${state.docPath} — ` +
-        `socketRole=${state.socketRole}, attachmentState=${state.attachmentState}, requestedMode=${state.requestedMode}`,
-      );
+      return;
     }
   }
   if (state.requestedMode === "none" && msgType !== MSG_MODE_TRANSITION_REQUEST) {

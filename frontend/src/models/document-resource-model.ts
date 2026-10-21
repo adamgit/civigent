@@ -14,10 +14,17 @@ import type { WorkspaceSectionDto } from "../pages/document-page-utils";
  */
 export class DocumentResourceModel {
   private lastDocPath: DocPath | null = null;
+  /** Null until a workspace section load succeeds. Missing `can_write` counts as allowed. */
+  private documentCanWrite: boolean | null = null;
+
+  get canWriteDocument(): boolean | null {
+    return this.documentCanWrite;
+  }
 
   async loadSections(docPath: DocPath): Promise<WorkspaceSectionDto[]> {
     const response = await apiClient.getWorkspaceDocumentSections(docPath);
     this.lastDocPath = docPath;
+    this.documentCanWrite = response.can_write !== false;
     return response.sections;
   }
 

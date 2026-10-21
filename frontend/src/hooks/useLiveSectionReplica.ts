@@ -328,6 +328,12 @@ export function useLiveSectionReplica(params: UseLiveSectionReplicaParams): Live
         replicaRef.current?.clearPublishPauseMirror();
         dispatchRef.current({ type: "pauseChanged", paused: false });
       },
+      onModeTransitionResult: (result) => {
+        if (!isCurrent()) return;
+        if (result.kind === "rejected" && result.reason === "Write permission required for editor mode") {
+          dispatchRef.current({ type: "stopEditing" });
+        }
+      },
     });
     transport.setPublishPauseBarrier({
       freeze: () => settleQuiescence(),

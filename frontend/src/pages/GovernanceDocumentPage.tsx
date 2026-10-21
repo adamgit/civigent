@@ -120,6 +120,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
 
   // ── Section data ─────────────────────────────────────────
   const [sections, setSections] = useState<WorkspaceSectionDto[]>([]);
+  const [canWriteDocument, setCanWriteDocument] = useState<boolean | null>(null);
   // Fresher REST rows fetched ONLY for section-keyed proposal/lock META while
   // the live replica is authoritative (gutters, lock signals). Never painted
   // as body and never adopted into `sections`/seeds — the live center stays on
@@ -143,6 +144,8 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const sectionsContainerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
+  const requestedDocPathRef = useRef(docPath);
+  requestedDocPathRef.current = docPath;
 
   // ── Load sections ────────────────────────────────────────
   const loadSections = useCallback(async (docPath: DocPath): Promise<WorkspaceSectionDto[]> => {
@@ -152,6 +155,8 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     setError(null);
     try {
       const nextSections = await resourceModel.loadSections(docPath);
+      if (requestedDocPathRef.current !== docPath) return nextSections;
+      setCanWriteDocument(resourceModel.canWriteDocument);
       setSections(nextSections);
       return nextSections;
     } catch (err) {
@@ -183,6 +188,11 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     }
     resourceModel.loadSections(docPath).then(
       (nextSections) => {
+        if (requestedDocPathRef.current !== docPath) {
+          completeSessionEndHandoff();
+          return;
+        }
+        setCanWriteDocument(resourceModel.canWriteDocument);
         setSections(nextSections);
         setError(null);
         completeSessionEndHandoff();
@@ -213,7 +223,11 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     if (!liveReplicaReadyRef.current) return;
     void resourceModel
       .loadSections(docPath)
-      .then((fresh) => setLiveMetaSections(fresh))
+      .then((fresh) => {
+        if (requestedDocPathRef.current !== docPath) return;
+        setCanWriteDocument(resourceModel.canWriteDocument);
+        setLiveMetaSections(fresh);
+      })
       .catch(() => { /* best-effort: gutters keep the last known meta */ });
   }, [docPath, resourceModel]);
 
@@ -492,6 +506,10 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     return () => clearTimeout(timer);
   }, [sectionsLoading]);
 
+  useEffect(() => {
+    setCanWriteDocument(null);
+  }, [docPath]);
+
   // Initial canonical load. The live replica connects its observer socket on
   // mount by itself — there is no separate observer to start here.
   useEffect(() => {
@@ -693,9 +711,11 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     if (!coords) return;
     const command = onActivateRow(liveReplica.session, SectionId.brand(fk), coords, isSectionBlocked(fk));
     if (!command) return;
-    if (command.type === "openEditor") liveReplica.openEditor(command.section, command.coords);
-    else liveReplica.moveCaretToPoint(command.section, command.coords);
-  }, [liveReplica.session, liveReplica.openEditor, liveReplica.moveCaretToPoint, isSectionBlocked]);
+    if (command.type === "openEditor") {
+      if (canWriteDocument !== true) return;
+      liveReplica.openEditor(command.section, command.coords);
+    } else liveReplica.moveCaretToPoint(command.section, command.coords);
+  }, [liveReplica.session, liveReplica.openEditor, liveReplica.moveCaretToPoint, isSectionBlocked, canWriteDocument]);
 
   const handleSectionCursorExit = useCallback((fk: string, exit: SectionArrowExit) => {
     const rows = sectionsRef.current;
@@ -925,6 +945,15 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                 {showAttribution ? "Hide authorship" : "Show authorship"}
               </button>
             </div>
+
+            {canWriteDocument === false ? (
+              <div
+                className="mb-4 border border-amber-200 bg-amber-50 px-4 py-2 rounded-sm text-xs text-amber-900"
+                role="status"
+              >
+                You have read only access to this document, due to permissions settings.
+              </div>
+            ) : null}
 
             {/* Shared-draft banner — only when a live inprogress proposal is
                 bound to this document (FP11). */}
