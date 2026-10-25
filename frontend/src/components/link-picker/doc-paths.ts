@@ -1,9 +1,8 @@
 /**
- * doc-paths — workspace document-path helpers for the link picker.
+ * doc-paths — document-path helpers for the link picker.
  *
- * The picker offers document paths as link targets. This module reads the same
- * workspace tree source used by the sidebar (`apiClient.getWorkspaceTree`) and
- * flattens it to file paths.
+ * The picker offers committed document paths as link targets. This module reads
+ * the canonical tree (`apiClient.getCanonicalTree`) and flattens it to file paths.
  */
 
 import { apiClient } from "../../services/api-client";
@@ -22,9 +21,9 @@ export function flattenFilePaths(entries: DocumentTreeEntry[]): string[] {
   return out;
 }
 
-/** Fetch the workspace tree and return its flattened file paths. */
-export async function fetchWorkspaceFilePaths(): Promise<string[]> {
-  const response = await apiClient.getWorkspaceTree();
+/** Fetch the canonical tree and return its flattened file paths. */
+export async function fetchCanonicalFilePaths(): Promise<string[]> {
+  const response = await apiClient.getCanonicalTree();
   return flattenFilePaths(response.tree);
 }
 

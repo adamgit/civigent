@@ -16,8 +16,8 @@ import {
   docPathParamOf,
 } from "./middleware.js";
 import {
-  readTree,
-  readFolderFileAges,
+  readWorkspaceTree,
+  readWorkspaceFolderFileAges,
   readWorkspaceStructure,
   getDiagnostics,
   restoreDocument,
@@ -73,7 +73,7 @@ export function registerWorkspaceRoutes(
   ): Promise<void> {
     try {
       const writer = resolveAuthenticatedWriter(req);
-      const response: GetFolderFileAgesResponse = await readFolderFileAges(writer, folder);
+      const response: GetFolderFileAgesResponse = await readWorkspaceFolderFileAges(writer, folder);
       res.json(response);
     } catch (error) {
       if (error instanceof InvalidFolderPathError) {
@@ -93,7 +93,7 @@ export function registerWorkspaceRoutes(
     try {
       const writer = resolveAuthenticatedWriter(req);
       const basePath = optionalStringParam(req.query.path, "path") ?? "";
-      const response: GetDocumentsTreeResponse = await readTree(writer, basePath);
+      const response: GetDocumentsTreeResponse = await readWorkspaceTree(writer, basePath);
       res.json(response);
     } catch (error) {
       if (error instanceof QueryParamError) {

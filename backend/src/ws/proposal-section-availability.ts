@@ -82,6 +82,7 @@ export async function buildProposalSectionAvailabilityEvent(
 
   return {
     type: "proposal:section-availability",
+    doc_path: docPath,
     proposal_id: proposal.id,
     proposal_status: proposal.status,
     sections: payloadSections,

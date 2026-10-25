@@ -42,8 +42,8 @@ export function groupSectionsByDocPath(
 
 export function groupProposalTargetsByDocument(
   targets: ProposalTargetRef[],
-): Map<string, string[][]> {
-  const headingPathsByDoc = new Map<string, string[][]>();
+): Map<DocPath, string[][]> {
+  const headingPathsByDoc = new Map<DocPath, string[][]>();
   for (const target of targets) {
     let headingPaths = headingPathsByDoc.get(target.doc_path);
     if (!headingPaths) {
@@ -143,24 +143,25 @@ export function emitContentCommittedEventsByDoc(
 
 export function emitContentCommittedForSections(
   emit: ((event: WsServerEvent) => void) | undefined,
-  docPath: DocPath,
-  sections: Array<{ doc_path: string; heading_path: string[] }>,
+  sections: Array<{ doc_path: DocPath; heading_path: string[] }>,
   commitSha: string,
   writer: Pick<WriterIdentity, "id" | "type" | "displayName">,
   contributorIds: string[],
 ): void {
   if (!emit) return;
-  emit({
-    type: "content:committed",
-    doc_path: docPath,
-    sections,
-    commit_sha: commitSha,
-    writer_id: writer.id,
-    writer_display_name: writer.displayName,
-    writer_type: writer.type,
-    contributor_ids: contributorIds,
-    seconds_ago: 0,
-  });
+  for (const [docPath, headingPaths] of groupSectionsByDocPath(sections)) {
+    emit({
+      type: "content:committed",
+      doc_path: docPath,
+      sections: headingPaths.map((headingPath) => ({ doc_path: docPath, heading_path: headingPath })),
+      commit_sha: commitSha,
+      writer_id: writer.id,
+      writer_display_name: writer.displayName,
+      writer_type: writer.type,
+      contributor_ids: contributorIds,
+      seconds_ago: 0,
+    });
+  }
 }
 
 
@@ -289,8 +290,7 @@ export async function emitSectionBlockState(
 /**
  * Private, origin-only emitter for `section:edit-rejected`. Constructs the
  * user-facing rejection payload from an acceptance-gate rejection group and
- * hands it to a per-tab private-send callback keyed by
- * `(doc_path, clientInstanceId)`.
+ * hands it to a per-tab private-send callback keyed by `clientInstanceId`.
  *
  * The transport (`sendPrivate`) is supplied by the caller — the JSON WebSocket
  * hub owns per-tab routing (see `backend/src/ws/hub.ts` extension) so this
@@ -320,7 +320,7 @@ export interface SectionEditRejectedGroupInput {
 
 export function emitSectionEditRejected(
   sendPrivate: (
-    target: { docPath: DocPath; clientInstanceId: ClientInstanceId },
+    target: { clientInstanceId: ClientInstanceId },
     event: SectionEditRejectedEvent,
   ) => void,
   target: { docPath: DocPath; clientInstanceId: ClientInstanceId | null },
@@ -344,5 +344,5 @@ export function emitSectionEditRejected(
     server_action: group.serverAction,
     guidance: group.guidance,
   };
-  sendPrivate({ docPath: target.docPath, clientInstanceId: target.clientInstanceId }, event);
+  sendPrivate({ clientInstanceId: target.clientInstanceId }, event);
 }

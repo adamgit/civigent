@@ -596,11 +596,11 @@ function notifyDocumentActivityChanged(docPath: DocPath): void {
  * transports that never wire private routing simply drop these events.
  */
 let onWsPrivateEvent:
-  | ((target: { docPath: DocPath; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void)
+  | ((target: { clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void)
   | null = null;
 
 export function setCrdtPrivateEventHandler(
-  handler: (target: { docPath: DocPath; clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void,
+  handler: (target: { clientInstanceId: ClientInstanceId }, event: WsServerEvent) => void,
 ): void {
   onWsPrivateEvent = handler;
 }

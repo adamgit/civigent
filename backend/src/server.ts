@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { createApp } from "./app.js";
-import { createWsHub } from "./ws/hub.js";
+import { createWsHub, deliveryScopeOf } from "./ws/hub.js";
 import { createCrdtWsServer, setCrdtEventHandler, setCrdtPrivateEventHandler } from "./ws/crdt-sync.js";
 import { setDocumentActivityChangedHandler } from "./ws/crdt-ws-coordinator.js";
 import {
@@ -27,7 +27,7 @@ import { handleProcessFatal, installProcessFatalHandlers, setFatalReportDelivery
 import { setImpairmentDeliveryHandler, raiseImpairmentsForLeftoverInProgressProposals } from "./runtime/impairment-registry.js";
 import type { WsServerEvent } from "./types/shared.js";
 import { buildProposalSectionAvailabilityEventsForDoc } from "./ws/proposal-section-availability.js";
-import { DocPath } from "./types/shared.js";
+import type { DocPath } from "./types/shared.js";
 
 const ANSI_BOLD_YELLOW = "\x1b[1;33m";
 const ANSI_RESET = "\x1b[0m";
@@ -91,27 +91,18 @@ const PROPOSAL_AVAILABILITY_TRIGGER_TYPES = new Set<WsServerEvent["type"]>([
   "proposal:withdrawn",
 ]);
 
-function eventDocPath(event: WsServerEvent): DocPath | null {
-  if ("doc_path" in event && typeof event.doc_path === "string") {
-    return DocPath.parse(event.doc_path);
-  }
-  return null;
-}
-
 async function emitDerivedProposalSectionAvailability(
   event: WsServerEvent,
-  docPath: DocPath | null,
+  docPath: DocPath,
 ): Promise<void> {
   if (!PROPOSAL_AVAILABILITY_TRIGGER_TYPES.has(event.type)) return;
-  if (!docPath) return;
   const derivedEvents = await buildProposalSectionAvailabilityEventsForDoc(docPath);
   for (const derivedEvent of derivedEvents) {
     wsHub.broadcast(derivedEvent);
   }
 }
 
-function handleDocumentActivityTriggers(event: WsServerEvent, docPath: DocPath | null): void {
-  if (!docPath) return;
+function handleDocumentActivityTriggers(event: WsServerEvent, docPath: DocPath): void {
   if (event.type === "agent:reading") {
     recordAgentDocumentRead(docPath, {
       id: event.actor_id,
@@ -136,9 +127,10 @@ function handleDocumentActivityTriggers(event: WsServerEvent, docPath: DocPath |
 
 function handleWsEvent(event: WsServerEvent): void {
   wsHub.broadcast(event);
-  const docPath = eventDocPath(event);
-  void emitDerivedProposalSectionAvailability(event, docPath);
-  handleDocumentActivityTriggers(event, docPath);
+  const scope = deliveryScopeOf(event);
+  if (scope.kind !== "document") return;
+  void emitDerivedProposalSectionAvailability(event, scope.docPath);
+  handleDocumentActivityTriggers(event, scope.docPath);
 }
 
 // In KS_FATAL_ERRORS_MODE=report the process stays alive after a fatal; deliver
@@ -160,12 +152,12 @@ setImpairmentDeliveryHandler(
 
 // Wire up CRDT events so they broadcast through the hub
 setCrdtEventHandler((event) => handleWsEvent(event));
-setDocumentActivityBroadcaster((event) => wsHub.broadcastActivityToSocketsWithDocOpen(event));
+setDocumentActivityBroadcaster((event) => wsHub.broadcast(event));
 setDocumentActivityChangedHandler((docPath) => {
   void broadcastDocumentActivitySnapshot(docPath);
 });
 // Wire up CRDT origin-only private events (section:edit-rejected) so they
-// deliver to a single `(doc_path, clientInstanceId)` tab, not to the ordinary
+// deliver to sockets that hold `clientInstanceId`, not to the ordinary
 // document subscription broadcast.
 setCrdtPrivateEventHandler((target, event) => wsHub.sendPrivate(target, event));
 

@@ -1,6 +1,7 @@
 import { type Router } from "express";
 import type {
   GetDocumentResponse,
+  GetDocumentsTreeResponse,
   ReadDocStructureResponse,
   WsServerEvent,
 } from "../../types/shared.js";
@@ -12,6 +13,7 @@ import {
 } from "./middleware.js";
 import {
   readCanonicalStructure,
+  readCanonicalTree,
   getHistory,
   getHistoryPreview,
   getBlame,
@@ -21,10 +23,13 @@ import {
   DocumentNotFoundError,
   DocumentAssemblyError,
   InvalidDocPathError,
+  DocumentsTreePathNotFoundError,
+  InvalidDocumentsTreePathError,
 } from "../application/documents.js";
 import {
   QueryParamError,
   boundedIntParam,
+  optionalStringParam,
 } from "../helpers/query-params.js";
 import { recordAgentRead } from "../../ws/agent-read.js";
 
@@ -38,6 +43,30 @@ export function registerCanonicalRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
 ): void {
+  // GET /canonical/tree — committed catalog (same response shape as /workspace/tree)
+  router.get("/canonical/tree", async (req, res, next) => {
+    try {
+      const writer = resolveAuthenticatedWriter(req);
+      const basePath = optionalStringParam(req.query.path, "path") ?? "";
+      const response: GetDocumentsTreeResponse = await readCanonicalTree(writer, basePath);
+      res.json(response);
+    } catch (error) {
+      if (error instanceof QueryParamError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      if (error instanceof DocumentsTreePathNotFoundError) {
+        sendApiError(res, 404, error);
+        return;
+      }
+      if (error instanceof InvalidDocumentsTreePathError) {
+        sendApiError(res, 400, error);
+        return;
+      }
+      next(error);
+    }
+  });
+
   // GET /canonical/:docPath/structure
   router.get("/canonical/:docPath(*)/structure", async (req, res, next) => {
     try {

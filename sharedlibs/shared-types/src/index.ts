@@ -1559,6 +1559,8 @@ export interface DocumentTreeAccess {
   can_write: boolean;
 }
 
+export type DocumentTreeFileMark = "new" | "modified";
+
 export interface DocumentTreeEntry {
   name: string;
   path: string;
@@ -1571,6 +1573,12 @@ export interface DocumentTreeEntry {
    * Absent on directories. Used for cheap UI mass signals (e.g. page estimates).
    */
   size_bytes?: number;
+  /**
+   * Workspace-tree files only. Omitted when the file is committed and no
+   * inprogress proposal has a target, overlay skeleton, or tombstone for it.
+   * `readCanonicalDocumentsTree` never sets this.
+   */
+  mark?: DocumentTreeFileMark;
 }
 
 export interface DocStructureNode {
@@ -2583,7 +2591,7 @@ export interface ApiError {
 
 export interface ContentCommittedEvent {
   type: "content:committed";
-  doc_path: string;
+  doc_path: DocPath;
   sections: SectionTargetRef[];
   commit_sha: string;
   writer_id: string;
@@ -2673,21 +2681,21 @@ export interface PresenceDoneEvent {
  */
 export interface DocStructureChangedEvent {
   type: "doc:structure-changed";
-  doc_path: string;
+  doc_path: DocPath;
   sections: GetDocumentSectionsResponse["sections"];
 }
 
 export interface DocRenamedEvent {
   type: "doc:renamed";
-  old_path: string;
-  new_path: string;
+  old_path: DocPath;
+  new_path: DocPath;
   committed_head: string;
 }
 
 export interface ProposalDraftEvent {
   type: "proposal:draft";
   proposal_id: string;
-  doc_path: string;
+  doc_path: DocPath;
   heading_paths: string[][];
   writer_id: string;
   writer_display_name: string;
@@ -2697,7 +2705,7 @@ export interface ProposalDraftEvent {
 export interface ProposalInProgressEvent {
   type: "proposal:inprogress";
   proposal_id: string;
-  doc_path: string;
+  doc_path: DocPath;
   heading_paths: string[][];
   writer_id: string;
   writer_display_name: string;
@@ -2707,7 +2715,7 @@ export interface ProposalInProgressEvent {
 export interface ProposalWithdrawnEvent {
   type: "proposal:withdrawn";
   proposal_id: string;
-  doc_path: string;
+  doc_path: DocPath;
   heading_paths: string[][];
 }
 
@@ -2730,6 +2738,7 @@ export interface ProposalSectionAvailabilityEntry {
 
 export interface ProposalSectionAvailabilityEvent {
   type: "proposal:section-availability";
+  doc_path: DocPath;
   proposal_id: string;
   proposal_status: ProposalStatus;
   sections: ProposalSectionAvailabilityEntry[];
@@ -2737,8 +2746,8 @@ export interface ProposalSectionAvailabilityEvent {
 
 export interface CatalogChangedEvent {
   type: "catalog:changed";
-  added_doc_paths?: string[];
-  removed_doc_paths?: string[];
+  added_doc_paths?: DocPath[];
+  removed_doc_paths?: DocPath[];
   writer_type?: WriterType;
   writer_display_name?: string;
 }
@@ -2754,7 +2763,7 @@ export interface CatalogChangedEvent {
  */
 export interface SectionBlockStateEvent {
   type: "section:blocked" | "section:unblocked" | "section:gone";
-  doc_path: string;
+  doc_path: DocPath;
   fragment_key: string;
   heading_path?: string[];
 }
@@ -2777,7 +2786,7 @@ export interface SectionBlockStateEvent {
  */
 export interface SectionPendingStateEvent {
   type: "section:pending" | "section:settled";
-  doc_path: string;
+  doc_path: DocPath;
   fragment_key: string;
   heading_path?: string[];
   /** The editor whose uncommitted edit made the section pending. Omitted for
@@ -2891,7 +2900,7 @@ export interface ImpairmentReport {
   /** ISO-8601. */
   timestamp: string;
   /** Document paths the leftover proposal claims. */
-  doc_paths: string[];
+  doc_paths: DocPath[];
   /** Section-level targets the leftover proposal claims. */
   targets: SectionTargetRef[];
 }
@@ -2942,7 +2951,7 @@ export interface DocumentActivityAgentEntry {
 
 export interface DocumentActivityEvent {
   type: "document:activity";
-  doc_path: string;
+  doc_path: DocPath;
   humans: DocumentActivityHumanEntry[];
   agents: DocumentActivityAgentEntry[];
 }
@@ -3008,10 +3017,16 @@ export interface WsIdentifyMessage {
   clientInstanceId: string;
 }
 
+export interface WsTabGoneMessage {
+  action: "tab_gone";
+  clientInstanceId: string;
+}
+
 export type WsClientMessage =
   | WsDocumentOpenMessage
   | WsDocumentClosedMessage
-  | WsIdentifyMessage;
+  | WsIdentifyMessage
+  | WsTabGoneMessage;
 
 // ─── Agent Activity View ─────────────────────────────────────────
 

@@ -11,7 +11,7 @@ import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import type { DocPath } from "../../types/shared.js";
 import { readAssembledDocument, canonicalDocumentExists, DocumentNotFoundError } from "../../storage/document-reader.js";
-import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
+import { readCanonicalDocumentsTree } from "../../storage/documents-tree.js";
 import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
 import { recordAgentRead } from "../../ws/agent-read.js";
 import {
@@ -130,7 +130,7 @@ const listDirectoryHandler: ToolHandler = async (args) => {
   const dirPath = (args.path as string | undefined) ?? "";
 
   try {
-    const tree = await readDocumentsTreeUnfiltered(dirPath);
+    const tree = await readCanonicalDocumentsTree(dirPath);
     return jsonToolResult({ entries: tree });
   } catch (error) {
     if (error instanceof InvalidDocPathError) {

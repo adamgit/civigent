@@ -243,10 +243,18 @@ interface FallbackClientSendMessage {
   message: WsClientMessage;
 }
 
+interface FallbackPrivateServerEventMessage {
+  type: "private_server_event";
+  tabId: string;
+  targetClientInstanceId: string;
+  event: WsServerEvent;
+}
+
 type FallbackChannelMessage =
   | FallbackHeartbeatMessage
   | FallbackServerEventMessage
-  | FallbackClientSendMessage;
+  | FallbackClientSendMessage
+  | FallbackPrivateServerEventMessage;
 
 interface PeerState {
   state: TabState;
@@ -265,6 +273,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
   private reconnectTimer: number | null = null;
   private appliedOpenDocPaths = new Set<string>();
   private appliedFocusedDocPath: string | null | undefined = undefined;
+  private appliedClientInstanceIds = new Set<string>();
   private state: TabState = {
     openDocPaths: [],
     focusedDocPath: null,
@@ -291,6 +300,15 @@ class BroadcastFallbackTransport implements CrossTabTransport {
           lastSeen: Date.now(),
         });
         this.recomputeLeader();
+        if (this.isLeader) {
+          this.syncLeaderIdentities();
+        }
+        return;
+      }
+      if (message.type === "private_server_event") {
+        if (this.state.clientInstanceId === message.targetClientInstanceId) {
+          this.onEvent?.(message.event);
+        }
         return;
       }
       if (message.type === "server_event") {
@@ -332,6 +350,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     this.state = state;
     this.broadcastHeartbeat();
     if (this.isLeader) {
+      this.syncLeaderIdentities();
       this.syncLeaderSessionState();
     }
   }
@@ -358,6 +377,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     this.broadcastHeartbeat();
     this.recomputeLeader();
     if (this.isLeader) {
+      this.syncLeaderIdentities();
       this.syncLeaderSessionState();
     }
   }
@@ -404,6 +424,7 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     }
     this.appliedOpenDocPaths = new Set<string>();
     this.appliedFocusedDocPath = undefined;
+    this.appliedClientInstanceIds = new Set<string>();
   }
 
   private connectLeaderSocket(): void {
@@ -418,6 +439,8 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       this.reconnectDelayMs = 1000;
       this.appliedOpenDocPaths = new Set<string>();
       this.appliedFocusedDocPath = undefined;
+      this.appliedClientInstanceIds = new Set<string>();
+      this.syncLeaderIdentities();
       this.syncLeaderSessionState();
       recordWsDiag({
         source: "ws-lifecycle",
@@ -428,13 +451,27 @@ class BroadcastFallbackTransport implements CrossTabTransport {
     });
 
     socket.addEventListener("message", (raw) => {
-      let serverEvent: WsServerEvent;
+      let parsed: unknown;
       try {
-        serverEvent = JSON.parse(String(raw.data)) as WsServerEvent;
+        parsed = JSON.parse(String(raw.data));
       } catch {
         // Ignore malformed transport payloads.
         return;
       }
+      if (isPrivateEnvelope(parsed)) {
+        if (this.state.clientInstanceId === parsed.target_client_instance_id) {
+          this.onEvent?.(parsed.event);
+        } else {
+          this.channel?.postMessage({
+            type: "private_server_event",
+            tabId: this.tabId,
+            targetClientInstanceId: parsed.target_client_instance_id,
+            event: parsed.event,
+          } satisfies FallbackPrivateServerEventMessage);
+        }
+        return;
+      }
+      const serverEvent = parsed as WsServerEvent;
       this.onEvent?.(serverEvent);
       this.channel?.postMessage({
         type: "server_event",
@@ -480,6 +517,37 @@ class BroadcastFallbackTransport implements CrossTabTransport {
       this.connectLeaderSocket();
     }, delay);
     this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 15000);
+  }
+
+  private allClientInstanceIds(): Set<string> {
+    const ids = new Set<string>();
+    if (this.state.clientInstanceId !== null) {
+      ids.add(this.state.clientInstanceId);
+    }
+    for (const peer of this.peers.values()) {
+      if (peer.state.clientInstanceId !== null) {
+        ids.add(peer.state.clientInstanceId);
+      }
+    }
+    return ids;
+  }
+
+  private syncLeaderIdentities(): void {
+    if (!this.isLeader || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const desired = this.allClientInstanceIds();
+    for (const clientInstanceId of this.appliedClientInstanceIds) {
+      if (!desired.has(clientInstanceId)) {
+        this.ws.send(JSON.stringify({ action: "tab_gone", clientInstanceId }));
+      }
+    }
+    for (const clientInstanceId of desired) {
+      if (!this.appliedClientInstanceIds.has(clientInstanceId)) {
+        this.ws.send(JSON.stringify({ action: "identify", clientInstanceId }));
+      }
+    }
+    this.appliedClientInstanceIds = desired;
   }
 
   private aggregateDesiredState(): {

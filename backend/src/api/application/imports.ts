@@ -267,7 +267,7 @@ export type ImportCommitProgressEvent =
 export interface CommitImportResult {
   proposalId: string;
   committedHead: string;
-  sections: Array<{ doc_path: string; heading_path: string[] }>;
+  sections: Array<{ doc_path: DocPath; heading_path: string[] }>;
   diagnostics: string[];
 }
 

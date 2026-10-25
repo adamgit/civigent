@@ -1,7 +1,7 @@
 /**
  * LinkEditPopup — the React content mounted inside the floating Milkdown
  * link-edit tooltip. A free-text href input (external URLs) plus a document-path
- * autocomplete fed by the workspace tree.
+ * autocomplete fed by the canonical tree.
  *
  * ArrowUp/Down highlight a suggestion without moving focus off the input.
  * Enter confirms the highlighted path, or the typed text when nothing is
@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { fetchWorkspaceFilePaths, filterDocPaths } from "./doc-paths";
+import { fetchCanonicalFilePaths, filterDocPaths } from "./doc-paths";
 
 const SUGGESTION_LIMIT = 20;
 const VISIBLE_SUGGESTIONS = 10;
@@ -32,7 +32,7 @@ export function LinkEditPopup({ initialHref, onConfirm, onCancel }: LinkEditPopu
 
   useEffect(() => {
     let cancelled = false;
-    void fetchWorkspaceFilePaths().then((list) => {
+    void fetchCanonicalFilePaths().then((list) => {
       if (!cancelled) setPaths(list);
     });
     return () => {

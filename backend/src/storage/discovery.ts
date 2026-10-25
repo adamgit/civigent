@@ -7,7 +7,7 @@ import type { AuthenticatedWriter } from "../auth/context.js";
 import { ContentLayer, DocumentNotFoundError, SectionNotFoundError } from "./content-layer.js";
 import {
   browseFolderPathToContentRelativeFsPath,
-  readDocumentsTreeUnfiltered,
+  readCanonicalDocumentsTree,
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "./documents-tree.js";
@@ -241,7 +241,7 @@ async function resolveFolderScope(
 ): Promise<DocPath[]> {
   let tree: DocumentTreeEntry[];
   try {
-    tree = await readDocumentsTreeUnfiltered(normalizedFolderPath, true);
+    tree = await readCanonicalDocumentsTree(normalizedFolderPath, true);
   } catch (error) {
     if (error instanceof InvalidDocumentsTreePathError) {
       throw new DiscoveryValidationError(error.message);

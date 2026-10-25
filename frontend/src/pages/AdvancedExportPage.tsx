@@ -24,7 +24,7 @@ export function AdvancedExportPage() {
   useEffect(() => {
     let cancelled = false;
     apiClient
-      .getWorkspaceTree()
+      .getCanonicalTree()
       .then((res) => {
         if (!cancelled) setEntries(res.tree);
       })

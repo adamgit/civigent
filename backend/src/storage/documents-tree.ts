@@ -21,6 +21,16 @@ function normalizeBrowsePath(rawPath?: string): string {
   }
 }
 
+export function resolveDocumentsTreeBrowse(
+  rawPath?: string,
+  recursive?: boolean,
+): { browsePath: string; recursive: boolean } {
+  return {
+    browsePath: normalizeBrowsePath(rawPath),
+    recursive: recursive ?? (rawPath == null || rawPath.trim().length === 0),
+  };
+}
+
 export function browseFolderPathToContentRelativeFsPath(normalizedPath: string): string {
   if (normalizedPath === "/") {
     return "";
@@ -44,7 +54,7 @@ function shouldIncludeFile(name: string): boolean {
   return name.endsWith(".md");
 }
 
-function compareEntries(a: DocumentTreeEntry, b: DocumentTreeEntry): number {
+export function compareDocumentTreeEntries(a: DocumentTreeEntry, b: DocumentTreeEntry): number {
   if (a.type !== b.type) {
     return a.type === "directory" ? -1 : 1;
   }
@@ -81,7 +91,7 @@ async function sumFileBytesRecursive(dir: string): Promise<number> {
  * Cheap approximate document mass: skeleton file bytes + all files under its
  * `.sections` tree. Not assembled markdown length — good enough for relative UI.
  */
-async function approxDocumentSizeBytes(absoluteSkeletonPath: string): Promise<number> {
+export async function skeletonDocumentSizeBytes(absoluteSkeletonPath: string): Promise<number> {
   let total = 0;
   try {
     total += (await stat(absoluteSkeletonPath)).size;
@@ -121,29 +131,29 @@ async function buildEntries(currentPath: string, absolutePath: string, recursive
         type: "file",
         name: entry.name,
         path: entryPath,
-        size_bytes: await approxDocumentSizeBytes(absoluteFile),
+        size_bytes: await skeletonDocumentSizeBytes(absoluteFile),
       });
     }
   }
 
-  out.sort(compareEntries);
+  out.sort(compareDocumentTreeEntries);
   return out;
 }
 
-export async function readDocumentsTreeUnfiltered(rawPath?: string, recursive?: boolean): Promise<DocumentTreeEntry[]> {
+/** Committed `.md` skeletons under `{dataRoot}/content`. Never sets file marks. */
+export async function readCanonicalDocumentsTree(rawPath?: string, recursive?: boolean): Promise<DocumentTreeEntry[]> {
   const contentRoot = getContentRoot();
-  const normalizedPath = normalizeBrowsePath(rawPath);
-  const relative = browseFolderPathToContentRelativeFsPath(normalizedPath);
+  const { browsePath, recursive: recursiveListing } = resolveDocumentsTreeBrowse(rawPath, recursive);
+  const relative = browseFolderPathToContentRelativeFsPath(browsePath);
   const targetDir = assertChildPath(contentRoot, path.join(contentRoot, relative));
 
   if (!(await directoryExists(targetDir))) {
     // Root path with no content directory = empty store (fresh install), not an error.
-    if (normalizedPath === "/") {
+    if (browsePath === "/") {
       return [];
     }
-    throw new DocumentsTreePathNotFoundError(`Browse path not found: ${normalizedPath}`);
+    throw new DocumentsTreePathNotFoundError(`Browse path not found: ${browsePath}`);
   }
 
-  const recursiveListing = recursive ?? (rawPath == null || rawPath.trim().length === 0);
-  return buildEntries(normalizedPath, targetDir, recursiveListing);
+  return buildEntries(browsePath, targetDir, recursiveListing);
 }

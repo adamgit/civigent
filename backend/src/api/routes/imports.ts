@@ -25,7 +25,7 @@ import {
   humanBypassPolicyResult,
 } from "../application/imports.js";
 import { emitContentCommittedForSections } from "../application/events.js";
-import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
+import { FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 
 // ─── Multipart wire-format parsing (HTTP-layer body handling) ──
 
@@ -327,7 +327,6 @@ export function registerImportRoutes(
       if (result.sections.length > 0) {
         emitContentCommittedForSections(
           onWsEvent,
-          DocPath.parse(result.sections[0].doc_path),
           result.sections,
           result.committedHead,
           writer,

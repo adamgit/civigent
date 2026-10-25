@@ -86,7 +86,7 @@ import {
 } from "../../storage/proposal-repository.js";
 import { findProposalDefectDetector } from "../../domain/proposal-defect-detectors.js";
 import type { ActiveProposal, AnyProposal, ProposalTargetRef } from "../../types/shared.js";
-import { readDocumentsTreeUnfiltered } from "../../storage/documents-tree.js";
+import { readCanonicalDocumentsTree } from "../../storage/documents-tree.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
 import { DocPath } from "../../types/shared.js";
 import { readProposalDto } from "./proposals.js";
@@ -432,7 +432,7 @@ function formatScanError(error: unknown): string {
  */
 export async function scanContentIntegrity(): Promise<RunAdminContentIntegrityScanResponse> {
   const started = Date.now();
-  const tree = await readDocumentsTreeUnfiltered("/", true);
+  const tree = await readCanonicalDocumentsTree("/", true);
   const docPaths = flattenDocumentTreePaths(tree);
   const layer = CanonicalReader.open();
   const failures: ContentIntegrityFailure[] = [];

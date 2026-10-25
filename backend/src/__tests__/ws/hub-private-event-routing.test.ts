@@ -16,7 +16,6 @@ import { createWsHub, type WsHub } from "../../ws/hub.js";
 import type { WsServerEvent, ClientInstanceId } from "../../types/shared.js";
 
 const DOC_PATH = "/ops/routing.md";
-const OTHER_DOC_PATH = "/ops/other.md";
 
 let server: Server;
 let port: number;
@@ -52,7 +51,7 @@ async function openTab(clientInstanceId: string, subscriptions: string[]): Promi
   // open the requested documents.
   ws.send(JSON.stringify({ action: "identify", clientInstanceId }));
   for (const docPath of subscriptions) {
-    ws.send(JSON.stringify({ action: "document_open", doc_path: docPath, clientInstanceId }));
+    ws.send(JSON.stringify({ document_open: docPath }));
   }
   // Small delay to let the document-open messages land server-side before the
   // caller emits events.
@@ -178,35 +177,55 @@ describe("WsHub origin-only routing for section:edit-rejected", () => {
     }
   });
 
-  it("does not deliver a private event to the matching tab if it is not subscribed to that doc", async () => {
-    const originId = "tab-scoped-origin" as ClientInstanceId;
-    // Origin tab is subscribed ONLY to a different document. Matching
-    // clientInstanceId alone must not be enough — the tab must also actively
-    // subscribe to the target doc.
-    const origin = await openTab(originId, [OTHER_DOC_PATH]);
+  it("keeps every identified tab id on one socket and drops an id after tab_gone", async () => {
+    const idA = "tab-set-a" as ClientInstanceId;
+    const idB = "tab-set-b" as ClientInstanceId;
+    const tab = await openTab(idA, []);
+
+    const rejection = (title: string): WsServerEvent => ({
+      type: "section:edit-rejected",
+      doc_path: DOC_PATH,
+      rejected_by: "server",
+      affected_fragments: [],
+      reason_code: "duplicate-sibling-heading",
+      title,
+      message: title,
+      what_happened: "w",
+      why_rejected: "wr",
+      server_action: "sa",
+      guidance: "g",
+    });
+    const sendTo = (clientInstanceId: ClientInstanceId, title: string) => {
+      hub.sendPrivate(
+        { clientInstanceId } as Parameters<WsHub["sendPrivate"]>[0],
+        rejection(title),
+      );
+    };
+    const titles = () =>
+      tab.received
+        .filter((e) => e.type === "section:edit-rejected")
+        .map((e) => (e.type === "section:edit-rejected" ? e.title : ""));
 
     try {
-      hub.sendPrivate(
-        { docPath: DOC_PATH, clientInstanceId: originId },
-        {
-          type: "section:edit-rejected",
-          doc_path: DOC_PATH,
-          rejected_by: "server",
-          affected_fragments: [],
-          reason_code: "duplicate-sibling-heading",
-          title: "t",
-          message: "m",
-          what_happened: "w",
-          why_rejected: "wr",
-          server_action: "sa",
-          guidance: "g",
-        },
-      );
+      tab.ws.send(JSON.stringify({ action: "identify", clientInstanceId: idB }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
 
+      sendTo(idA, "for-a");
       await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(origin.received.filter((e) => e.type === "section:edit-rejected")).toHaveLength(0);
+      expect(titles()).toEqual(["for-a"]);
+
+      tab.ws.send(JSON.stringify({ action: "tab_gone", clientInstanceId: idA }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      sendTo(idA, "for-a-again");
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(titles()).toEqual(["for-a"]);
+
+      sendTo(idB, "for-b");
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(titles()).toEqual(["for-a", "for-b"]);
     } finally {
-      await origin.close();
+      await tab.close();
     }
   });
 });

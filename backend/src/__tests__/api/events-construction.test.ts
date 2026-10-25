@@ -7,6 +7,7 @@ import {
   emitProposalInProgressEventsByDoc,
   emitProposalWithdrawnEventsByDoc,
   emitContentCommittedEventsByDoc,
+  emitContentCommittedForSections,
 } from "../../api/application/events.js";
 
 const EVENTS_FILE = path.join(__dirname, "..", "..", "api", "application", "events.ts");
@@ -80,6 +81,33 @@ describe("application/events.ts construction", () => {
     expect(e.commit_sha).toBe("abc123");
     expect(e.contributor_ids).toEqual(["w1"]);
     expect(e.sections).toEqual([{ doc_path: "/a.md", heading_path: ["X"] }]);
+  });
+
+  it("emits one content:committed per document for a multi-document section list", () => {
+    const events: WsServerEvent[] = [];
+    emitContentCommittedForSections(
+      (e) => events.push(e),
+      [
+        { doc_path: "/a.md", heading_path: ["X"] },
+        { doc_path: "/b.md", heading_path: ["Y"] },
+      ],
+      "abc123",
+      writer,
+      ["w1"],
+    );
+    expect(events).toHaveLength(2);
+    for (const [docPath, heading] of [
+      ["/a.md", "X"],
+      ["/b.md", "Y"],
+    ] as const) {
+      const event = events.find(
+        (e): e is Extract<WsServerEvent, { type: "content:committed" }> =>
+          e.type === "content:committed" && e.doc_path === docPath,
+      );
+      expect(event?.sections).toEqual([{ doc_path: docPath, heading_path: [heading] }]);
+      expect(event?.commit_sha).toBe("abc123");
+      expect(event?.writer_id).toBe("w1");
+    }
   });
 
   it("emits nothing when targets are empty or emit callback is undefined", () => {

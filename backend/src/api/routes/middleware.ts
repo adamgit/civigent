@@ -198,7 +198,8 @@ export function installGlobalAuth(router: Router): void {
     // The catalog `tree` stays excluded exactly as `/documents/tree` was.
     if (
       req.method === "GET" &&
-      (p.startsWith("/canonical/") || (p.startsWith("/workspace/") && p !== "/workspace/tree"))
+      ((p.startsWith("/canonical/") && p !== "/canonical/tree") ||
+        (p.startsWith("/workspace/") && p !== "/workspace/tree"))
     ) {
       next();
       return;

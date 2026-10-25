@@ -77,8 +77,8 @@ export function emitCatalogMutationEvents(
   if (summary.renamed && committedHead) {
     emitEvent({
       type: "doc:renamed",
-      old_path: summary.renamed.oldPath,
-      new_path: summary.renamed.newPath,
+      old_path: DocPath.parse(summary.renamed.oldPath),
+      new_path: DocPath.parse(summary.renamed.newPath),
       committed_head: committedHead,
     });
   }
@@ -87,8 +87,8 @@ export function emitCatalogMutationEvents(
   }
   emitEvent({
     type: "catalog:changed",
-    added_doc_paths: summary.createdDocPaths,
-    removed_doc_paths: summary.deletedDocPaths,
+    added_doc_paths: summary.createdDocPaths.map((docPath) => DocPath.parse(docPath)),
+    removed_doc_paths: summary.deletedDocPaths.map((docPath) => DocPath.parse(docPath)),
     writer_type: writer.type,
     writer_display_name: writer.displayName,
   });

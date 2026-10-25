@@ -50,10 +50,11 @@ import {
 } from "../../ws/crdt-ws-coordinator.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import {
-  readDocumentsTreeUnfiltered,
+  readCanonicalDocumentsTree,
   DocumentsTreePathNotFoundError,
   InvalidDocumentsTreePathError,
 } from "../../storage/documents-tree.js";
+import { readWorkspaceDocumentsTree } from "../../storage/workspace-documents-tree.js";
 import { resolveFolderFileAges } from "../../storage/folder-file-ages.js";
 import {
   searchReadableText,
@@ -169,29 +170,45 @@ async function filterTreeToReadable(
   return result;
 }
 
-export async function readReadableTree(
+export async function readCanonicalReadableTree(
   writer: AuthenticatedWriter | null,
   basePath: string,
 ): Promise<DocumentTreeEntry[]> {
-  const tree = await readDocumentsTreeUnfiltered(basePath, true);
+  const tree = await readCanonicalDocumentsTree(basePath, true);
   if (writer === null) {
     return filterTreeToPublic(tree);
   }
   return filterTreeToReadable(writer, tree);
 }
 
-export async function readTree(
+async function presentDocumentsTree(
+  writer: AuthenticatedWriter | null,
+  tree: DocumentTreeEntry[],
+): Promise<GetDocumentsTreeResponse> {
+  const withPills = annotateExportedSkillsPills(tree);
+  if (writer === null) {
+    return { tree: await filterTreeToPublic(withPills) };
+  }
+  return {
+    tree: await annotateDirectoryAccess(writer, await filterTreeToReadable(writer, withPills)),
+  };
+}
+
+export async function readWorkspaceTree(
   writer: AuthenticatedWriter | null,
   basePath: string,
 ): Promise<GetDocumentsTreeResponse> {
-  const tree = annotateExportedSkillsPills(await readDocumentsTreeUnfiltered(basePath));
-  if (writer === null) {
-    return { tree: await filterTreeToPublic(tree) };
-  }
-  return { tree: await annotateDirectoryAccess(writer, await filterTreeToReadable(writer, tree)) };
+  return presentDocumentsTree(writer, await readWorkspaceDocumentsTree(basePath));
 }
 
-export async function readFolderFileAges(
+export async function readCanonicalTree(
+  writer: AuthenticatedWriter | null,
+  basePath: string,
+): Promise<GetDocumentsTreeResponse> {
+  return presentDocumentsTree(writer, await readCanonicalDocumentsTree(basePath));
+}
+
+export async function readWorkspaceFolderFileAges(
   writer: AuthenticatedWriter | null,
   folder: FolderPath,
 ): Promise<GetFolderFileAgesResponse> {
@@ -201,7 +218,7 @@ export async function readFolderFileAges(
       throw new PermissionError(`Read permission denied for folder ${folder}`, false);
     }
   }
-  const children = (await readDocumentsTreeUnfiltered(folder, false)).filter((entry) => entry.type === "file");
+  const children = (await readWorkspaceDocumentsTree(folder, false)).filter((entry) => entry.type === "file");
   const readable = writer === null
     ? await filterTreeToPublic(children)
     : await filterTreeToReadable(writer, children);
@@ -386,7 +403,7 @@ export async function buildExport(
   browsePath: string,
   layout: ExportLayout = "relative",
 ): Promise<ExportResult> {
-  const tree = await readReadableTree(writer, browsePath);
+  const tree = await readCanonicalReadableTree(writer, browsePath);
   const exportFolder = layout === "absolute" ? FolderPath.root : FolderPath.normalize(browsePath);
 
   const filePaths: string[] = [];
@@ -721,7 +738,7 @@ export class FolderWritePermissionError extends Error {
 }
 
 async function listFolderDescendantDocs(folder: FolderPath): Promise<DocPath[]> {
-  const tree = await readDocumentsTreeUnfiltered(folder, true);
+  const tree = await readCanonicalDocumentsTree(folder, true);
   const docPaths: DocPath[] = [];
   const walk = (nodes: DocumentTreeEntry[]): void => {
     for (const node of nodes) {

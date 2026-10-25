@@ -178,6 +178,29 @@ function sendWs(obj: unknown): void {
   });
 }
 
+function remainingTabsHoldClientInstanceId(clientInstanceId: string): boolean {
+  for (const state of tabStates.values()) {
+    if (state.clientInstanceId === clientInstanceId) return true;
+  }
+  return false;
+}
+
+function sendTabGoneIfUnused(clientInstanceId: string | null): void {
+  if (clientInstanceId === null) return;
+  if (remainingTabsHoldClientInstanceId(clientInstanceId)) return;
+  sendWs({ action: "tab_gone", clientInstanceId });
+}
+
+function identifyOpenTabInstances(): void {
+  const seen = new Set<string>();
+  for (const state of tabStates.values()) {
+    if (state.clientInstanceId === null) continue;
+    if (seen.has(state.clientInstanceId)) continue;
+    seen.add(state.clientInstanceId);
+    sendWs({ action: "identify", clientInstanceId: state.clientInstanceId });
+  }
+}
+
 function desiredSessionState(): {
   openDocPaths: Set<string>;
   focusedDocPath: string | null;
@@ -218,6 +241,7 @@ function ensureSocket(): void {
       summary: `${protocol}://${workerScope.location.host}/ws`,
       payload: { tabs: tabPorts.size },
     });
+    identifyOpenTabInstances();
     syncSocketState();
   });
 
@@ -355,11 +379,15 @@ function syncSocketState(): void {
 function sweepStaleTabs(): void {
   const now = Date.now();
   let changed = false;
+  const goneIds: string[] = [];
   for (const [tabId, state] of tabStates.entries()) {
     if (now - state.updatedAt > 7000) {
       const port = tabPorts.get(tabId);
       if (port) {
         diagnostics.unsubscribe(port);
+      }
+      if (state.clientInstanceId !== null) {
+        goneIds.push(state.clientInstanceId);
       }
       tabStates.delete(tabId);
       tabPorts.delete(tabId);
@@ -367,6 +395,9 @@ function sweepStaleTabs(): void {
     }
   }
   if (changed) {
+    for (const clientInstanceId of goneIds) {
+      sendTabGoneIfUnused(clientInstanceId);
+    }
     if (tabPorts.size === 0) {
       closeSocket();
       closeSystemEventSource();
@@ -444,6 +475,9 @@ workerScope.onconnect = (connectEvent) => {
       // the backend's private routing knows to target this leader socket for
       // the given clientInstanceId. Only sent when the id changes to avoid
       // per-tick chatter.
+      if (priorInstanceId && priorInstanceId !== nextInstanceId) {
+        sendTabGoneIfUnused(priorInstanceId);
+      }
       if (nextInstanceId && nextInstanceId !== priorInstanceId) {
         sendWs({ action: "identify", clientInstanceId: nextInstanceId });
       }
@@ -456,8 +490,10 @@ workerScope.onconnect = (connectEvent) => {
       if (existingPort) {
         diagnostics.unsubscribe(existingPort);
       }
+      const goneId = tabStates.get(message.tabId)?.clientInstanceId ?? null;
       tabPorts.delete(message.tabId);
       tabStates.delete(message.tabId);
+      sendTabGoneIfUnused(goneId);
       if (tabPorts.size === 0) {
         closeSocket();
         closeSystemEventSource();

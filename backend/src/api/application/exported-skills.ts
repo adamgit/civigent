@@ -7,7 +7,7 @@ import { DocPath } from "../../types/shared.js";
 import {
   DocumentsTreePathNotFoundError,
   browseFolderExistsOnDisk,
-  readDocumentsTreeUnfiltered,
+  readCanonicalDocumentsTree,
 } from "../../storage/documents-tree.js";
 import { getContentGitPrefix, getDataRoot } from "../../storage/data-root.js";
 import { getTreeShaAtHead } from "../../storage/git-repo.js";
@@ -116,7 +116,7 @@ export async function listExportedSkillsContent(): Promise<ExportedSkillsListing
 
   let topLevel;
   try {
-    topLevel = await readDocumentsTreeUnfiltered(folder, false);
+    topLevel = await readCanonicalDocumentsTree(folder, false);
   } catch (error) {
     if (error instanceof DocumentsTreePathNotFoundError) {
       throw new ExportedSkillsFolderAbsentError(folder);

@@ -1,15 +1,15 @@
 /**
- * WS hub broadcast read filter (acl-rearchitecture-plan, "Read surfaces the
- * brand cannot reach").
+ * WS hub broadcast audience.
  *
- * A socket with ZERO document subscriptions is session-wide: today
- * `broadcastInternal` sends it EVERY doc-bearing event unfiltered, leaking
- * doc paths and section metadata for documents the writer cannot read — the
- * subscribe-time read check is bypassed by simply not subscribing. The law:
- * doc-bearing events are delivered only to sockets whose writer passes the
- * read resolver for the event's doc_path; events without a doc_path broadcast
- * unchanged. RED BY DESIGN until the hub filter item lands: today the
- * unreadable-doc event is delivered.
+ * Document events go to every open socket whose writer can read `doc_path`.
+ * Which document the socket has open is not the filter.
+ * `catalog:changed` lists only the paths that writer can read, and is omitted
+ * when both lists filter down to empty. `doc:renamed` is sent whole when the
+ * writer can read either path, and omitted when they can read neither.
+ * `document:activity` goes only to sockets that have that document open.
+ * `system:impairment` reaches every socket, with unreadable `doc_paths` and
+ * `targets` removed. A `content:committed` whose sections name another
+ * document is refused before any socket is written.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -127,6 +127,179 @@ describe("hub broadcast delivers doc-bearing events only to readers", () => {
       const docEvents = tab.received.filter((e) => e.type === "doc:structure-changed");
       expect(docEvents.some((e) => "doc_path" in e && e.doc_path === OTHER_READABLE_DOC)).toBe(true);
       expect(docEvents.some((e) => "doc_path" in e && e.doc_path === SECRET_DOC)).toBe(false);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("filters catalog:changed to the paths this writer can read, and sends nothing when none remain", async () => {
+    const tab = await openTab({ clientInstanceId: "tab-catalog-filter" });
+    const secretOther = "/secret/other.md";
+
+    try {
+      hub.broadcast({
+        type: "catalog:changed",
+        added_doc_paths: [READABLE_DOC, SECRET_DOC],
+        removed_doc_paths: [READABLE_DOC, SECRET_DOC],
+      });
+      hub.broadcast({
+        type: "catalog:changed",
+        added_doc_paths: [SECRET_DOC],
+        removed_doc_paths: [secretOther],
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const catalogs = tab.received.filter((e) => e.type === "catalog:changed");
+      expect(
+        catalogs.map((e) => ({
+          added: e.type === "catalog:changed" ? e.added_doc_paths : [],
+          removed: e.type === "catalog:changed" ? e.removed_doc_paths : [],
+        })),
+      ).toEqual([{ added: [READABLE_DOC], removed: [READABLE_DOC] }]);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("sends doc:renamed whole when the writer can read either path, and nothing when they can read neither", async () => {
+    const tab = await openTab({ clientInstanceId: "tab-rename-pair" });
+    const secretOther = "/secret/other.md";
+
+    try {
+      hub.broadcast({
+        type: "doc:renamed",
+        old_path: READABLE_DOC,
+        new_path: SECRET_DOC,
+        committed_head: "head-one-side",
+      });
+      hub.broadcast({
+        type: "doc:renamed",
+        old_path: SECRET_DOC,
+        new_path: secretOther,
+        committed_head: "head-neither",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const renames = tab.received.filter((e) => e.type === "doc:renamed");
+      expect(
+        renames.map((e) =>
+          e.type === "doc:renamed"
+            ? { old_path: e.old_path, new_path: e.new_path, committed_head: e.committed_head }
+            : {},
+        ),
+      ).toEqual([
+        { old_path: READABLE_DOC, new_path: SECRET_DOC, committed_head: "head-one-side" },
+      ]);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("delivers document:activity only to sockets that have that document open", async () => {
+    const opener = await openTab({
+      clientInstanceId: "tab-activity-open",
+      openedDocPath: READABLE_DOC,
+    });
+    const bystander = await openTab({ clientInstanceId: "tab-activity-closed" });
+    const marker = "activity-broadcast-marker";
+
+    try {
+      hub.broadcast({
+        type: "document:activity",
+        doc_path: READABLE_DOC,
+        humans: [
+          {
+            writer: { id: marker, type: "human", displayName: marker },
+            page_open: true,
+            editor_attached: false,
+          },
+        ],
+        agents: [],
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const hits = (events: WsServerEvent[]) =>
+        events.filter(
+          (e) =>
+            e.type === "document:activity" &&
+            e.humans.some((human) => human.writer.id === marker),
+        ).length;
+      expect({ opener: hits(opener.received), bystander: hits(bystander.received) }).toEqual({
+        opener: 1,
+        bystander: 0,
+      });
+    } finally {
+      await opener.close();
+      await bystander.close();
+    }
+  });
+
+  it("strips unreadable paths and targets from system:impairment and leaves the message", async () => {
+    const tab = await openTab({ clientInstanceId: "tab-impairment-strip" });
+    const message = "Publish failed; leftover claims remain";
+
+    try {
+      hub.broadcast({
+        type: "system:impairment",
+        report: {
+          id: "imp-strip-1",
+          message,
+          stack: "",
+          cause: null,
+          timestamp: "2026-01-01T00:00:00.000Z",
+          doc_paths: [READABLE_DOC, SECRET_DOC],
+          targets: [
+            { doc_path: READABLE_DOC, heading_path: ["Visible"] },
+            { doc_path: SECRET_DOC, heading_path: ["Hidden"] },
+          ],
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const impairments = tab.received.filter((e) => e.type === "system:impairment");
+      expect(impairments).toHaveLength(1);
+      const report = impairments[0]?.type === "system:impairment" ? impairments[0].report : undefined;
+      expect(report?.message).toBe(message);
+      expect(report?.doc_paths).toEqual([READABLE_DOC]);
+      expect(report?.targets).toEqual([{ doc_path: READABLE_DOC, heading_path: ["Visible"] }]);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("refuses a content:committed whose sections name another document, and sends nothing", async () => {
+    const tab = await openTab({ clientInstanceId: "tab-mixed-commit" });
+
+    try {
+      let thrown: unknown;
+      try {
+        hub.broadcast({
+          type: "content:committed",
+          doc_path: READABLE_DOC,
+          sections: [
+            { doc_path: READABLE_DOC, heading_path: ["Here"] },
+            { doc_path: OTHER_READABLE_DOC, heading_path: ["There"] },
+          ],
+          commit_sha: "abc",
+          writer_id: "w",
+          writer_display_name: "W",
+          writer_type: "human",
+          contributor_ids: ["w"],
+          seconds_ago: 0,
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      const delivered = tab.received.filter((e) => e.type === "content:committed");
+      expect(thrown).toBeInstanceOf(Error);
+      expect(delivered).toHaveLength(0);
     } finally {
       await tab.close();
     }

@@ -331,6 +331,18 @@ interface GetDocumentsTreeOptions {
   recursive?: boolean;
 }
 
+function documentsTreeUrl(base: "/api/workspace/tree" | "/api/canonical/tree", options?: GetDocumentsTreeOptions): string {
+  const params = new URLSearchParams();
+  if (options?.path != null) {
+    params.set("path", options.path);
+  }
+  if (options?.recursive != null) {
+    params.set("recursive", String(options.recursive));
+  }
+  const query = params.toString();
+  return query.length > 0 ? `${base}?${query}` : base;
+}
+
 const WRITER_ID_STORAGE_KEY = "ks_writer_id";
 let singleUserBootstrapInFlight: Promise<boolean> | null = null;
 let unauthorizedHandler: (() => void) | null = null;
@@ -1052,16 +1064,11 @@ export const apiClient = {
   },
 
   async getWorkspaceTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
-    const params = new URLSearchParams();
-    if (options?.path != null) {
-      params.set("path", options.path);
-    }
-    if (options?.recursive != null) {
-      params.set("recursive", String(options.recursive));
-    }
-    const query = params.toString();
-    const url = query.length > 0 ? `/api/workspace/tree?${query}` : "/api/workspace/tree";
-    return requestJson<GetDocumentsTreeResponse>(url);
+    return requestJson<GetDocumentsTreeResponse>(documentsTreeUrl("/api/workspace/tree", options));
+  },
+
+  async getCanonicalTree(options?: GetDocumentsTreeOptions): Promise<GetDocumentsTreeResponse> {
+    return requestJson<GetDocumentsTreeResponse>(documentsTreeUrl("/api/canonical/tree", options));
   },
 
   async probeSystemReady(): Promise<boolean> {
