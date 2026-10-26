@@ -132,6 +132,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const layoutOutlet = useOutletContext<AppLayoutOutletContext | undefined>();
 
   const [sections, setSections] = useState<WorkspaceSectionDto[]>([]);
+  const [canWriteDocument, setCanWriteDocument] = useState<boolean | null>(null);
   const [sectionsLoading, setSectionsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -170,6 +171,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const resourceModel = useMemo(() => new DocumentResourceModel(), []);
+  const requestedDocPathRef = useRef(docPath);
+  requestedDocPathRef.current = docPath;
 
   const loadSections = useCallback(async (docPath: DocPath): Promise<WorkspaceSectionDto[]> => {
     loadStartedAtRef.current = Date.now();
@@ -178,6 +181,8 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     setError(null);
     try {
       const nextSections = await resourceModel.loadSections(docPath);
+      if (requestedDocPathRef.current !== docPath) return nextSections;
+      setCanWriteDocument(resourceModel.canWriteDocument);
       setSections(nextSections);
       return nextSections;
     } catch (err) {
@@ -201,6 +206,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     }
     resourceModel.loadSections(docPath).then(
       (nextSections) => {
+        if (requestedDocPathRef.current !== docPath) {
+          completeSessionEndHandoff();
+          return;
+        }
+        setCanWriteDocument(resourceModel.canWriteDocument);
         setSections(nextSections);
         setError(null);
         completeSessionEndHandoff();
@@ -654,6 +664,10 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
   // Initial canonical load. The live replica connects its observer socket on
   // mount by itself — there is no separate observer to start here.
   useEffect(() => {
+    setCanWriteDocument(null);
+  }, [docPath]);
+
+  useEffect(() => {
     void loadSections(docPath);
   }, [docPath, loadSections]);
 
@@ -748,9 +762,11 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     if (!coords) return;
     const command = onActivateRow(liveReplica.session, SectionId.brand(fk), coords, isSectionBlocked(fk));
     if (!command) return;
-    if (command.type === "openEditor") liveReplica.openEditor(command.section, command.coords);
-    else liveReplica.moveCaretToPoint(command.section, command.coords);
-  }, [liveReplica.session, liveReplica.openEditor, liveReplica.moveCaretToPoint, isSectionBlocked]);
+    if (command.type === "openEditor") {
+      if (canWriteDocument !== true) return;
+      liveReplica.openEditor(command.section, command.coords);
+    } else liveReplica.moveCaretToPoint(command.section, command.coords);
+  }, [liveReplica.session, liveReplica.openEditor, liveReplica.moveCaretToPoint, isSectionBlocked, canWriteDocument]);
 
   const dismissSectionEditRejection = useCallback(() => {
     setSectionEditRejection(null);
@@ -1140,7 +1156,15 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 // Trigger a re-fetch of sections by re-navigating
                 setSectionsLoading(true);
                 resourceModel.loadSections(docPath).then(
-                  (nextSections) => { setSections(nextSections); setSectionsLoading(false); },
+                  (nextSections) => {
+                    if (requestedDocPathRef.current !== docPath) {
+                      setSectionsLoading(false);
+                      return;
+                    }
+                    setCanWriteDocument(resourceModel.canWriteDocument);
+                    setSections(nextSections);
+                    setSectionsLoading(false);
+                  },
                   () => { setSectionsLoading(false); },
                 );
               }}
@@ -1229,6 +1253,15 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                   pathCopiedTimeoutRef.current = setTimeout(() => setPathCopied(false), 1500);
                 }}
               />
+
+              {canWriteDocument === false ? (
+                <div
+                  className="mb-4 border border-amber-200 bg-amber-50 px-4 py-2 rounded-sm text-xs text-amber-900"
+                  role="status"
+                >
+                  You have read only access to this document, due to permissions settings.
+                </div>
+              ) : null}
 
               {/* Shared-draft banner — only when a live inprogress proposal is
                   bound to this document (FP7). Retained across an aborted/failed

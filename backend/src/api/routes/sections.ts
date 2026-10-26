@@ -26,6 +26,7 @@ import {
 } from "../application/sections.js";
 import { emitCanonicalStructureChanged, resolveSectionFragmentKey } from "../application/events.js";
 import { recordAgentRead } from "../../ws/agent-read.js";
+import { checkDocPermission } from "../../auth/acl.js";
 
 
 function parseHeadingPathParam(raw: string): string[] {
@@ -81,8 +82,13 @@ export function registerSectionRoutes(
       if (!access) return;
 
       const { response } = await readWorkspaceSectionList(access);
+      const canWrite = await checkDocPermission(
+        resolveAuthenticatedWriter(req),
+        access.docPath,
+        "write",
+      );
 
-      const out: GetDocumentSectionsResponse = response;
+      const out: GetDocumentSectionsResponse = { ...response, can_write: canWrite };
       res.json(out);
     } catch (error) {
       if (error instanceof DirectoryAtDocPathError) {
