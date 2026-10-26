@@ -29,7 +29,7 @@ import {
 import { mutateProposalContent, ProposalSectionNotFoundError, ProposalSectionReorderError } from "../../storage/mutate-proposal-content.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { evaluateAgentWritePolicy } from "../../storage/commit-pipeline.js";
-import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
+import { agentWritePolicyWriteBody } from "./agent-write-policy-body.js";
 import type { McpToolCallResult } from "../protocol.js";
 import type { AnyProposal } from "../../types/shared.js";
 import { checkDocPermission } from "../../auth/acl.js";
@@ -153,7 +153,7 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
       created: true,
       ...(beforeHeadingPath !== undefined ? { before_heading_path: beforeHeadingPath } : {}),
       ...(afterHeadingPath !== undefined ? { after_heading_path: afterHeadingPath } : {}),
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
       ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
     });
   } catch (error) {
@@ -205,7 +205,7 @@ const deleteSectionHandler: ToolHandler = async (args, ctx) => {
       doc_path: docPath,
       heading_path: headingPath,
       deleted: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -271,7 +271,7 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       heading_path: headingPath,
       new_parent_path: newParentPath,
       moved: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -346,7 +346,7 @@ const reorderSectionHandler: ToolHandler = async (args, ctx) => {
       target_heading_path: targetHeadingPath,
       position,
       reordered: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -403,7 +403,10 @@ const renameSectionHandler: ToolHandler = async (args, ctx) => {
       old_heading_path: headingPath,
       new_heading_path: newHeadingPath,
       renamed: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [
+        { doc_path: docPath, heading_path: headingPath },
+        { doc_path: docPath, heading_path: newHeadingPath },
+      ]),
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes("not found")) {
@@ -447,7 +450,7 @@ const deleteDocumentHandler: ToolHandler = async (args, ctx) => {
       proposal_id: proposalId,
       doc_path: docPath,
       deleted: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, []),
     });
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {
@@ -502,7 +505,7 @@ const renameDocumentHandler: ToolHandler = async (args, ctx) => {
       old_path: docPath,
       new_path: newPath,
       renamed: true,
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, []),
     });
   } catch (error) {
     if (error instanceof DocumentNotFoundError || error instanceof InvalidDocPathError) {

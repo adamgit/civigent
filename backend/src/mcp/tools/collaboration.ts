@@ -39,7 +39,11 @@ import { UnclaimedProposalOverlayError } from "../../storage/proposal-overlay-ow
 import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
-import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
+import {
+  agentWritePolicyToolBody,
+  agentWritePolicyWriteBody,
+  agentWritePolicyPublishBody,
+} from "./agent-write-policy-body.js";
 import {
   rememberSessionDraft,
   forgetSessionDraft,
@@ -399,7 +403,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
       {
         proposal_id: mcpProposalId,
         status: "draft",
-        agent_write_policy: agentWritePolicyToolBody(policyResult),
+        agent_write_policy: agentWritePolicyWriteBody(policyResult, sections),
         ...(withdrawnProposalId ? { withdrawn_proposal_id: withdrawnProposalId } : {}),
       },
     );
@@ -413,7 +417,7 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     proposal_id: mcpProposalId,
     status: "draft",
     outcome: "accepted",
-    agent_write_policy: agentWritePolicyToolBody(policyResult),
+    agent_write_policy: agentWritePolicyWriteBody(policyResult, sections),
     ...(withdrawnProposalId ? { withdrawn_proposal_id: withdrawnProposalId } : {}),
     ...(withdrawalNote ? { message: withdrawalNote } : {}),
     ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
@@ -487,7 +491,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
         status: "committed",
         outcome: "accepted",
         committed_head: committedHead,
-        agent_write_policy: agentWritePolicyToolBody(policyResult),
+        agent_write_policy: agentWritePolicyPublishBody(policyResult),
       });
     } else {
       if (ctx.writer.type === "agent") {
@@ -498,7 +502,7 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
       return jsonBlockedToolResult(policyResult.message, {
         proposal_id: proposalId,
         status: "draft",
-        agent_write_policy: agentWritePolicyToolBody(policyResult),
+        agent_write_policy: agentWritePolicyPublishBody(policyResult),
       });
     }
   } catch (error) {
@@ -756,7 +760,7 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
     return jsonToolResult({
       proposal_id: proposalId,
       status: "draft",
-      agent_write_policy: agentWritePolicyToolBody(policyResult),
+      agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
       ...(normalizationNote ? { normalization_note: normalizationNote } : {}),
     });
   } catch (error) {
@@ -880,6 +884,9 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
       name: "create_proposal",
       description:
         "Create an UNPUBLISHED server-side proposal with intent and optional section content writes. " +
+        "One task is ONE proposal, even when it spans several documents: every proposal is a separate " +
+        "governance and audit record, so never split one task across proposals — add further changes " +
+        "to the same proposal_id with write_proposal_section. " +
         "This tool only stages changes: it does not publish them, does not change live content, " +
         "and does not make them visible in the live wiki. The proposal's machine status starts as draft. " +
         "sections may be empty: an intent-only unpublished proposal is a legal handle for later structural tools " +
@@ -920,7 +927,7 @@ export function registerCollaborationTools(registry: ToolRegistry): void {
               "session loss). A draft created by another session or another agent is never touched. " +
               "Do NOT use replace to update section content: to change an existing draft, " +
               "call write_proposal_section on its proposal_id instead. Omit or false is the normal path " +
-              "(creates an additional draft without withdrawing anything).",
+              "(withdraws nothing).",
           },
         },
         required: ["intent", "sections"],

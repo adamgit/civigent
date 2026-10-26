@@ -82,9 +82,9 @@ Prefer **one live draft** and extend it with `{{tool:writeProposalSection}}`. Do
 
 You do not need to pre-create documents or sections before writing to them. If you specify a `doc_path` that does not exist, the document is created automatically. Likewise, if a `heading_path` refers to a section that does not yet exist, it is created on the fly. This means agents can write to entirely new documents and sections in a single proposal without any prior setup.
 
-### Proposal sizing for large batch writes
+### One task = one proposal
 
-When writing many sections at once, prefer splitting work across multiple smaller proposals rather than packing everything into one. Large proposals that touch many sections increase the chance of contention (overlapping with human edits) and make review harder. A good rule of thumb: keep each proposal focused on a single logical change or a coherent group of related sections. If you need to update an entire document, consider one proposal per top-level section or logical chapter.
+Put all the changes for one task into a single proposal, even when the task touches many sections or several documents. Every proposal is a separate governance and audit record, so splitting one task across proposals scatters its provenance and makes it look like unrelated changes. For large tasks, keep the `{{tool:createProposal}}` call small and grow the same proposal with repeated `{{tool:writeProposalSection}}` calls on its `proposal_id`. Only open a second proposal for work that is genuinely separate.
 
 ### When `{{tool:publishProposal}}` cannot publish
 

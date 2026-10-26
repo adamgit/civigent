@@ -10,6 +10,12 @@
 
 A modern document-authoring system where humans and AI agents can safely co-author serious structured content, with git-like auditability and proposal governance, but with human-friendly interfaces and live collaborative editing.
 
+## Announcements
+
+Product news and release notes: [subscribe to the mailing list](https://ecp.mailcoach.app/civigent).
+
+On GitHub, **Watch → Custom → Releases** notifies you about published releases only.
+
 <p align="center">
   <a href="docs/screenshots/example-documentview-optionalsidebar.png"><img src="docs/screenshots/example-documentview-optionalsidebar.png" width="260" alt="Document view with sidebar"></a>
   &nbsp;
@@ -178,3 +184,9 @@ git fetch origin && git push origin origin/main:releases
 ## License
 
 See LICENSE
+
+## Announcements
+
+Product news and release notes: [subscribe to the mailing list](https://ecp.mailcoach.app/civigent).
+
+On GitHub, **Watch → Custom → Releases** notifies you about published releases only.
