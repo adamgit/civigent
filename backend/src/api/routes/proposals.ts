@@ -61,7 +61,6 @@ import {
   groupSectionsByDocPath,
 } from "../application/events.js";
 import { refreshLiveSectionsState } from "../../ws/crdt-ws-coordinator.js";
-
 export function registerProposalRoutes(
   router: Router,
   onWsEvent: ((event: WsServerEvent) => void) | undefined,
@@ -345,6 +344,14 @@ export function registerProposalRoutes(
         sendApiError(res, result.status, result.message);
         return;
       }
+      if (result.createdDocPaths.length > 0) {
+        onWsEvent?.({
+          type: "catalog:changed",
+          doc_paths: result.createdDocPaths,
+          writer_type: writer.type,
+          writer_display_name: writer.displayName,
+        });
+      }
       res.json({ proposal: result.proposal });
     } catch (error) {
       if (error instanceof ProposalNotFoundError) {
@@ -380,6 +387,14 @@ export function registerProposalRoutes(
       if (!result.ok) {
         sendApiError(res, result.status, result.message);
         return;
+      }
+      if (result.createdDocPaths.length > 0) {
+        onWsEvent?.({
+          type: "catalog:changed",
+          doc_paths: result.createdDocPaths,
+          writer_type: writer.type,
+          writer_display_name: writer.displayName,
+        });
       }
       res.json({ proposal: result.proposal });
     } catch (error) {
@@ -427,6 +442,14 @@ export function registerProposalRoutes(
           acquiredProposal.intent,
           acquiredProposal.targets,
         );
+        if (result.overlayDocPaths.length > 0) {
+          onWsEvent?.({
+            type: "catalog:changed",
+            doc_paths: result.overlayDocPaths,
+            writer_type: acquiredProposal.writer.type,
+            writer_display_name: acquiredProposal.writer.displayName,
+          });
+        }
         for (const [docPath, headingPaths] of groupSectionsByDocPath(
           acquiredProposal.sections.map((s) => ({ doc_path: s.doc_path, heading_path: s.heading_path })),
         )) {

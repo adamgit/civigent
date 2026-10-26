@@ -46,7 +46,7 @@ import {
   FolderWritePermissionError,
   readLiveDocumentMarkdown,
 } from "../application/documents.js";
-import { emitCatalogMutationEvents, emitContentCommittedEventsByDoc } from "../application/events.js";
+import { emitDocRenamed, emitContentCommittedEventsByDoc } from "../application/events.js";
 import { DocPath, FolderPath, InvalidFolderPathError } from "../../types/shared.js";
 import {
   QueryParamError,
@@ -283,17 +283,7 @@ export function registerWorkspaceRoutes(
         return;
       }
 
-      emitCatalogMutationEvents(
-        onWsEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [newPath],
-          deletedDocPaths: [docPath],
-          renamed: { oldPath: docPath, newPath },
-        },
-        writer,
-        result.committedHead,
-      );
+      emitDocRenamed(onWsEvent, { oldPath: docPath, newPath: DocPath.parse(newPath) }, result.committedHead);
 
       res.status(200).json({ old_path: docPath, new_path: newPath, committed_head: result.committedHead });
     } catch (error) {
@@ -367,18 +357,6 @@ export function registerWorkspaceRoutes(
         return;
       }
 
-      emitCatalogMutationEvents(
-        onWsEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [],
-          deletedDocPaths,
-          renamed: null,
-        },
-        writer,
-        result.committedHead,
-      );
-
       res.status(200).json({
         folder_path: folder,
         deleted_doc_paths: deletedDocPaths,
@@ -445,20 +423,9 @@ export function registerWorkspaceRoutes(
         return;
       }
 
-      emitCatalogMutationEvents(
-        onWsEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: renames.map((r) => r.to),
-          deletedDocPaths: renames.map((r) => r.from),
-          renamed:
-            renames.length === 1
-              ? { oldPath: renames[0].from, newPath: renames[0].to }
-              : null,
-        },
-        writer,
-        result.committedHead,
-      );
+      if (renames.length === 1) {
+        emitDocRenamed(onWsEvent, { oldPath: renames[0].from, newPath: renames[0].to }, result.committedHead);
+      }
 
       res.status(200).json({
         old_folder_path: from,
@@ -517,16 +484,6 @@ export function registerWorkspaceCatchAllRoutes(
         return;
       }
 
-      emitCatalogMutationEvents(
-        onWsEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [docPath],
-          deletedDocPaths: [],
-          renamed: null,
-        },
-        writer,
-      );
       res.status(201).json({ doc_path: docPath, committed_head: result.committedHead });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {
@@ -578,16 +535,6 @@ export function registerWorkspaceCatchAllRoutes(
         return;
       }
 
-      emitCatalogMutationEvents(
-        onWsEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [],
-          deletedDocPaths: [docPath],
-          renamed: null,
-        },
-        writer,
-      );
       res.status(200).json({ doc_path: docPath, deleted: true, committed_head: result.committedHead });
     } catch (error) {
       if (error instanceof InvalidDocPathError) {

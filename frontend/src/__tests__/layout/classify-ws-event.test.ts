@@ -11,16 +11,15 @@ describe("classifyWsEvent", () => {
     }
   });
 
-  it("catalog:changed triggers refreshTree and passes flash data", () => {
+  it("catalog:changed triggers refreshTree and passes the writer type for the new-row highlight", () => {
     const result = classifyWsEvent(
-      { type: "catalog:changed", added_doc_paths: ["/new.md"], writer_type: "agent" },
+      { type: "catalog:changed", writer_type: "agent" },
       "/doc.md",
       true,
     );
     expect(result.refreshTree).toBe(true);
     expect(result.addBadge).toBeNull();
     expect(result.showToast).toBeNull();
-    expect(result.flashDocPaths).toEqual(["/new.md"]);
     expect(result.flashWriterType).toBe("agent");
   });
 

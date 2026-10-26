@@ -4,7 +4,7 @@
  * Document events go to every open socket whose writer can read `doc_path`.
  * Which document the socket has open is not the filter.
  * `catalog:changed` lists only the paths that writer can read, and is omitted
- * when both lists filter down to empty. `doc:renamed` is sent whole when the
+ * when its list filters down to empty. `doc:renamed` is sent whole when the
  * writer can read either path, and omitted when they can read neither.
  * `document:activity` goes only to sockets that have that document open.
  * `system:impairment` reaches every socket, with unreadable `doc_paths` and
@@ -139,24 +139,19 @@ describe("hub broadcast delivers doc-bearing events only to readers", () => {
     try {
       hub.broadcast({
         type: "catalog:changed",
-        added_doc_paths: [READABLE_DOC, SECRET_DOC],
-        removed_doc_paths: [READABLE_DOC, SECRET_DOC],
+        doc_paths: [READABLE_DOC, SECRET_DOC],
       });
       hub.broadcast({
         type: "catalog:changed",
-        added_doc_paths: [SECRET_DOC],
-        removed_doc_paths: [secretOther],
+        doc_paths: [SECRET_DOC, secretOther],
       });
 
       await new Promise((resolve) => setTimeout(resolve, 80));
 
       const catalogs = tab.received.filter((e) => e.type === "catalog:changed");
       expect(
-        catalogs.map((e) => ({
-          added: e.type === "catalog:changed" ? e.added_doc_paths : [],
-          removed: e.type === "catalog:changed" ? e.removed_doc_paths : [],
-        })),
-      ).toEqual([{ added: [READABLE_DOC], removed: [READABLE_DOC] }]);
+        catalogs.map((e) => (e.type === "catalog:changed" ? e.doc_paths : [])),
+      ).toEqual([[READABLE_DOC]]);
     } finally {
       await tab.close();
     }

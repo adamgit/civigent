@@ -79,11 +79,8 @@ describe("POST /api/workspace-folder/:folderPath/rename", () => {
 
     const catalogEvents = ctx.wsEvents.filter((e) => e.type === "catalog:changed");
     expect(catalogEvents).toHaveLength(1);
-    expect([...(catalogEvents[0].added_doc_paths ?? [])].sort()).toEqual(
-      EXPECTED_RENAMES.map((r) => r.new_path).sort(),
-    );
-    expect([...(catalogEvents[0].removed_doc_paths ?? [])].sort()).toEqual(
-      EXPECTED_RENAMES.map((r) => r.old_path).sort(),
+    expect([...catalogEvents[0].doc_paths].sort()).toEqual(
+      EXPECTED_RENAMES.flatMap((r) => [r.old_path, r.new_path]).sort(),
     );
     expect(ctx.wsEvents.filter((e) => e.type === "doc:renamed")).toHaveLength(0);
   });

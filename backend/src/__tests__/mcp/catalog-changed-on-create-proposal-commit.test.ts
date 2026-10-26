@@ -1,6 +1,6 @@
 /**
  * Integration test — the full create_proposal + publish_proposal MCP pipeline
- * must emit exactly one `catalog:changed` WS event whose `added_doc_paths`
+ * must emit exactly one `catalog:changed` WS event whose `doc_paths`
  * includes the brand-new doc path. Exercised on each agent-capable MCP mount.
  *
  * Diagnoses "MCP-created documents don't appear in sidebar tree" end-to-end:
@@ -99,7 +99,7 @@ describe("MCP create_proposal+publish_proposal emits catalog:changed for new doc
         await ctx.cleanup();
       });
 
-      it("emits exactly one catalog:changed with the new doc_path in added_doc_paths", async () => {
+      it("emits exactly one catalog:changed with the new doc_path in doc_paths", async () => {
         const newDocPath = `/ops/agent-new-doc-${Date.now()}.md`;
         const sessionId = await initMcpSession(ctx, opts);
 
@@ -138,8 +138,7 @@ describe("MCP create_proposal+publish_proposal emits catalog:changed for new doc
         );
 
         expect(catalogEvents.length).toBe(1);
-        expect(catalogEvents[0].added_doc_paths).toContain(newDocPath);
-        expect(catalogEvents[0].removed_doc_paths).toEqual([]);
+        expect(catalogEvents[0].doc_paths).toContain(newDocPath);
         expect(catalogEvents[0].writer_type).toBe("agent");
       });
     });

@@ -259,7 +259,8 @@ export function AppLayout() {
     });
   }, []);
 
-  const previousTreePathsRef = useRef<string[]>([]);
+  const previousTreePathsRef = useRef<string[] | null>(null);
+  const pendingCatalogFlashWriterTypeRef = useRef<string | undefined | null>(null);
 
   const loadTree = useCallback((options?: { background?: boolean }) => {
     if (options?.background) {
@@ -282,11 +283,15 @@ export function AppLayout() {
         setTreeError(null);
         const nextPaths = flattenTreeDocPaths(response.tree);
         const previousPaths = previousTreePathsRef.current;
-        const previousSet = new Set(previousPaths);
+        const previousSet = new Set(previousPaths ?? []);
         const nextSet = new Set(nextPaths);
-        const added = nextPaths.filter((p) => !previousSet.has(p));
-        const removed = previousPaths.filter((p) => !nextSet.has(p));
+        const added = previousPaths === null ? [] : nextPaths.filter((p) => !previousSet.has(p));
+        const removed = previousPaths === null ? [] : previousPaths.filter((p) => !nextSet.has(p));
         previousTreePathsRef.current = nextPaths;
+        if (options?.background && pendingCatalogFlashWriterTypeRef.current !== null) {
+          queueTreeRowFlashes(added, pendingCatalogFlashWriterTypeRef.current);
+          pendingCatalogFlashWriterTypeRef.current = null;
+        }
         const durationMs = Math.round(performance.now() - startedAt);
         recordWsDiag({
           source: "tree-fetch-result",
@@ -314,7 +319,7 @@ export function AppLayout() {
           setLoadingTree(false);
         }
       });
-  }, []);
+  }, [queueTreeRowFlashes]);
 
   const createDoc = useCallback(async (docPath: DocPath): Promise<void> => {
     await apiClient.createDocument(docPath);
@@ -754,8 +759,8 @@ export function AppLayout() {
         payload: { event, verdict: result, tabActive, focusedDocPath: focusedDocPathRef.current },
       });
 
-      if (result.flashDocPaths) {
-        queueTreeRowFlashes(result.flashDocPaths, result.flashWriterType);
+      if (event.type === "catalog:changed" && result.refreshTree) {
+        pendingCatalogFlashWriterTypeRef.current = result.flashWriterType;
       }
       if (result.refreshTree) {
         scheduleTreeRefresh(`ws:${eventType}`);

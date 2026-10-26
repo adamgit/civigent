@@ -54,7 +54,6 @@ import type { HumanInvolvementPolicyResult, ProposalStatus } from "../../types/s
 import { buildFragmentContent, fragmentFromBodyHolder, sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { authorizeDocRead, PermissionError } from "../../auth/authorized-read.js";
-import { emitCatalogMutationEvents, summarizeProposalCatalogMutations } from "../catalog-events.js";
 import { emitProposalDraftEventsByDoc, emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 import {
   listReadableDocuments,
@@ -460,7 +459,6 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
     const policyResult = await evaluateAgentWritePolicy(proposalId);
 
     if (policyResult.canWrite) {
-      const catalogMutations = await summarizeProposalCatalogMutations(proposal);
       const committedMetadata = AgentWritePolicy.buildCommittedProposalMetadata(policyResult);
 
       const absorbResult = await publishMergeToCanonicalDetailed(proposalId, committedMetadata);
@@ -482,7 +480,6 @@ const publishProposalHandler: ToolHandler = async (args, ctx) => {
           committedHead,
           proposal.targets,
         );
-        emitCatalogMutationEvents(ctx.emitEvent, catalogMutations, ctx.writer, committedHead);
       }
 
       return jsonToolResult({

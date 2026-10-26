@@ -7,7 +7,7 @@ import type {
   ClientInstanceId,
   ProposalTargetRef,
 } from "../../types/shared.js";
-import { emitCatalogMutationEvents, type CatalogMutationSummary } from "../../mcp/catalog-events.js";
+import { emitDocRenamed } from "../../mcp/catalog-events.js";
 import { resolvePersistedSectionLayout } from "../../crdt/live-section-layout.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
@@ -18,8 +18,7 @@ import { DocPath } from "../../types/shared.js";
 
 type StructureSections = GetDocumentSectionsResponse["sections"];
 
-export { emitCatalogMutationEvents };
-export type { CatalogMutationSummary };
+export { emitDocRenamed };
 
 
 

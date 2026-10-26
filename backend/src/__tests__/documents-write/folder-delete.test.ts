@@ -70,8 +70,7 @@ describe("DELETE /api/workspace-folder/:folderPath", () => {
 
     const catalogEvents = ctx.wsEvents.filter((e) => e.type === "catalog:changed");
     expect(catalogEvents).toHaveLength(1);
-    expect([...(catalogEvents[0].removed_doc_paths ?? [])].sort()).toEqual([...FOLDER_DOCS].sort());
-    expect(catalogEvents[0].added_doc_paths ?? []).toEqual([]);
+    expect([...catalogEvents[0].doc_paths].sort()).toEqual([...FOLDER_DOCS].sort());
     expect(ctx.wsEvents.filter((e) => e.type === "doc:renamed")).toHaveLength(0);
   });
 });

@@ -34,6 +34,7 @@ import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { clearImpairment, raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { listProposalOverlayDocumentPaths } from "../../storage/proposal-overlay-ownership.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
@@ -340,6 +341,7 @@ export type StageProposalContentResult =
       ok: true;
       proposal: AnyProposalResult | (AnyProposalResult & { agentWritePolicy: HumanInvolvementPolicyResult });
       isHuman: boolean;
+      createdDocPaths: DocPath[];
     };
 
 async function stageProposalSectionContent(
@@ -354,21 +356,41 @@ async function stageProposalSectionContent(
   if (!isProposalMutable(proposal)) {
     return { ok: false, status: 409, message: `Cannot modify proposal in ${proposal.status} state.` };
   }
+  if (proposal.status === "inprogress") {
+    const targetDocPaths = new Set(proposal.targets.map((target) => target.doc_path));
+    if (sections.some((section) => !targetDocPaths.has(section.doc_path))) {
+      return {
+        ok: false,
+        status: 409,
+        message:
+          "Cannot write to a document that is not among the proposal's targets while the proposal is inprogress.",
+      };
+    }
+  }
 
   const editor = ProposalEditor.open(proposal.id, proposal.status);
+  const createdDocPaths: DocPath[] = [];
   for (const s of sections) {
     const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
-    await editor.writeSection(DocPath.parse(s.doc_path), s.heading_path, heading, sectionWriteInputFromExternal(s.content));
+    const writeResult = await editor.writeSection(
+      DocPath.parse(s.doc_path),
+      s.heading_path,
+      heading,
+      sectionWriteInputFromExternal(s.content),
+    );
+    if (proposal.status === "inprogress" && writeResult.createdDocument === true) {
+      createdDocPaths.push(s.doc_path);
+    }
   }
 
   // Re-read so the response reflects the proposal's current manifest state
   // (unchanged by content writes) consistently with the modify route's `updated`.
   const updated = await readActiveProposal(proposal.id);
   if (proposal.writer.type === "human") {
-    return { ok: true, proposal: updated, isHuman: true };
+    return { ok: true, proposal: updated, isHuman: true, createdDocPaths };
   }
   const agentWritePolicy = await evaluateAgentWritePolicy(proposal.id);
-  return { ok: true, proposal: { ...updated, agentWritePolicy }, isHuman: false };
+  return { ok: true, proposal: { ...updated, agentWritePolicy }, isHuman: false, createdDocPaths };
 }
 
 /**
@@ -412,7 +434,7 @@ export async function writeProposalDocumentSectionsUseCase(
 export type AcquireLocksResult =
   | { kind: "error"; status: number; message: string }
   | { kind: "not_acquired"; proposalId: string; message: string; conflicts: import("../../storage/proposal-repository.js").LockAcquisitionResult["conflicts"] }
-  | { kind: "acquired"; proposalId: string; acquiredProposal?: import("../../storage/proposal-repository.js").LockAcquisitionResult["proposal"] };
+  | { kind: "acquired"; proposalId: string; acquiredProposal?: import("../../storage/proposal-repository.js").LockAcquisitionResult["proposal"]; overlayDocPaths: DocPath[] };
 
 export async function acquireLocksUseCase(proposalId: string, writerId: string): Promise<AcquireLocksResult> {
   const proposal = await readProposal(proposalId);
@@ -440,7 +462,8 @@ export async function acquireLocksUseCase(proposalId: string, writerId: string):
   if (!result.acquired) {
     return { kind: "not_acquired", proposalId: proposal.id, message: result.message, conflicts: result.conflicts };
   }
-  return { kind: "acquired", proposalId: proposal.id, acquiredProposal: result.proposal };
+  const overlayDocPaths = await listProposalOverlayDocumentPaths(proposal.id, "inprogress");
+  return { kind: "acquired", proposalId: proposal.id, acquiredProposal: result.proposal, overlayDocPaths };
 }
 
 // ─── Commit ─────────────────────────────────────────────

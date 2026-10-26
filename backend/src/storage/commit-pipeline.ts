@@ -32,10 +32,16 @@ import {
 } from "./proposal-overlay-ownership.js";
 import { isSnapshotGenerationEnabled, scheduleSnapshotRegeneration } from "./snapshot.js";
 import { CanonicalStore, type AbsorbResult, type AbsorbMode } from "./canonical-store.js";
-import type { DocPath, DocumentTargetRef, WriterIdentity } from "../types/shared.js";
+import type { DocPath, DocumentTargetRef, WriterIdentity, WsServerEvent } from "../types/shared.js";
 import { checkDocPermission } from "../auth/acl.js";
 import { isSystemAuthority, systemAuthority, type SystemAuthority } from "../auth/system-authority.js";
 import { clearImpairment } from "../runtime/impairment-registry.js";
+
+let onCommitEvent: ((event: WsServerEvent) => void) | null = null;
+
+export function setCommitEventHandler(handler: (event: WsServerEvent) => void): void {
+  onCommitEvent = handler;
+}
 
 // ─────────────────────────────────────────────────────────────────
 
@@ -340,11 +346,15 @@ async function publishProposalToCanonicalDetailed(
 ): Promise<AbsorbResult> {
   await enforceCommitWritePermission(proposalId, options.authority);
 
+  const proposal = await readActiveProposal(proposalId);
+  const writer = proposal.writer;
+
   // Transition to committing (guard state)
   await transitionToCommitting(proposalId);
 
+  let absorbResult: AbsorbResult;
   try {
-    return await absorbCommittingProposalToCanonical(
+    absorbResult = await absorbCommittingProposalToCanonical(
       proposalId,
       committedMetadata,
       diagnostics,
@@ -362,6 +372,13 @@ async function publishProposalToCanonicalDetailed(
     }
     throw error;
   }
+  onCommitEvent?.({
+    type: "catalog:changed",
+    doc_paths: absorbResult.rewrittenDocumentPaths,
+    writer_type: writer.type,
+    writer_display_name: writer.displayName,
+  });
+  return absorbResult;
 }
 
 async function publishProposalToCanonical(

@@ -2746,8 +2746,7 @@ export interface ProposalSectionAvailabilityEvent {
 
 export interface CatalogChangedEvent {
   type: "catalog:changed";
-  added_doc_paths?: DocPath[];
-  removed_doc_paths?: DocPath[];
+  doc_paths: DocPath[];
   writer_type?: WriterType;
   writer_display_name?: string;
 }

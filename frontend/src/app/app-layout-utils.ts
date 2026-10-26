@@ -73,7 +73,6 @@ export interface WsEventClassification {
   refreshTree: boolean;
   addBadge: string | null;
   showToast: { text: string; docPath: DocPath } | null;
-  flashDocPaths?: string[];
   flashWriterType?: string;
 }
 
@@ -82,7 +81,7 @@ export interface WsEventClassification {
  * Returns what side effects should happen — the caller applies them to state.
  */
 export function classifyWsEvent(
-  event: { type: string; doc_path?: string; writer_type?: string; writer_display_name?: string; added_doc_paths?: string[] },
+  event: { type: string; doc_path?: string; writer_type?: string; writer_display_name?: string },
   focusedDocPath: string | null,
   tabActive: boolean,
 ): WsEventClassification {
@@ -112,7 +111,6 @@ export function classifyWsEvent(
       refreshTree: true,
       addBadge: null,
       showToast: null,
-      flashDocPaths: event.added_doc_paths,
       flashWriterType: event.writer_type,
     };
   }

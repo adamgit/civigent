@@ -10,12 +10,16 @@ import {
   ExportedSkillsFolderAbsentError,
 } from "./api/application/exported-skills.js";
 import type { WsServerEvent } from "./types/shared.js";
+import { setCommitEventHandler } from "./storage/commit-pipeline.js";
 
 interface CreateAppOptions {
   onWsEvent?: (event: WsServerEvent) => void;
 }
 
 export function createApp(options?: CreateAppOptions) {
+  if (options?.onWsEvent) {
+    setCommitEventHandler(options.onWsEvent);
+  }
   const app = express();
   const exportedSkillsConfig = getExportedSkillsConfig();
 

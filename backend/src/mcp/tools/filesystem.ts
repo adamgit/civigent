@@ -34,7 +34,7 @@ import { AgentWritePolicy } from "../../domain/agent-write-policy.js";
 import { agentWritePolicyToolBody } from "./agent-write-policy-body.js";
 import { checkDocPermission } from "../../auth/acl.js";
 import { authorizeDocRead, PermissionError } from "../../auth/authorized-read.js";
-import { emitCatalogMutationEvents } from "../catalog-events.js";
+import { emitDocRenamed } from "../catalog-events.js";
 import { emitContentCommittedEventsByDoc } from "../../api/application/events.js";
 
 // ─── read_file ───────────────────────────────────────────
@@ -230,17 +230,7 @@ const moveFileHandler: ToolHandler = async (args, ctx) => {
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
-      emitCatalogMutationEvents(
-        ctx.emitEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [destination],
-          deletedDocPaths: [source],
-          renamed: { oldPath: source, newPath: destination },
-        },
-        writer,
-        committedHead,
-      );
+      emitDocRenamed(ctx.emitEvent, { oldPath: source, newPath: destination }, committedHead);
     }
 
     return jsonToolResult({
@@ -336,7 +326,6 @@ async function writeDocumentViaProposal(
   ctx: import("../tool-registry.js").ToolContext,
 ): Promise<import("../protocol.js").McpToolCallResult> {
   const writer = ctx.writer;
-  const createdDocPaths: DocPath[] = [];
 
   // Check write permission for all target documents
   for (const file of files) {
@@ -349,13 +338,6 @@ async function writeDocumentViaProposal(
   // Consume pending intent from plan_changes (Tier 2), or use default
   const intent = ctx.session.pendingIntent ?? `Write ${files.map((f) => f.path).join(", ")}`;
   ctx.session.pendingIntent = undefined;
-
-  // Pre-check which docs are new so catalog:changed reports created paths.
-  for (const file of files) {
-    if (!(await canonicalDocumentExists(file.path))) {
-      createdDocPaths.push(file.path);
-    }
-  }
 
   // Auto-withdraw this session's remembered draft (session-local memory only —
   // another session's draft under the same credential is never touched).
@@ -397,16 +379,6 @@ async function writeDocumentViaProposal(
     // Broadcast content:committed
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, allSectionTargets.targets);
-      emitCatalogMutationEvents(
-        ctx.emitEvent,
-        {
-          catalogChanged: createdDocPaths.length > 0,
-          createdDocPaths,
-          deletedDocPaths: [],
-          renamed: null,
-        },
-        writer,
-      );
     }
 
     const normalizationNote = AgentPayloadContract.noteForNormalizedWrite(
@@ -508,16 +480,6 @@ async function deleteDocumentViaProposal(
       }
       if (ctx.emitEvent) {
         emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], live.commitSha, manifest.targets);
-        emitCatalogMutationEvents(
-          ctx.emitEvent,
-          {
-            catalogChanged: true,
-            createdDocPaths: [],
-            deletedDocPaths: [docPath],
-            renamed: null,
-          },
-          writer,
-        );
       }
       return jsonToolResult({
         success: true,
@@ -540,16 +502,6 @@ async function deleteDocumentViaProposal(
 
     if (ctx.emitEvent) {
       emitContentCommittedEventsByDoc(ctx.emitEvent, writer, [writer.id], committedHead, manifest.targets);
-      emitCatalogMutationEvents(
-        ctx.emitEvent,
-        {
-          catalogChanged: true,
-          createdDocPaths: [],
-          deletedDocPaths: [docPath],
-          renamed: null,
-        },
-        writer,
-      );
     }
 
     return jsonToolResult({

@@ -45,7 +45,7 @@ export function deliveryScopeOf(event: WsServerEvent): DeliveryScope {
     case "catalog:changed":
       return {
         kind: "catalog",
-        paths: [...new Set([...(event.added_doc_paths ?? []), ...(event.removed_doc_paths ?? [])])],
+        paths: event.doc_paths,
       };
     case "doc:renamed":
       return { kind: "catalog", paths: [event.old_path, event.new_path] };
@@ -203,9 +203,8 @@ function assertDocumentScopedSectionsMatch(event: WsServerEvent): void {
 
 async function filterReadableDocPaths(
   writer: AuthenticatedWriter,
-  paths: DocPath[] | undefined,
-): Promise<DocPath[] | undefined> {
-  if (paths === undefined) return undefined;
+  paths: DocPath[],
+): Promise<DocPath[]> {
   const readable: DocPath[] = [];
   for (const path of paths) {
     if (await checkDocPermission(writer, path, "read")) {
@@ -252,15 +251,13 @@ export function createWsHub(): WsHub {
         case "catalog":
           if (event.type === "catalog:changed") {
             enqueueSocketJob(socket, state, async () => {
-              const added_doc_paths = await filterReadableDocPaths(state.writer, event.added_doc_paths);
-              const removed_doc_paths = await filterReadableDocPaths(state.writer, event.removed_doc_paths);
-              if ((added_doc_paths?.length ?? 0) === 0 && (removed_doc_paths?.length ?? 0) === 0) {
+              const doc_paths = await filterReadableDocPaths(state.writer, event.doc_paths);
+              if (doc_paths.length === 0) {
                 return;
               }
               socket.send(JSON.stringify({
                 ...event,
-                added_doc_paths,
-                removed_doc_paths,
+                doc_paths,
               }));
             });
             break;

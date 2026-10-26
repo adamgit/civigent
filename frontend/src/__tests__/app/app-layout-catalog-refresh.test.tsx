@@ -141,8 +141,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
     act(() => {
       emitWsEvent({
         type: "catalog:changed",
-        added_doc_paths: [newDocPath],
-        removed_doc_paths: [],
+        doc_paths: [newDocPath],
         writer_type: "agent",
         writer_display_name: "Agent Bot",
       } as WsServerEvent);
@@ -192,8 +191,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
 
     eventToEmitOnConnect = {
       type: "catalog:changed",
-      added_doc_paths: [newDocPath],
-      removed_doc_paths: [],
+      doc_paths: [newDocPath],
       writer_type: "agent",
       writer_display_name: "Agent Bot",
     } as WsServerEvent;
