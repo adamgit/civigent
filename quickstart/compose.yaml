@@ -1,5 +1,5 @@
 services:
-  backend:
+  civigent:
     image: ghcr.io/adamgit/civigent:latest
     ports:
       - "${PORT:-8080}:3000"

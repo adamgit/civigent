@@ -46,7 +46,7 @@ sudo systemctl enable containerd.service
 
 ### 2. Add restart policy to compose.yaml
 
-In your `quickstart/compose.yaml`, add `restart: unless-stopped` to the service so Docker itself will restart the container if it crashes:
+In your `quickstart/compose.yaml`, add `restart: unless-stopped` under the `civigent` service so Docker itself will restart the container if it crashes. The service in that file is named `civigent`. Compose registers that key, unprefixed, as a DNS name on every network the container joins.
 
 ```yaml
 services:
@@ -266,7 +266,7 @@ If running behind nginx, Apache, or similar, ensure:
 3. **`KS_OIDC_PUBLIC_URL`** matches the externally reachable URL (not the internal port)
 4. **SSE responses** at `/api/system/events` are not buffered (set `proxy_buffering off` in nginx, or `X-Accel-Buffering: no` — only relevant in dev mode)
 
-For multiple Civigent instances on one Docker host using a shared Caddy proxy, see "Run multiple Civigent instances behind one Caddy proxy" in the [recipes.md](recipes.md) docs.
+For one Civigent instance behind Caddy, see "Run one Civigent instance behind Caddy" in the [recipes.md](recipes.md) docs. For several instances on one Docker host sharing that proxy, see "Run multiple Civigent instances behind one Caddy proxy" in the same file.
 
 ### Example nginx configuration
 

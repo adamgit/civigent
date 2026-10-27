@@ -1,6 +1,7 @@
 import { $prose } from "@milkdown/utils";
 import { Plugin } from "@milkdown/prose/state";
 import { docPaperSectionScrollOffsetPx } from "./DocumentPaperStickyHeader";
+import { sharedDraftBarScrollClearancePx } from "./SharedDraftBanner";
 
 const PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX = 5;
 
@@ -11,7 +12,9 @@ export function caretScrollClearancePlugin() {
         get top() {
           return docPaperSectionScrollOffsetPx();
         },
-        bottom: 0,
+        get bottom() {
+          return sharedDraftBarScrollClearancePx();
+        },
         left: 0,
         right: 0,
       },
@@ -19,7 +22,9 @@ export function caretScrollClearancePlugin() {
         get top() {
           return docPaperSectionScrollOffsetPx() + PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX;
         },
-        bottom: PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX,
+        get bottom() {
+          return sharedDraftBarScrollClearancePx() + PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX;
+        },
         left: PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX,
         right: PROSEMIRROR_DEFAULT_SCROLL_MARGIN_PX,
       },

@@ -75,6 +75,8 @@ export interface DocumentSectionRendererProps {
   highlightLabel: string | null;
   injectedByWriter: string | null;
   hasRemotePresence: boolean;
+  /** Section is claimed by the bound shared-draft proposal (right-edge change bar). */
+  hasUnpublishedChanges?: boolean;
   dragOverFragmentKey: string | null;
   transferService: SectionTransferService | null;
   proposalMode: boolean;
@@ -155,6 +157,7 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
   highlightLabel,
   injectedByWriter,
   hasRemotePresence,
+  hasUnpublishedChanges = false,
   dragOverFragmentKey,
   transferService,
   proposalMode,
@@ -257,6 +260,13 @@ export const DocumentSectionRenderer = React.memo(function DocumentSectionRender
         onActivateRow(fk, { x: e.clientX, y: e.clientY });
       }}
     >
+      {hasUnpublishedChanges ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute top-1 bottom-1 right-0 w-[3px] rounded-full bg-accent-text"
+        />
+      ) : null}
+
       {injectedByWriter ? (
         <span className="section-injected-msg">
           Updated by {injectedByWriter}

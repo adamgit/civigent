@@ -128,10 +128,9 @@ export interface MilkdownEditorCommonProps {
   /** Called when content is dropped from a different section's editor. */
   onCrossSectionDrop?: (transfer: SectionTransfer) => void;
   /** Called on a GENUINE local edit to the bound fragment (this session's own
-   *  typing/paste/IME/drop), never on a remote or programmatic Y.Doc apply.
-   *  Sourced from the editor's native `beforeinput` event, which fires only for
-   *  real user input and not for ProseMirror/ySync's programmatic DOM updates.
-   *  CRDT mode only. */
+   *  typing, paste, cut, Backspace, heading change). Sourced from ProseMirror
+   *  transactions that change the document and are not a y-sync remote or
+   *  attach render (`isChangeOrigin`). CRDT mode only. */
   onLocalEdit?: () => void;
   /** Called when the editor is fully initialized and has content (safe to display). */
   onReady?: () => void;
@@ -209,8 +208,8 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const controllerRef = useRef<EditorLifecycleController | null>(null);
   const deferredFocusRef = useRef<{ position: "start" | "end"; column: number | null } | null>(null);
   const headingPathRef = useRef<string[]>([]);
-  // Cleanup for the native `beforeinput` listener that surfaces genuine local
-  // edits. Held so it can be removed on CRDT-detach and on unmount, so a leaked
+  // Cleanup for the native `beforeinput` listener that opens the attach-echo
+  // latch. Held so it can be removed on CRDT-detach and on unmount, so a leaked
   // listener never fires against a destroyed component.
   const localEditListenerCleanupRef = useRef<(() => void) | null>(null);
   // First-sync readiness latch + its empty-fragment fallback rAF. Held so detach
@@ -335,20 +334,14 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const awareness = replicaStore.awareness;
     const color = userColor ?? pickColor(userName);
 
-    // Surface GENUINE local edits to this fragment. The producer is the editor's
-    // native `beforeinput` event, which fires only for real user input (typing,
-    // paste, IME, drop) and NEVER for ProseMirror/ySync's programmatic DOM
-    // updates when binding or applying a remote frame. Yjs `transaction.local`
-    // was the previous discriminator but it is wrong: attach-time awareness/sync
-    // transactions also run as `local=true` (proven at runtime — the awareness
-    // listener writes back via a deferred dispatch), polluting the session
-    // authorship ledger on open and mislabelling an inbound update as your save.
+    // beforeinput only opens the attach-echo latch. It does not record
+    // authorship. An IME composition whose markdown is briefly identical
+    // cannot get stuck behind the comparison.
     teardownLocalEditObserver();
     const editorDom = view.dom;
     let disarmEchoGuard: () => void = () => {};
     const localEditHandler = (): void => {
       disarmEchoGuard();
-      onLocalEditRef.current?.();
     };
     editorDom.addEventListener("beforeinput", localEditHandler);
     localEditListenerCleanupRef.current = () => {
@@ -380,6 +373,22 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       },
     });
 
+    // Authorship listens to ProseMirror transactions, not beforeinput. A
+    // document-changing transaction that is not a y-sync remote or attach
+    // render (`isChangeOrigin`) is a local edit. Attach render and a later
+    // server paint are isChangeOrigin, so opening the editor does not count.
+    const localEditAuthorship = new Plugin({
+      appendTransaction(trs) {
+        for (const tr of trs) {
+          if (!tr.docChanged) continue;
+          if (tr.getMeta(ySyncPluginKey)?.isChangeOrigin) continue;
+          onLocalEditRef.current?.();
+          break;
+        }
+        return null;
+      },
+    });
+
     const newState = view.state.reconfigure({
       plugins: [
         ...view.state.plugins,
@@ -387,9 +396,14 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
         yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
         yUndoPlugin(),
         firstSyncDetector,
+        localEditAuthorship,
       ],
     });
-    disarmEchoGuard = installAttachEchoGuard(ySyncPluginKey.getState(newState));
+    disarmEchoGuard = installAttachEchoGuard(
+      ySyncPluginKey.getState(newState),
+      replicaStore.doc,
+      fk,
+    );
     view.updateState(newState);
 
     awareness.setLocalStateField("user", {

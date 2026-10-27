@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { SharedPageHeader } from "../components/SharedPageHeader";
 import { apiClient } from "../services/api-client";
 import { copyTextToClipboard } from "../utils/copy-text";
@@ -383,6 +383,7 @@ function CopyableCard<T>({
   rowType,
   about,
   rows,
+  headerExtra,
   children,
 }: {
   id?: string;
@@ -391,6 +392,7 @@ function CopyableCard<T>({
   rowType: string;
   about: string;
   rows: readonly T[];
+  headerExtra?: ReactNode;
   children: (sel: {
     selected: Set<number>;
     beginSelect: (event: ReactPointerEvent, index: number) => void;
@@ -402,13 +404,117 @@ function CopyableCard<T>({
       id={id}
       title={title}
       subtitle={subtitle}
-      headerAction={<CopyAsJsonButton getValue={() => copyEnvelope(rowType, about, rows, selected)} />}
+      headerAction={
+        <div className="flex items-center gap-2 shrink-0">
+          {headerExtra}
+          <CopyAsJsonButton getValue={() => copyEnvelope(rowType, about, rows, selected)} />
+        </div>
+      }
     >
       <div ref={rootRef} className="select-none">
         {children({ selected, beginSelect })}
       </div>
     </Card>
   );
+}
+
+function VersionViewToggle({
+  split,
+  onSplit,
+}: {
+  split: boolean;
+  onSplit: (split: boolean) => void;
+}) {
+  const buttonStyle = { padding: "3px 10px", fontSize: 12 };
+  return (
+    <div className="flex shrink-0" role="group" aria-label="Version grouping">
+      <button
+        type="button"
+        aria-pressed={split}
+        className={split ? "btn-primary" : "btn-secondary"}
+        style={{ ...buttonStyle, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+        onClick={() => onSplit(true)}
+      >
+        By version
+      </button>
+      <button
+        type="button"
+        aria-pressed={!split}
+        className={split ? "btn-secondary" : "btn-primary"}
+        style={{ ...buttonStyle, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }}
+        onClick={() => onSplit(false)}
+      >
+        Combined
+      </button>
+    </div>
+  );
+}
+
+function VersionHeaderRow({ version, colSpan }: { version: string; colSpan: number }) {
+  return (
+    <tr>
+      <td
+        colSpan={colSpan}
+        className="px-4 py-1.5 border-b border-footer-border bg-section-hover text-[12px] font-semibold font-mono text-text-primary"
+      >
+        {version}
+      </td>
+    </tr>
+  );
+}
+
+type VersionRows<T> = { app_version: string | null; rows: readonly T[] };
+
+function viewGroups<T>(
+  split: boolean,
+  combined: readonly T[],
+  byVersion: ReadonlyArray<{ app_version: string; rows: readonly T[] }>,
+): VersionRows<T>[] {
+  if (!split) return [{ app_version: null, rows: combined }];
+  return byVersion.map((group) => ({ app_version: group.app_version, rows: group.rows }));
+}
+
+function copyRowsForView<T extends object>(
+  split: boolean,
+  combined: readonly T[],
+  byVersion: ReadonlyArray<{ app_version: string; rows: readonly T[] }>,
+): readonly (T & { app_version?: string })[] {
+  if (!split) return combined;
+  return byVersion.flatMap((group) =>
+    group.rows.map((row) => ({ ...row, app_version: group.app_version })),
+  );
+}
+
+function cohortTableBody<T>(
+  groups: readonly VersionRows<T>[],
+  colSpan: number,
+  empty: string,
+  renderRow: (row: T, index: number) => ReactNode,
+): ReactNode {
+  const total = groups.reduce((sum, group) => sum + group.rows.length, 0);
+  if (total === 0) {
+    return (
+      <tr>
+        <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={colSpan}>
+          {empty}
+        </td>
+      </tr>
+    );
+  }
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  for (const group of groups) {
+    if (group.app_version !== null) {
+      nodes.push(
+        <VersionHeaderRow key={`version-${group.app_version}`} version={group.app_version} colSpan={colSpan} />,
+      );
+    }
+    for (const row of group.rows) {
+      nodes.push(renderRow(row, index));
+      index += 1;
+    }
+  }
+  return nodes;
 }
 
 function ErrorRow({
@@ -489,6 +595,7 @@ export function AgentMcpAnalysisPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<OutcomeDetail | null>(null);
+  const [splitByVersion, setSplitByVersion] = useState(true);
 
   const runAnalysis = useCallback(async () => {
     setRunning(true);
@@ -511,6 +618,14 @@ export function AgentMcpAnalysisPage() {
   const readTotal = report?.read_patterns.reduce((sum, row) => sum + row.count, 0) ?? 0;
   const oneToolTotal = report?.one_tool_sessions.reduce((sum, row) => sum + row.session_count, 0) ?? 0;
   const abandonedTotal = report?.errors.reduce((sum, row) => sum + row.abandoned, 0) ?? 0;
+  const errorCopyRows = useMemo(
+    () => (report ? copyRowsForView(splitByVersion, report.errors, report.errors_by_version) : []),
+    [report, splitByVersion],
+  );
+  const argShapeCopyRows = useMemo(
+    () => (report ? copyRowsForView(splitByVersion, report.arg_shapes, report.arg_shapes_by_version) : []),
+    [report, splitByVersion],
+  );
 
   return (
     <div className="flex flex-col">
@@ -662,8 +777,13 @@ export function AgentMcpAnalysisPage() {
               title="Errors"
               subtitle="Expand a row to see which agents hit it."
               rowType="McpLogErrorCohort"
-              about="Cohorts of failed or blocked tool calls, grouped by method + result + normalized cause. In the same sitting, later same-method ok = recovered; later same-method fail = unresolved; no later same-method call = abandoned."
-              rows={report.errors}
+              about={
+                splitByVersion
+                  ? "Cohorts of failed or blocked tool calls, grouped by method + result + normalized cause, split by app_version (newest first). In the same sitting, later same-method ok = recovered; later same-method fail = unresolved; no later same-method call = abandoned. Each row includes app_version."
+                  : "Cohorts of failed or blocked tool calls, grouped by method + result + normalized cause. In the same sitting, later same-method ok = recovered; later same-method fail = unresolved; no later same-method call = abandoned."
+              }
+              rows={errorCopyRows}
+              headerExtra={<VersionViewToggle split={splitByVersion} onSplit={setSplitByVersion} />}
             >
               {({ selected, beginSelect }) => (
                 <div className="overflow-x-auto">
@@ -682,22 +802,19 @@ export function AgentMcpAnalysisPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {report.errors.length === 0 ? (
-                        <tr>
-                          <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={9}>
-                            No error cohorts.
-                          </td>
-                        </tr>
-                      ) : (
-                        report.errors.map((cohort, i) => (
+                      {cohortTableBody(
+                        viewGroups(splitByVersion, report.errors, report.errors_by_version),
+                        9,
+                        "No error cohorts.",
+                        (cohort, index) => (
                           <ErrorRow
-                            key={i}
+                            key={`${cohort.method}\0${cohort.result}\0${cohort.cause_template}\0${index}`}
                             cohort={cohort}
-                            index={i}
-                            selected={selected.has(i)}
+                            index={index}
+                            selected={selected.has(index)}
                             onPointerDown={beginSelect}
                           />
-                        ))
+                        ),
                       )}
                     </tbody>
                   </table>
@@ -709,8 +826,13 @@ export function AgentMcpAnalysisPage() {
               id="mcp-arg-shapes"
               title="Argument-shape failures"
               rowType="McpLogArgShapeCohort"
-              about="Refused or invalid-argument errors, grouped by method + normalized cause + doc path."
-              rows={report.arg_shapes}
+              about={
+                splitByVersion
+                  ? "Refused or invalid-argument errors, grouped by method + normalized cause + doc path, split by app_version (newest first). Each row includes app_version."
+                  : "Refused or invalid-argument errors, grouped by method + normalized cause + doc path."
+              }
+              rows={argShapeCopyRows}
+              headerExtra={<VersionViewToggle split={splitByVersion} onSplit={setSplitByVersion} />}
             >
               {({ selected, beginSelect }) => (
                 <div className="overflow-x-auto">
@@ -725,19 +847,16 @@ export function AgentMcpAnalysisPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {report.arg_shapes.length === 0 ? (
-                        <tr>
-                          <td className="px-4 py-3 text-[12px] text-text-muted" colSpan={5}>
-                            No argument-shape failures.
-                          </td>
-                        </tr>
-                      ) : (
-                        report.arg_shapes.map((cohort, i) => (
+                      {cohortTableBody(
+                        viewGroups(splitByVersion, report.arg_shapes, report.arg_shapes_by_version),
+                        5,
+                        "No argument-shape failures.",
+                        (cohort, index) => (
                           <tr
-                            key={i}
-                            data-row-index={i}
-                            onPointerDown={(event) => beginSelect(event, i)}
-                            className={`border-b border-footer-border last:border-0 ${rowTone(selected.has(i))}`}
+                            key={`${cohort.method}\0${cohort.cause_template}\0${cohort.doc_path ?? ""}\0${index}`}
+                            data-row-index={index}
+                            onPointerDown={(event) => beginSelect(event, index)}
+                            className={`border-b border-footer-border last:border-0 ${rowTone(selected.has(index))}`}
                           >
                             <td className="px-4 py-2 font-mono text-[12px] text-text-primary">{cohort.method}</td>
                             <td className="px-4 py-2 font-mono text-[12px] text-text-muted break-words">
@@ -751,7 +870,7 @@ export function AgentMcpAnalysisPage() {
                               {cohort.sample_error_message}
                             </td>
                           </tr>
-                        ))
+                        ),
                       )}
                     </tbody>
                   </table>

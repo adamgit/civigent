@@ -52,6 +52,7 @@ export type {
   McpLogArgShapeCohort,
   InferredMcpTier,
   McpLogToolCount,
+  McpLogVersionGroup,
   AgentMcpLogFileInfo,
   RunAdminMcpLogAnalysisResponse,
   ContentIntegrityFailure,

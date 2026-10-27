@@ -2,17 +2,13 @@
  * DocumentSectionNav — right-side section index for the document view.
  *
  * Renders one row per heading of the live (CRDT/workspace) document structure as
- * a vertical spine with horizontal ticks. Tick length (and therefore the label's
- * indent) scales with the ATX heading level: H1 = shortest tick / least indent,
- * H2–H6 = progressively longer / more indented. The document title sits ABOVE
- * the spine in bold black, with a smaller left margin than the section rows.
+ * plain text, indented a little per ATX heading level. The document title sits
+ * above the rows in bold.
  *
- * Highlight precedence per row:
- *   1. editing cursor section  → green
- *   2. otherwise               → visibility blend:
- *        fully off-screen → mid-grey
- *        fully on-screen  → warm amber (--color-agent2)
- *        partial          → color-mix between the two by visible fraction
+ * Sections claimed by the bound shared-draft proposal (unpublished changes) are
+ * drawn in a rounded accent box with accent text and an edit icon. Every row
+ * carries the same border width and icon slot, so a section entering or leaving
+ * the draft never changes the label's wrap width.
  *
  * Positioning: the component pins itself (fixed) from the paper's right edge
  * outward with a minimum width of 140px. Wider gutters use the available space;
@@ -34,13 +30,15 @@ export interface DocumentSectionNavItem {
 }
 
 export interface DocumentSectionNavProps {
-  /** Document title — rendered as the bold header above the spine. */
+  /** Document title — rendered as the bold header above the rows. */
   title: string;
   items: DocumentSectionNavItem[];
-  /** Section containing the edit cursor while editing (green). */
+  /** Section containing the edit cursor while editing. */
   editingFragmentKey: string | null;
   /** Per-section on-screen fraction (0 = off, 1 = full, between = partial). */
   visibilityByFragmentKey: SectionVisibilityMap;
+  /** Fragment keys of sections with unpublished shared-draft changes (accent box). */
+  changedFragmentKeys: ReadonlySet<string>;
   onNavigate: (fragmentKey: string) => void;
   /** Scroll the document back to the very top (title click). */
   onNavigateToTop: () => void;
@@ -54,26 +52,37 @@ export interface DocumentSectionNavProps {
 const TOPBAR_FALLBACK = 46;
 const MIN_PANEL_WIDTH_PX = 140;
 
-const BASE_TICK_WIDTH = 14;
-const WIDTH_PER_DEPTH = 9;
 const MAX_VISUAL_DEPTH = 6;
 
-const COLOR_SPINE = "var(--color-text-faint)";
 const COLOR_OFFSCREEN = "var(--color-text-muted)";
 const COLOR_ONSCREEN = "var(--color-agent2)"; // warm amber already in the site palette
 const COLOR_TITLE = "var(--color-text-primary)";
-const COLOR_EDITING = "#15803d"; // green-700 — edit cursor section
+const COLOR_ROW = "var(--color-text-secondary)";
+// Same accent family as the shared-draft banner.
+const COLOR_CHANGED_TEXT = "var(--color-accent-text)";
+const COLOR_CHANGED_BG = "var(--color-accent-light)";
+const COLOR_CHANGED_BORDER = "var(--color-accent-border)";
 
-// Match the section-row styles below: padding-top 3 + half of one 12.5×1.3 line.
-// Spine must end here on the LAST row so multi-line labels do not leave a dangling
-// segment below the first-line tick.
-const ROW_PADDING_TOP_PX = 3;
 const LABEL_FONT_SIZE_PX = 12.5;
 const LABEL_LINE_HEIGHT = 1.3;
 
-function tickWidth(headingLevel: HeadingLevel): number {
-  const d = Math.min(Math.max(1, headingLevel), MAX_VISUAL_DEPTH);
-  return BASE_TICK_WIDTH + (d - 1) * WIDTH_PER_DEPTH;
+function headingIndentPx(headingLevel: HeadingLevel, perLevelPx: number): number {
+  const depth = Math.min(Math.max(1, headingLevel), MAX_VISUAL_DEPTH);
+  return (depth - 1) * perLevelPx;
+}
+
+function EditIcon({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M10.6 2.9 13.1 5.4 5.6 12.9 2.6 13.4 3.1 10.4Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path d="M9.2 4.3 11.7 6.8" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
 }
 
 /** Mid-grey ↔ warm-amber blend driven by how much of the section is on-screen. */
@@ -168,6 +177,7 @@ export interface DocumentSectionNavListProps {
   items: DocumentSectionNavItem[];
   editingFragmentKey: string | null;
   visibilityByFragmentKey: SectionVisibilityMap;
+  changedFragmentKeys: ReadonlySet<string>;
   onNavigate: (fragmentKey: string) => void;
   onNavigateToTop: () => void;
   /** Overlay uses larger type and padding for touch; gutter stays compact. */
@@ -175,63 +185,33 @@ export interface DocumentSectionNavListProps {
 }
 
 function listMetrics(density: "gutter" | "overlay") {
-  const fontSize = density === "overlay" ? 16 : LABEL_FONT_SIZE_PX;
-  const titleSize = density === "overlay" ? 17 : 13;
-  const padTop = density === "overlay" ? 10 : ROW_PADDING_TOP_PX;
-  const padBottom = density === "overlay" ? 10 : 3;
-  const titlePadBottom = density === "overlay" ? 12 : 8;
-  const titleSquare = density === "overlay" ? 8 : 7;
-  const tickMarginTop = (fontSize * LABEL_LINE_HEIGHT) / 2 - 1;
-  const spineEnd = padTop + (fontSize * LABEL_LINE_HEIGHT) / 2;
-  const spineTop = -(titlePadBottom + titleSquare + 2);
+  const overlay = density === "overlay";
+  const fontSize = overlay ? 16 : LABEL_FONT_SIZE_PX;
   return {
     fontSize,
-    titleSize,
-    padTop,
-    padBottom,
-    titlePadBottom,
-    titleSquare,
-    tickMarginTop,
-    spineEnd,
-    spineTop,
+    titleSize: overlay ? 17 : 13,
+    titlePadBottom: overlay ? 12 : 8,
+    padY: overlay ? 9 : 4,
+    padX: overlay ? 10 : 8,
+    indentPerLevel: overlay ? 14 : 10,
+    rowGap: overlay ? 4 : 2,
+    iconSize: Math.round(fontSize * 1.05),
+    iconGap: overlay ? 8 : 6,
   };
 }
 
 export function DocumentSectionNavList({
   title,
   items,
-  editingFragmentKey,
-  visibilityByFragmentKey,
+  changedFragmentKeys,
   onNavigate,
   onNavigateToTop,
   density = "gutter",
 }: DocumentSectionNavListProps) {
   const metrics = listMetrics(density);
-  const lastItemRef = useRef<HTMLButtonElement | null>(null);
-  const [spineBottomPx, setSpineBottomPx] = useState(metrics.spineEnd);
-
-  // End the spine at mid-first-line of the last entry (where the tick sits), not
-  // mid-entry — wrapped labels are taller than one line.
-  useLayoutEffect(() => {
-    const el = lastItemRef.current;
-    if (!el) return;
-
-    const measure = () => {
-      const next = Math.max(0, el.offsetHeight - metrics.spineEnd);
-      setSpineBottomPx((prev) => (prev === next ? prev : next));
-    };
-
-    measure();
-    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
-    ro?.observe(el);
-    return () => ro?.disconnect();
-  }, [items, metrics.spineEnd]);
-
-  const lastIndex = items.length - 1;
 
   return (
     <>
-      {/* Document title — bold black, above the spine, smaller left margin */}
       <button
         type="button"
         className="doc-section-nav__item"
@@ -240,26 +220,15 @@ export function DocumentSectionNavList({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: density === "overlay" ? 8 : 7,
           width: "100%",
           border: "none",
           background: "transparent",
           cursor: "pointer",
           textAlign: "left",
-          padding: `0 2px ${metrics.titlePadBottom}px`,
+          padding: `0 ${metrics.padX + 1}px ${metrics.titlePadBottom}px`,
           color: COLOR_TITLE,
         }}
       >
-        <span
-          aria-hidden="true"
-          style={{
-            flex: "none",
-            width: metrics.titleSquare,
-            height: metrics.titleSquare,
-            borderRadius: 1,
-            background: COLOR_TITLE,
-          }}
-        />
         <span
           className="doc-section-nav__label"
           style={{
@@ -277,74 +246,59 @@ export function DocumentSectionNavList({
         </span>
       </button>
 
-      {/* Section rows — vertical spine with horizontal ticks.
-       *  Spine ends at mid-first-line of the last row (tick height), so wrapped
-       *  labels do not leave a dangling segment below the tick. */}
-      <div style={{ position: "relative" }}>
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: 5,
-            top: metrics.spineTop,
-            bottom: spineBottomPx,
-            width: 1.5,
-            borderRadius: 1,
-            background: COLOR_SPINE,
-            zIndex: -1,
-          }}
-        />
-        {items.map((item, index) => {
-          const isEditing = editingFragmentKey === item.fragmentKey;
-          const visibility = visibilityByFragmentKey[item.fragmentKey] ?? 0;
-          const color = isEditing ? COLOR_EDITING : visibilityColor(visibility);
+      <div style={{ display: "flex", flexDirection: "column", gap: metrics.rowGap }}>
+        {items.map((item) => {
+          const isChanged = changedFragmentKeys.has(item.fragmentKey);
+          const pathLabel = item.headingPath.join(" > ");
           return (
             <button
               key={item.fragmentKey}
-              ref={index === lastIndex ? lastItemRef : undefined}
               type="button"
               className="doc-section-nav__item"
-              title={item.headingPath.join(" > ")}
+              title={isChanged ? `${pathLabel} — unpublished changes` : pathLabel}
               onClick={() => onNavigate(item.fragmentKey)}
               style={{
                 display: "flex",
                 alignItems: "flex-start",
-                gap: density === "overlay" ? 10 : 8,
+                gap: metrics.iconGap,
                 width: "100%",
-                border: "none",
-                background: "transparent",
+                border: `1px solid ${isChanged ? COLOR_CHANGED_BORDER : "transparent"}`,
+                borderRadius: 6,
+                background: isChanged ? COLOR_CHANGED_BG : "transparent",
                 cursor: "pointer",
                 textAlign: "left",
-                padding: `${metrics.padTop}px 2px ${metrics.padBottom}px 5px`,
-                color,
-                transition: "color 120ms ease",
+                padding: `${metrics.padY}px ${metrics.padX}px ${metrics.padY}px ${
+                  metrics.padX + headingIndentPx(item.headingLevel, metrics.indentPerLevel)
+                }px`,
+                color: isChanged ? COLOR_CHANGED_TEXT : COLOR_ROW,
               }}
             >
               <span
-                aria-hidden="true"
-                style={{
-                  flex: "none",
-                  height: isEditing ? 3 : 2,
-                  width: tickWidth(item.headingLevel),
-                  marginTop: metrics.tickMarginTop,
-                  borderRadius: 2,
-                  background: color,
-                  transition: "background-color 120ms ease, height 120ms ease",
-                }}
-              />
-              <span
                 className="doc-section-nav__label"
                 style={{
-                  flex: 1,
+                  flex: "0 1 auto",
                   minWidth: 0,
                   overflowWrap: "anywhere",
                   wordBreak: "break-word",
                   fontSize: metrics.fontSize,
-                  fontWeight: isEditing ? 600 : 400,
+                  fontWeight: isChanged ? 600 : 400,
                   lineHeight: LABEL_LINE_HEIGHT,
                 }}
               >
                 {item.heading}
+                {isChanged ? <span className="sr-only"> (unpublished changes)</span> : null}
+              </span>
+              <span
+                aria-hidden="true"
+                style={{
+                  flex: "none",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  width: metrics.iconSize,
+                  height: metrics.fontSize * LABEL_LINE_HEIGHT,
+                }}
+              >
+                {isChanged ? <EditIcon size={metrics.iconSize} /> : null}
               </span>
             </button>
           );
@@ -442,6 +396,7 @@ export function DocumentSectionNav({
   items,
   editingFragmentKey,
   visibilityByFragmentKey,
+  changedFragmentKeys,
   onNavigate,
   onNavigateToTop,
   anchorRef,
@@ -510,6 +465,7 @@ export function DocumentSectionNav({
         items={items}
         editingFragmentKey={editingFragmentKey}
         visibilityByFragmentKey={visibilityByFragmentKey}
+        changedFragmentKeys={changedFragmentKeys}
         onNavigate={onNavigate}
         onNavigateToTop={onNavigateToTop}
       />

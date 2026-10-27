@@ -2272,6 +2272,16 @@ export interface McpLogArgShapeCohort {
   sample_error_message: string;
 }
 
+/**
+ * One app_version's rows of a cohort table.
+ * `errors_by_version` and `arg_shapes_by_version` list these newest version first.
+ * `rows` uses the same per-cohort ordering as the combined table.
+ */
+export interface McpLogVersionGroup<T> {
+  app_version: string;
+  rows: T[];
+}
+
 export type InferredMcpTier = "1_2" | "3" | "unmatched";
 
 export interface McpLogToolCount {
@@ -2293,8 +2303,14 @@ export interface RunAdminMcpLogAnalysisResponse {
   write_outcomes: McpLogWriteOutcome[];
   read_patterns: McpLogReadPattern[];
   one_tool_sessions: McpLogOneToolSession[];
+  /** All versions folded together. */
   errors: McpLogErrorCohort[];
+  /** Same cohorts as `errors`, one group per logged app_version, newest first. */
+  errors_by_version: McpLogVersionGroup<McpLogErrorCohort>[];
+  /** All versions folded together. */
   arg_shapes: McpLogArgShapeCohort[];
+  /** Same cohorts as `arg_shapes`, one group per logged app_version, newest first. */
+  arg_shapes_by_version: McpLogVersionGroup<McpLogArgShapeCohort>[];
   tool_counts: McpLogToolCount[];
   log_file: AgentMcpLogFileInfo;
 }

@@ -4,6 +4,120 @@ Common tasks that may not be immediately obvious, or are not standard/required f
 
 # Alternative installations
 
+## Run one Civigent instance behind Caddy
+
+One Civigent, installed with the quickstart. Caddy's site address is the public hostname, with no port of its own: Caddy listens on 80 and 443.
+
+Example:
+
+```text
+wiki.example.com → this Civigent
+```
+
+The DNS A record must point at the host's IPv4 address. Ports 80 and 443 must reach Caddy. Caddy then serves the site over HTTPS, renews the certificate, and redirects port 80 to port 443.
+
+### 1. Install Civigent from the quickstart
+
+```text
+/srv/civigent/
+```
+
+Copy the contents of the repository's `quickstart/` directory into `/srv/civigent/`.
+
+```bash
+cp .env.example .env
+mkdir -p wiki-data snapshots backup-secrets
+```
+
+`wiki-data/` and `snapshots/` must exist before the first start and must be writable by the container process.
+
+
+In `/srv/civigent/.env`:
+
+```env
+KS_EXTERNAL_HOSTNAME=wiki.example.com
+KS_OIDC_PUBLIC_URL=https://wiki.example.com
+KS_AUTH_SECRET=<generate-with-openssl-rand-hex-32>
+```
+
+`KS_OIDC_PUBLIC_URL` is the address people type in the browser. No trailing slash. Generate the secret with:
+
+```bash
+openssl rand -hex 32
+```
+
+Configure the remaining authentication settings as described in the Deployment Guide. A team server with Google Workspace uses `KS_AUTH_MODE=oidc` and the provider variables in [SSO Setup](sso-setup.md).
+
+On the `civigent` service in `compose.yaml`, add the restart policy from the Deployment Guide:
+
+```yaml
+services:
+  civigent:
+    restart: unless-stopped
+```
+
+Keep the image, the `ports` entry, the volume mounts, and the other environment entries.
+
+### 2. Create the Caddy Compose project
+
+Create `/srv/caddy/compose.yaml`. `network_mode: host` lets Caddy bind 80 and 443 on the machine and reach Civigent at `127.0.0.1:8080`.
+
+```yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    network_mode: host
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+### 3. Create the Caddyfile
+
+Create `/srv/caddy/Caddyfile`. The site address is the hostname only. Caddy serves it on 443 and redirects 80 to 443. `reverse_proxy` is the upstream, Civigent on the quickstart port.
+
+```caddyfile
+wiki.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+`reverse_proxy` upgrades WebSocket connections. One site block is the whole file.
+
+### 4. Start
+
+Start Civigent after `.env` is complete. In non-single-user mode the server refuses to start without `KS_AUTH_SECRET` and a public URL.
+
+```bash
+cd /srv/civigent
+docker compose up -d
+```
+
+Start Caddy once the DNS name reaches this host:
+
+```bash
+cd /srv/caddy
+docker compose up -d
+```
+
+### 5. Verify
+
+```bash
+docker exec caddy caddy validate \
+  --config /etc/caddy/Caddyfile \
+  --adapter caddyfile
+```
+
+Open `https://wiki.example.com`.
+
 ## Run multiple Civigent instances behind one Caddy proxy
 
 Use this recipe to run several Civigent instances on one Docker host, with a different domain for each instance and one shared Caddy reverse proxy.
@@ -84,13 +198,13 @@ ports:
   - "${PORT:-8080}:3000"
 ```
 
-Replace it with an internal port and a unique network alias.
+Rename the service key to a name unique on `caddy_proxy`. The shipped key `civigent` would collide with a second instance, because Compose publishes the key itself as a DNS name on that shared network.
 
 Instance A:
 
 ```yaml
 services:
-  backend:
+  app-wiki:
     restart: unless-stopped
 
     expose:
@@ -116,7 +230,7 @@ Instance B:
 
 ```yaml
 services:
-  backend:
+  demo-1:
     restart: unless-stopped
 
     expose:
@@ -140,7 +254,7 @@ networks:
 
 Keep the existing image, volume mounts and other environment entries from the quickstart Compose file.
 
-Both containers can use internal port 3000. They are separate containers and are distinguished by their network aliases.
+Both containers can use internal port 3000. They are separate containers and are distinguished by those service names.
 
 Do not publish port 3000 on the host.
 
@@ -250,7 +364,7 @@ Caddy obtains and renews the HTTPS certificates automatically.
 
 ### Migrating from a per-instance proxy
 
-***NOTE:*** If you were already using Caddy for a single instance.
+***NOTE:*** If you were already using Caddy for a single instance, as in "Run one Civigent instance behind Caddy" above.
 
 Before starting shared Caddy, remove any existing container that already publishes ports 80 or 443:
 

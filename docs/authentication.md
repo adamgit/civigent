@@ -102,7 +102,7 @@ KS_DATA_ROOT=./dev-data printf 'a-password' | node --import tsx src/auth/add-loc
 From a running container, where only the compiled output is present:
 
 ```bash
-printf 'a-password' | docker compose run --rm -T backend \
+printf 'a-password' | docker compose run --rm -T civigent \
   node dist/backend/src/auth/add-local-user.js alice
 ```
 

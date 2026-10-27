@@ -54,6 +54,8 @@ export interface DocumentCanvasProps {
   getActiveEditors?: (fragmentKey: string) => string[];
   publishDecision?: import("../types/shared").PublishTriggerDecision | null;
   sectionUncommitted?: (fragmentKey: string) => boolean;
+  /** Fragment keys claimed by the bound shared-draft proposal (unpublished changes). */
+  changedFragmentKeys?: ReadonlySet<string>;
   localEditSink: LocalEditOriginSink;
   mouseDownPosRef: React.MutableRefObject<{ x: number; y: number } | null>;
   onStartEditing: (fragmentKey: string, coords?: { x: number; y: number }) => void;
@@ -98,6 +100,7 @@ export function DocumentCanvas({
   getActiveEditors,
   publishDecision = null,
   sectionUncommitted,
+  changedFragmentKeys,
   localEditSink,
   mouseDownPosRef,
   onStartEditing,
@@ -210,6 +213,7 @@ export function DocumentCanvas({
                 highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                 injectedByWriter={injectedByLabel.get(sectionLabel) ?? null}
                 hasRemotePresence={false}
+                hasUnpublishedChanges={changedFragmentKeys?.has(fk) ?? false}
                 dragOverFragmentKey={dragOverFragmentKey}
                 transferService={transferService}
                 proposalMode={proposalMode}

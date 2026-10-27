@@ -49,7 +49,7 @@ import {
 import { useDocumentSessionController } from "../hooks/useDocumentSessionController";
 import { useEditorWindowEviction } from "../hooks/useEditorRegistry";
 import { useLiveSectionReplica } from "../hooks/useLiveSectionReplica";
-import type { LiveEditorBinding } from "../services/live-section-replica";
+import type { ClaimedSection, LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
   syntheticBeforeFirstHeadingSeed,
@@ -93,6 +93,8 @@ import {
   type EditPipe,
 } from "../status/live-document-session";
 import type { CrdtConnectionState } from "../services/crdt-provider";
+
+const NO_CLAIMED_SECTIONS: readonly ClaimedSection[] = [];
 
 function topbarConnectionState(pipe: EditPipe): CrdtConnectionState {
   switch (pipe.phase) {
@@ -546,9 +548,16 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
     publishPaused,
     forcePublish,
   });
+  const claimedSections = boundProposalId
+    ? (liveReplica.replica?.getClaimedSections() ?? NO_CLAIMED_SECTIONS)
+    : NO_CLAIMED_SECTIONS;
   const unpublishedHistoryRow = boundProposalId
-    ? buildUnpublishedHistoryRow(boundProposalId, liveReplica.replica?.getClaimedSections() ?? [])
+    ? buildUnpublishedHistoryRow(boundProposalId, claimedSections)
     : null;
+  const changedFragmentKeys = useMemo(
+    () => new Set(claimedSections.flatMap((claim) => (claim.fragmentKey ? [claim.fragmentKey] : []))),
+    [claimedSections],
+  );
   // One session-authorship ledger per editing mount (see DocumentPage): dies on
   // unmount/refresh so stranded work reads as inbound. Handed down only as the
   // two segregated ports.
@@ -955,21 +964,6 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
               </div>
             ) : null}
 
-            {/* Shared-draft banner — only when a live inprogress proposal is
-                bound to this document (FP11). */}
-            {boundProposalId ? (
-              <div className="mb-4">
-                <SharedDraftBanner
-                  changedSectionCount={changedSectionCount}
-                  activelyEditedCount={activelyEditedCount}
-                  forcePublishing={forcePublishing}
-                  pauseActive={publishPaused}
-                  lastOutcome={forcePublishOutcome}
-                  onForcePublish={forcePublish}
-                />
-              </div>
-            ) : null}
-
             {/* Recently changed sections */}
             {recentlyChangedSections.length > 0 ? (
               <div className="flex flex-wrap gap-1.5 mb-4">
@@ -1101,6 +1095,7 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
                       highlightLabel={recentlyChangedByLabel.has(sectionLabel) ? sectionLabel : null}
                       injectedByWriter={null}
                       hasRemotePresence={false}
+                      hasUnpublishedChanges={changedFragmentKeys.has(fk)}
                       dragOverFragmentKey={dragOverFragmentKey}
                       transferService={transferServiceRef.current}
                       proposalMode={proposalMode}
@@ -1151,6 +1146,18 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
         transportError={liveReplica.transportError}
         loadDurationMs={loadDurationMs}
       />
+
+      {/* Shared-draft publish bar — floats over the bottom of the view only
+          while a live inprogress proposal is bound to this document (FP11). */}
+      {boundProposalId ? (
+        <SharedDraftBanner
+          changedSectionCount={changedSectionCount}
+          forcePublishing={forcePublishing}
+          pauseActive={publishPaused}
+          lastOutcome={forcePublishOutcome}
+          onForcePublish={forcePublish}
+        />
+      ) : null}
 
       {/* Proposal floating panel */}
       <ProposalPanel

@@ -1,13 +1,18 @@
 /**
- * Unit tests for the y-prosemirror attach-time echo guard: while armed, every
- * editor→fragment write is dropped. Disarm only from a real local edit
- * (`beforeinput`) or an explicit caller disarm.
+ * Attach echo guard.
+ *
+ * A document whose markdown differs from the fragment is written through
+ * while the latch is still shut, and a later change is written too.
+ * Markdown that matches the fragment is not written.
  */
 
 import { describe, it, expect } from "vitest";
+import * as Y from "yjs";
+import { updateYFragment } from "y-prosemirror";
 import { markdownToProseMirrorNode, type ProseMirrorNode } from "@ks/milkdown-serializer";
 import { installAttachEchoGuard } from "../../services/ysync-attach-echo-guard";
 
+const FRAGMENT_KEY = "section::overview";
 const FRAGMENT_MARKDOWN = "## Overview\n\nsome body text.";
 
 interface FakeBinding {
@@ -25,20 +30,50 @@ function buildFakeBinding(): FakeBinding {
   };
 }
 
-describe("installAttachEchoGuard", () => {
-  it("drops every editor→fragment write while armed", () => {
-    const binding = buildFakeBinding();
-    installAttachEchoGuard({ binding });
+function seededFragment(): { doc: Y.Doc; node: ProseMirrorNode } {
+  const doc = new Y.Doc();
+  const node = markdownToProseMirrorNode(FRAGMENT_MARKDOWN);
+  const fragment = doc.getXmlFragment(FRAGMENT_KEY);
+  doc.transact(() => {
+    updateYFragment(doc, fragment, node, { mapping: new Map(), isOMark: new Map() });
+  });
+  return { doc, node };
+}
 
-    binding._prosemirrorChanged(markdownToProseMirrorNode(FRAGMENT_MARKDOWN));
-    binding._prosemirrorChanged(markdownToProseMirrorNode("## Overview\n\nedited."));
+function install(
+  binding: FakeBinding,
+  doc: Y.Doc,
+): () => void {
+  return installAttachEchoGuard({ binding }, doc, FRAGMENT_KEY);
+}
+
+describe("installAttachEchoGuard", () => {
+  it("writes a changed document through while the latch is shut, then the next change too", () => {
+    const { doc } = seededFragment();
+    const binding = buildFakeBinding();
+    install(binding, doc);
+
+    const edited = markdownToProseMirrorNode("## Overview\n\nedited.");
+    const editedAgain = markdownToProseMirrorNode("## Overview\n\nedited again.");
+    binding._prosemirrorChanged(edited);
+    binding._prosemirrorChanged(editedAgain);
+
+    expect(binding.writes).toEqual([edited, editedAgain]);
+  });
+
+  it("does not write markdown that matches the fragment", () => {
+    const { doc, node } = seededFragment();
+    const binding = buildFakeBinding();
+    install(binding, doc);
+
+    binding._prosemirrorChanged(node);
 
     expect(binding.writes).toHaveLength(0);
   });
 
   it("writes through after an explicit disarm", () => {
     const binding = buildFakeBinding();
-    const disarm = installAttachEchoGuard({ binding });
+    const disarm = installAttachEchoGuard({ binding }, new Y.Doc(), FRAGMENT_KEY);
 
     disarm();
     const renderedDoc = markdownToProseMirrorNode(FRAGMENT_MARKDOWN);
@@ -48,7 +83,7 @@ describe("installAttachEchoGuard", () => {
   });
 
   it("is a no-op installer when the plugin state has no binding", () => {
-    const disarm = installAttachEchoGuard(null);
+    const disarm = installAttachEchoGuard(null, new Y.Doc(), FRAGMENT_KEY);
     expect(typeof disarm).toBe("function");
     disarm();
   });

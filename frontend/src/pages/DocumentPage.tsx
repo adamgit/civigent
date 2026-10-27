@@ -76,7 +76,7 @@ import {
   type AgentSectionRead,
 } from "../components/DocumentAgentReadNotes";
 import { apiClient, resolveWriterId, CanonicalWriteFailedError } from "../services/api-client";
-import type { LiveEditorBinding } from "../services/live-section-replica";
+import type { ClaimedSection, LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
   syntheticBeforeFirstHeadingSeed,
@@ -107,6 +107,8 @@ import {
 } from "../status/live-document-session";
 import type { CrdtConnectionState } from "../services/crdt-provider";
 import { DocPath, HeadingLevel } from "../types/shared";
+
+const NO_CLAIMED_SECTIONS: readonly ClaimedSection[] = [];
 
 function topbarConnectionState(pipe: EditPipe): CrdtConnectionState {
   switch (pipe.phase) {
@@ -281,10 +283,17 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     : null;
   const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
   const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
+  const claimedSections = boundProposalId
+    ? (liveReplica.replica?.getClaimedSections() ?? NO_CLAIMED_SECTIONS)
+    : NO_CLAIMED_SECTIONS;
   // Unpublished-history row built from the ordered live proposal snapshot (FP15).
   const unpublishedHistoryRow = boundProposalId
-    ? buildUnpublishedHistoryRow(boundProposalId, liveReplica.replica?.getClaimedSections() ?? [])
+    ? buildUnpublishedHistoryRow(boundProposalId, claimedSections)
     : null;
+  const changedFragmentKeys = useMemo(
+    () => new Set(claimedSections.flatMap((claim) => (claim.fragmentKey ? [claim.fragmentKey] : []))),
+    [claimedSections],
+  );
 
   const getLiveBinding = useCallback(
     (fragmentKey: string): LiveEditorBinding | undefined => {
@@ -1263,22 +1272,6 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
                 </div>
               ) : null}
 
-              {/* Shared-draft banner — only when a live inprogress proposal is
-                  bound to this document (FP7). Retained across an aborted/failed
-                  force-publish while the proposal stays in progress. */}
-              {layoutMode === "wide" && boundProposalId ? (
-                <div className="mb-4">
-                  <SharedDraftBanner
-                    changedSectionCount={changedSectionCount}
-                    activelyEditedCount={activelyEditedCount}
-                    forcePublishing={forcePublishing}
-                    pauseActive={publishPaused}
-                    lastOutcome={forcePublishOutcome}
-                    onForcePublish={forcePublish}
-                  />
-                </div>
-              ) : null}
-
               {/* Recently changed sections */}
               {recentlyChangedSections.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5 mb-4">
@@ -1377,6 +1370,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
             getActiveEditors={getActiveEditors}
             publishDecision={publishDecision}
             sectionUncommitted={sectionUncommitted}
+            changedFragmentKeys={changedFragmentKeys}
             localEditSink={localEditSink}
             mouseDownPosRef={mouseDownPosRef}
             onStartEditing={handleActivateRow}
@@ -1412,6 +1406,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           items={navItems}
           editingFragmentKey={navEditingFragmentKey}
           visibilityByFragmentKey={navVisibilityByFragmentKey}
+          changedFragmentKeys={changedFragmentKeys}
           onNavigate={handleNavigateToSection}
           onNavigateToTop={handleNavigateToTop}
           anchorRef={paperRef}
@@ -1423,6 +1418,7 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
           items={navItems}
           editingFragmentKey={navEditingFragmentKey}
           visibilityByFragmentKey={navVisibilityByFragmentKey}
+          changedFragmentKeys={changedFragmentKeys}
           onNavigate={(fragmentKey) => {
             handleNavigateToSection(fragmentKey);
             setSectionNavOverlayOpen(false);
@@ -1443,6 +1439,20 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
         transportError={liveReplica.transportError}
         loadDurationMs={loadDurationMs}
       />
+
+      {/* Shared-draft publish bar — floats over the bottom of the view only
+          while a live inprogress proposal is bound to this document (FP7).
+          Retained across an aborted/failed force-publish while the proposal
+          stays in progress. */}
+      {layoutMode === "wide" && boundProposalId ? (
+        <SharedDraftBanner
+          changedSectionCount={changedSectionCount}
+          forcePublishing={forcePublishing}
+          pauseActive={publishPaused}
+          lastOutcome={forcePublishOutcome}
+          onForcePublish={forcePublish}
+        />
+      ) : null}
 
       {/* Proposal floating panel (wide only) */}
       {layoutMode === "wide" ? (

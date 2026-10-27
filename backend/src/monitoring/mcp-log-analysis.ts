@@ -12,6 +12,7 @@ import type {
   McpLogReadPattern,
   McpLogReadPatternKind,
   McpLogToolCount,
+  McpLogVersionGroup,
   McpLogWriteOutcome,
   McpLogWriteOutcomeKind,
   RunAdminMcpLogAnalysisResponse,
@@ -415,6 +416,64 @@ function emptyReadCounts(): Map<McpLogReadPatternKind, number> {
   return new Map(READ_PATTERN_KINDS.map((kind) => [kind, 0]));
 }
 
+function versionBucket<T>(byVersion: Map<string, Map<string, T>>, version: string): Map<string, T> {
+  let bucket = byVersion.get(version);
+  if (!bucket) {
+    bucket = new Map();
+    byVersion.set(version, bucket);
+  }
+  return bucket;
+}
+
+/** Dotted numeric stamps only (`3`, `3.17`, `3.17.6`). `"dev"` and `"unknown"` are not stamps. */
+function numericVersion(version: string): number[] | null {
+  if (!/^\d+(?:\.\d+)*$/.test(version)) return null;
+  return version.split(".").map(Number);
+}
+
+/**
+ * Newest first.
+ * `"dev"` is the unstamped running process and comes first.
+ * Numbered build-info stamps follow, high to low.
+ * `"unknown"` is a pre-stamp line and comes last.
+ */
+function compareAppVersionNewestFirst(a: string, b: string): number {
+  const rank = (version: string): number => {
+    if (version === "dev") return 0;
+    if (numericVersion(version)) return 1;
+    if (version === "unknown") return 3;
+    return 2;
+  };
+  const byRank = rank(a) - rank(b);
+  if (byRank !== 0) return byRank;
+  const pa = numericVersion(a);
+  const pb = numericVersion(b);
+  if (pa && pb) {
+    const n = Math.max(pa.length, pb.length);
+    for (let i = 0; i < n; i++) {
+      const da = pa[i] ?? 0;
+      const db = pb[i] ?? 0;
+      if (da !== db) return db - da;
+    }
+  }
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function groupsNewestFirst<TIn, TOut>(
+  byVersion: Map<string, Map<string, TIn>>,
+  finalize: (bucket: Map<string, TIn>) => TOut[],
+): McpLogVersionGroup<TOut>[] {
+  return [...byVersion.entries()]
+    .filter(([, bucket]) => bucket.size > 0)
+    .sort(([a], [b]) => compareAppVersionNewestFirst(a, b))
+    .map(([app_version, bucket]) => ({
+      app_version,
+      rows: finalize(bucket),
+    }));
+}
+
 export async function runMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisResponse> {
   const started = Date.now();
 
@@ -423,6 +482,8 @@ export async function runMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisRespons
   const oneToolAcc = new Map<string, McpLogOneToolSession>();
   const errorAcc = new Map<string, ErrorCohortBuilder>();
   const argShapeAcc = new Map<string, McpLogArgShapeCohort>();
+  const errorsByVersion = new Map<string, Map<string, ErrorCohortBuilder>>();
+  const argShapesByVersion = new Map<string, Map<string, McpLogArgShapeCohort>>();
   const toolCountAcc = new Map<string, ToolCountBuilder>();
   let sessionCount = 0;
 
@@ -431,7 +492,9 @@ export async function runMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisRespons
     foldLabeledOutcomes(writeAcc, readAcc, session);
     foldOneToolSessions(oneToolAcc, session);
     foldErrors(errorAcc, session);
+    foldErrors(versionBucket(errorsByVersion, session.app_version), session);
     foldArgShape(argShapeAcc, session);
+    foldArgShape(versionBucket(argShapesByVersion, session.app_version), session);
     foldToolCounts(toolCountAcc, session);
   });
 
@@ -449,7 +512,13 @@ export async function runMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisRespons
   const errors = [...errorAcc.values()]
     .map(finalizeErrorCohort)
     .sort((a, b) => b.instance_count - a.instance_count);
+  const errorsByVersionGroups = groupsNewestFirst(errorsByVersion, (bucket) =>
+    [...bucket.values()].map(finalizeErrorCohort).sort((a, b) => b.instance_count - a.instance_count),
+  );
   const argShapes = [...argShapeAcc.values()].sort((a, b) => b.instance_count - a.instance_count);
+  const argShapesByVersionGroups = groupsNewestFirst(argShapesByVersion, (bucket) =>
+    [...bucket.values()].sort((a, b) => b.instance_count - a.instance_count),
+  );
   const toolCounts = [...toolCountAcc.values()]
     .map(finalizeToolCount)
     .sort((a, b) => b.count - a.count);
@@ -462,7 +531,9 @@ export async function runMcpLogAnalysis(): Promise<RunAdminMcpLogAnalysisRespons
     read_patterns,
     one_tool_sessions,
     errors,
+    errors_by_version: errorsByVersionGroups,
     arg_shapes: argShapes,
+    arg_shapes_by_version: argShapesByVersionGroups,
     tool_counts: toolCounts,
     log_file: logFile,
   };
