@@ -46,6 +46,7 @@ import { crossSectionNavigationPlugin } from "./crossSectionNavigationPlugin";
 import { emptyHeadingKeyPlugin } from "./emptyHeadingKeyPlugin";
 import { crossSectionHighlightPlugin } from "./crossSectionSelection";
 import { editorSessionCommandsPlugin } from "./editorSessionCommandsPlugin";
+import { SectionAltJump } from "./SectionAltJump";
 import { documentBoundaryPlugin } from "./documentBoundaryPlugin";
 import { caretScrollClearancePlugin } from "./caretScrollClearancePlugin";
 import { selectionAtSectionEdge, selectionOnSectionLine, type SectionArrowExit } from "./sectionEdge";
@@ -54,7 +55,7 @@ import { trailingParagraphPolicy } from "./trailingParagraphPolicy";
 import { listGutterSwipePlugin } from "./listGutterSwipePlugin";
 import { useEditorSessionCommands } from "../contexts/EditorSessionCommandsContext";
 import { EditorLifecycleController } from "../services/editor-lifecycle";
-import { installAttachEchoGuard } from "../services/ysync-attach-echo-guard";
+import { localEditTrackerPlugin, writeOnlyLocalEditsToFragment } from "../services/local-edit-gate";
 import { FirstSyncReadyLatch } from "../services/first-sync-ready-latch";
 import { installLinkPicker } from "./link-picker/install-link-picker";
 import { installLinkHrefBridge } from "./install-link-href-bridge";
@@ -129,8 +130,8 @@ export interface MilkdownEditorCommonProps {
   onCrossSectionDrop?: (transfer: SectionTransfer) => void;
   /** Called on a GENUINE local edit to the bound fragment (this session's own
    *  typing, paste, cut, Backspace, heading change). Sourced from ProseMirror
-   *  transactions that change the document and are not a y-sync remote or
-   *  attach render (`isChangeOrigin`). CRDT mode only. */
+   *  transactions that change the document and whose root is not a y-sync
+   *  render (`isChangeOrigin`). CRDT mode only. */
   onLocalEdit?: () => void;
   /** Called when the editor is fully initialized and has content (safe to display). */
   onReady?: () => void;
@@ -208,10 +209,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   const controllerRef = useRef<EditorLifecycleController | null>(null);
   const deferredFocusRef = useRef<{ position: "start" | "end"; column: number | null } | null>(null);
   const headingPathRef = useRef<string[]>([]);
-  // Cleanup for the native `beforeinput` listener that opens the attach-echo
-  // latch. Held so it can be removed on CRDT-detach and on unmount, so a leaked
-  // listener never fires against a destroyed component.
-  const localEditListenerCleanupRef = useRef<(() => void) | null>(null);
   // First-sync readiness latch + its empty-fragment fallback rAF. Held so detach
   // / unmount during the post-attach await window can cancel both and never mark
   // a torn-down editor ready.
@@ -334,21 +331,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     const awareness = replicaStore.awareness;
     const color = userColor ?? pickColor(userName);
 
-    // beforeinput only opens the attach-echo latch. It does not record
-    // authorship. An IME composition whose markdown is briefly identical
-    // cannot get stuck behind the comparison.
-    teardownLocalEditObserver();
-    const editorDom = view.dom;
-    let disarmEchoGuard: () => void = () => {};
-    const localEditHandler = (): void => {
-      disarmEchoGuard();
-    };
-    editorDom.addEventListener("beforeinput", localEditHandler);
-    localEditListenerCleanupRef.current = () => {
-      editorDom.removeEventListener("beforeinput", localEditHandler);
-      localEditListenerCleanupRef.current = null;
-    };
-
     // Readiness must wait until ySync has actually rendered this fragment's
     // content into the editor — y-prosemirror populates on a DEFERRED dispatch,
     // so flipping `isReady` at attach time exposes an empty editor for one frame
@@ -373,37 +355,17 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
       },
     });
 
-    // Authorship listens to ProseMirror transactions, not beforeinput. A
-    // document-changing transaction that is not a y-sync remote or attach
-    // render (`isChangeOrigin`) is a local edit. Attach render and a later
-    // server paint are isChangeOrigin, so opening the editor does not count.
-    const localEditAuthorship = new Plugin({
-      appendTransaction(trs) {
-        for (const tr of trs) {
-          if (!tr.docChanged) continue;
-          if (tr.getMeta(ySyncPluginKey)?.isChangeOrigin) continue;
-          onLocalEditRef.current?.();
-          break;
-        }
-        return null;
-      },
-    });
-
     const newState = view.state.reconfigure({
       plugins: [
         ...view.state.plugins,
+        localEditTrackerPlugin(() => onLocalEditRef.current?.()),
         ySyncPlugin(yXmlFragment),
         yCursorPlugin(awareness, { cursorBuilder: buildCollabCursor }),
         yUndoPlugin(),
         firstSyncDetector,
-        localEditAuthorship,
       ],
     });
-    disarmEchoGuard = installAttachEchoGuard(
-      ySyncPluginKey.getState(newState),
-      replicaStore.doc,
-      fk,
-    );
+    writeOnlyLocalEditsToFragment(ySyncPluginKey.getState(newState), () => view.state);
     view.updateState(newState);
 
     awareness.setLocalStateField("user", {
@@ -428,10 +390,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     }
   }
 
-  function teardownLocalEditObserver(): void {
-    localEditListenerCleanupRef.current?.();
-  }
-
   /** Cancel a pending first-sync readiness latch + its fallback rAF (so neither
    *  marks a detached/unmounted editor ready). */
   function teardownFirstSyncLatch(): void {
@@ -444,7 +402,6 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
   }
 
   function detachCrdt(ctrl: EditorLifecycleController): void {
-    teardownLocalEditObserver();
     teardownFirstSyncLatch();
     const crepe = ctrl.getCrepe();
     if (!crepe || !ctrl.crdtAttached) return;
@@ -523,6 +480,7 @@ export const MilkdownEditor = forwardRef(function MilkdownEditor(
     // ── Host/session command chords ─────────────────────
 
     crepe.editor.use(editorSessionCommandsPlugin({ commandsRef: editorSessionCommandsRef }));
+    crepe.editor.use(SectionAltJump.plugin({ commandsRef: editorSessionCommandsRef }));
 
     // ── Touch list nesting ──────────────────────────────
 

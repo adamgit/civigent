@@ -62,6 +62,7 @@ import {
   EditorSessionCommandsProvider,
   useEditorSessionCommandsValue,
 } from "../contexts/EditorSessionCommandsContext";
+import { SectionAltJump, type SectionAltJumpHost } from "../components/SectionAltJump";
 import { DocumentPaperHeader } from "../components/DocumentPaperHeader";
 import type { DocumentAction } from "../components/DocumentActions";
 import { ShareTargetDialog } from "../components/ShareTargetDialog";
@@ -684,11 +685,29 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
 
   const publishPaused = liveReplica.publishPaused;
   const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(docPath);
+  const sectionAltJumpHostRef = useRef<SectionAltJumpHost | null>(null);
+  const sectionAltJump = useMemo(() => new SectionAltJump(sectionAltJumpHostRef), []);
+  sectionAltJumpHostRef.current = {
+    sections: () => sectionsRef.current,
+    canFocus: (section) => canFocusSection(section),
+    getHandle: (fragmentKey) => editorRefs.current.get(fragmentKey) ?? null,
+    proposalMode: () => proposalMode,
+    focusLive: (section) => liveReplica.focusSection(section.id),
+    focusProposal: (section) => {
+      const rows = sectionsRef.current;
+      const idx = rows.findIndex((row) => SectionId.equals(row.id, section.id));
+      if (idx < 0) return;
+      pendingCaretTargetRef.current = null;
+      setBootstrapFocusedSectionIndex(idx);
+      publishViewingSection(SectionId.text(section.id));
+    },
+  };
   const editorSessionCommands = useEditorSessionCommandsValue({
     boundProposalId,
     forcePublishing,
     publishPaused,
     forcePublish,
+    jumpSection: sectionAltJump.jump,
   });
   const authorshipLedger = useMemo(() => new EphemeralSessionAuthorshipLedger(), []);
   const localEditSink: LocalEditOriginSink = authorshipLedger;

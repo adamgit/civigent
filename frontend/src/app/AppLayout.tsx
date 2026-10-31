@@ -17,6 +17,7 @@ import type { DocumentTreeEntry, AuthUser, ImpairmentReport } from "../types/sha
 import { DocsLocation, docHref, folderHref } from "./docs-location";
 import { formatBuildDate, readSidebarAutoHide, writeSidebarAutoHide, classifyWsEvent } from "./app-layout-utils";
 import { recordWsDiag } from "../services/ws-diagnostics";
+import { ensurePageWsLifecycleInstalled, subscribePageWsWake } from "../services/page-ws-lifecycle";
 import { computeBrowserTabTitle } from "./browser-tab-title";
 import { DocPath, FolderPath } from "../types/shared";
 import { SINGLE_USER_MODE_EXPLAINER } from "../single-user-mode";
@@ -34,6 +35,22 @@ function flattenTreeDocPaths(entries: DocumentTreeEntry[]): string[] {
 }
 
 const TREE_ROW_FLASH_DURATION_MS = 2800;
+const TREE_REFRESH_DEBOUNCE_MS = 100;
+const TREE_LEASE_GAP_MS = 7000;
+const TREE_HEARTBEAT_MS = 1500;
+
+interface TreeLoadWaiter {
+  ticket: number;
+  resolve: () => void;
+}
+
+interface TreeLoadSlot {
+  running: boolean;
+  askSeq: number;
+  completedThrough: number;
+  waiters: TreeLoadWaiter[];
+  hasAppliedOnce: boolean;
+}
 
 type TreeRowFlashKind = "human" | "agent";
 
@@ -261,65 +278,153 @@ export function AppLayout() {
 
   const previousTreePathsRef = useRef<string[] | null>(null);
   const pendingCatalogFlashWriterTypeRef = useRef<string | undefined | null>(null);
+  const treeLoadSlotRef = useRef<TreeLoadSlot>({
+    running: false,
+    askSeq: 0,
+    completedThrough: 0,
+    waiters: [],
+    hasAppliedOnce: false,
+  });
+  const treeStaleRef = useRef(false);
+  const lastTickRef = useRef(Date.now());
+  const refreshTimerRef = useRef<number | null>(null);
 
   const loadTree = useCallback((options?: { background?: boolean }) => {
-    if (options?.background) {
-      setSyncingTree(true);
-    } else {
-      setLoadingTree(true);
-      setTreeError(null);
-    }
-    const startedAt = performance.now();
-    recordWsDiag({
-      source: "tree-fetch",
-      type: "getDocumentsTree",
-      summary: options?.background ? "background refresh" : "initial/foreground load",
-      payload: { background: !!options?.background },
-    });
-    return apiClient
-      .getWorkspaceTree()
-      .then((response) => {
-        setEntries(response.tree);
-        setTreeError(null);
-        const nextPaths = flattenTreeDocPaths(response.tree);
-        const previousPaths = previousTreePathsRef.current;
-        const previousSet = new Set(previousPaths ?? []);
-        const nextSet = new Set(nextPaths);
-        const added = previousPaths === null ? [] : nextPaths.filter((p) => !previousSet.has(p));
-        const removed = previousPaths === null ? [] : previousPaths.filter((p) => !nextSet.has(p));
-        previousTreePathsRef.current = nextPaths;
-        if (options?.background && pendingCatalogFlashWriterTypeRef.current !== null) {
-          queueTreeRowFlashes(added, pendingCatalogFlashWriterTypeRef.current);
-          pendingCatalogFlashWriterTypeRef.current = null;
+    const slot = treeLoadSlotRef.current;
+    const ticket = ++slot.askSeq;
+    const startBackground = options?.background === true;
+
+    const waitForTicket = () =>
+      new Promise<void>((resolve) => {
+        if (ticket <= slot.completedThrough) {
+          resolve();
+          return;
         }
-        const durationMs = Math.round(performance.now() - startedAt);
-        recordWsDiag({
-          source: "tree-fetch-result",
-          type: "getDocumentsTree",
-          summary: `total=${nextPaths.length} +${added.length} -${removed.length} in ${durationMs}ms`,
-          payload: { total: nextPaths.length, added, removed, durationMs },
-        });
-      })
-      .catch((err) => {
-        if (err instanceof SystemStartingError) return;
-        if (!options?.background) {
-          setTreeError(err instanceof Error ? err.message : String(err));
-        }
-        recordWsDiag({
-          source: "tree-fetch-result",
-          type: "getDocumentsTree",
-          summary: `error: ${err instanceof Error ? err.message : String(err)}`,
-          payload: { error: err instanceof Error ? err.message : String(err) },
-        });
-      })
-      .finally(() => {
-        if (options?.background) {
-          setSyncingTree(false);
-        } else {
-          setLoadingTree(false);
-        }
+        slot.waiters.push({ ticket, resolve });
       });
+
+    const flushWaiters = () => {
+      const pending: TreeLoadWaiter[] = [];
+      for (const waiter of slot.waiters) {
+        if (waiter.ticket <= slot.completedThrough) {
+          waiter.resolve();
+        } else {
+          pending.push(waiter);
+        }
+      }
+      slot.waiters = pending;
+    };
+
+    const runFetch = (background: boolean) => {
+      if (background) {
+        setSyncingTree(true);
+      } else {
+        setLoadingTree(true);
+        setTreeError(null);
+      }
+      const startedAt = performance.now();
+      recordWsDiag({
+        source: "tree-fetch",
+        type: "getDocumentsTree",
+        summary: background ? "background refresh" : "initial/foreground load",
+        payload: { background },
+      });
+      return apiClient
+        .getWorkspaceTree()
+        .then((response) => {
+          setEntries(response.tree);
+          setTreeError(null);
+          treeStaleRef.current = false;
+          const nextPaths = flattenTreeDocPaths(response.tree);
+          const previousPaths = previousTreePathsRef.current;
+          const previousSet = new Set(previousPaths ?? []);
+          const nextSet = new Set(nextPaths);
+          const added = previousPaths === null ? [] : nextPaths.filter((p) => !previousSet.has(p));
+          const removed = previousPaths === null ? [] : previousPaths.filter((p) => !nextSet.has(p));
+          previousTreePathsRef.current = nextPaths;
+          slot.hasAppliedOnce = true;
+          if (background && pendingCatalogFlashWriterTypeRef.current !== null) {
+            queueTreeRowFlashes(added, pendingCatalogFlashWriterTypeRef.current);
+            pendingCatalogFlashWriterTypeRef.current = null;
+          }
+          const durationMs = Math.round(performance.now() - startedAt);
+          recordWsDiag({
+            source: "tree-fetch-result",
+            type: "getDocumentsTree",
+            summary: `total=${nextPaths.length} +${added.length} -${removed.length} in ${durationMs}ms`,
+            payload: { total: nextPaths.length, added, removed, durationMs },
+          });
+        })
+        .catch((err) => {
+          if (err instanceof SystemStartingError) return;
+          treeStaleRef.current = true;
+          if (!background) {
+            setTreeError(err instanceof Error ? err.message : String(err));
+          }
+          recordWsDiag({
+            source: "tree-fetch-result",
+            type: "getDocumentsTree",
+            summary: `error: ${err instanceof Error ? err.message : String(err)}`,
+            payload: { error: err instanceof Error ? err.message : String(err) },
+          });
+        })
+        .finally(() => {
+          if (background) {
+            setSyncingTree(false);
+          } else {
+            setLoadingTree(false);
+          }
+        });
+    };
+
+    const pump = async (firstBackground: boolean) => {
+      let useBackground = firstBackground;
+      try {
+        while (true) {
+          const startedFor = slot.askSeq;
+          if (slot.hasAppliedOnce) {
+            useBackground = true;
+          }
+          await runFetch(useBackground);
+          slot.completedThrough = startedFor;
+          flushWaiters();
+          if (slot.askSeq === startedFor) {
+            break;
+          }
+        }
+      } finally {
+        slot.running = false;
+        if (slot.askSeq > slot.completedThrough) {
+          slot.running = true;
+          void pump(slot.hasAppliedOnce);
+        }
+      }
+    };
+
+    if (!slot.running) {
+      slot.running = true;
+      void pump(startBackground);
+    }
+
+    return waitForTicket();
   }, [queueTreeRowFlashes]);
+
+  const scheduleTreeRefresh = useCallback((reason: string) => {
+    const coalesced = refreshTimerRef.current != null;
+    if (refreshTimerRef.current != null) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    recordWsDiag({
+      source: "tree-refresh-schedule",
+      type: "scheduled",
+      summary: coalesced ? `${reason} (coalesced)` : reason,
+      payload: { reason, coalesced, debounceMs: TREE_REFRESH_DEBOUNCE_MS },
+    });
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
+    }, TREE_REFRESH_DEBOUNCE_MS);
+  }, [loadTree]);
 
   const createDoc = useCallback(async (docPath: DocPath): Promise<void> => {
     await apiClient.createDocument(docPath);
@@ -592,33 +697,84 @@ export function AppLayout() {
     };
   }, [revalidateSession]);
 
-  // Mobile browsers commonly freeze page-scoped connections while backgrounded.
-  // Refresh the tree once when the app is foregrounded; desktop continues to
-  // rely exclusively on its existing live event updates.
+  // Hidden → visible: ask the tree scheduler at once unless this tab kept its
+  // lease and the last GET succeeded. A 2s switch that kept heartbeating is
+  // not a miss. Stamp lastTick after the check so a later heartbeat tick
+  // does not see a pre-show gap and ask again.
   useEffect(() => {
-    if (!window.matchMedia?.("(pointer: coarse)").matches) return;
-
     let wasVisible = document.visibilityState === "visible";
-    let refreshTimer: number | null = null;
-    const scheduleRefresh = () => {
-      if (refreshTimer !== null) return;
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
+    let askTimer: number | null = null;
+    const askSoon = () => {
+      if (askTimer !== null) return;
+      askTimer = window.setTimeout(() => {
+        askTimer = null;
+        scheduleTreeRefresh("visible");
       }, 0);
     };
     const handleVisibilityRefresh = () => {
       const isVisible = document.visibilityState === "visible";
-      if (isVisible && !wasVisible) scheduleRefresh();
+      if (isVisible && !wasVisible) {
+        const now = Date.now();
+        const hadGap = now - lastTickRef.current > TREE_LEASE_GAP_MS;
+        if (hadGap || treeStaleRef.current) {
+          askSoon();
+        }
+        lastTickRef.current = now;
+      }
       wasVisible = isVisible;
     };
 
     document.addEventListener("visibilitychange", handleVisibilityRefresh);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityRefresh);
-      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (askTimer !== null) window.clearTimeout(askTimer);
     };
-  }, [loadTree]);
+  }, [scheduleTreeRefresh]);
+
+  // pageshow / resume after pagehide / freeze. The wake helper already
+  // flushes subscribers on setTimeout(0). Folder/home/skills tabs never
+  // mount a CRDT provider, so AppLayout must install this itself.
+  useEffect(() => {
+    ensurePageWsLifecycleInstalled();
+    return subscribePageWsWake(() => {
+      scheduleTreeRefresh("page-wake");
+      lastTickRef.current = Date.now();
+    });
+  }, [scheduleTreeRefresh]);
+
+  // Retry a failed catch-up only when the network is back. Do not fetch
+  // on every online event.
+  useEffect(() => {
+    const handleOnline = () => {
+      if (!treeStaleRef.current) return;
+      window.setTimeout(() => {
+        scheduleTreeRefresh("online");
+      }, 0);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [scheduleTreeRefresh]);
+
+  // Proof-of-life clock. Does not fetch except when a visible tick sees a
+  // lease gap (wake/show never ran). Check the gap before stamping.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      if (now - lastTickRef.current > TREE_LEASE_GAP_MS && document.visibilityState === "visible") {
+        scheduleTreeRefresh("heartbeat-gap");
+      }
+      lastTickRef.current = now;
+    }, TREE_HEARTBEAT_MS);
+    return () => {
+      window.clearInterval(timer);
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [scheduleTreeRefresh]);
 
   // BroadcastChannel auth-sync for cross-tab coordination
   useEffect(() => {
@@ -686,23 +842,6 @@ export function AppLayout() {
   }, [treeRowFlashes]);
 
   useEffect(() => {
-    let refreshTimer: number | null = null;
-    const scheduleTreeRefresh = (reason: string) => {
-      const coalesced = refreshTimer != null;
-      if (refreshTimer != null) {
-        window.clearTimeout(refreshTimer);
-      }
-      recordWsDiag({
-        source: "tree-refresh-schedule",
-        type: "scheduled",
-        summary: coalesced ? `${reason} (coalesced)` : reason,
-        payload: { reason, coalesced, debounceMs: 180 },
-      });
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        loadTree({ background: true }).catch(() => { /* non-fatal refresh */ });
-      }, 180);
-    };
     wsClient.onEvent((event) => {
       // System-scoped fatal — applies in BOTH dev and prod builds and takes
       // precedence over everything else. Under KS_FATAL_ERRORS_MODE=report
@@ -786,12 +925,9 @@ export function AppLayout() {
     });
     wsClient.connect();
     return () => {
-      if (refreshTimer != null) {
-        window.clearTimeout(refreshTimer);
-      }
       wsClient.disconnect();
     };
-  }, [wsClient]);
+  }, [scheduleTreeRefresh, wsClient]);
 
   const flashDocKinds = useMemo(
     () => new Map(Array.from(treeRowFlashes.entries(), ([docPath, entry]) => [docPath, entry.kind])),

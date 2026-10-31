@@ -76,6 +76,7 @@ import {
   EditorSessionCommandsProvider,
   useEditorSessionCommandsValue,
 } from "../contexts/EditorSessionCommandsContext";
+import { SectionAltJump, type SectionAltJumpHost } from "../components/SectionAltJump";
 import { useDocSaveStatusInputs } from "../hooks/useDocSaveStatusInputs";
 import { resolveTransportStatus } from "../services/section-save-state";
 import {
@@ -542,11 +543,29 @@ export function GovernanceDocumentPage({ docPath, toolbarAccessory }: Governance
   const changedSectionCount = liveReplica.replica?.getChangedSectionCount() ?? 0;
   const activelyEditedCount = liveReplica.replica?.getActivelyEditedSectionKeys().length ?? 0;
   const { forcePublishing, lastOutcome: forcePublishOutcome, forcePublish } = useForcePublish(docPath);
+  const sectionAltJumpHostRef = useRef<SectionAltJumpHost | null>(null);
+  const sectionAltJump = useMemo(() => new SectionAltJump(sectionAltJumpHostRef), []);
+  sectionAltJumpHostRef.current = {
+    sections: () => sectionsRef.current,
+    canFocus: (section) => canFocusSection(section),
+    getHandle: (fragmentKey) => editorRefs.current.get(fragmentKey) ?? null,
+    proposalMode: () => proposalMode,
+    focusLive: (section) => liveReplica.focusSection(section.id),
+    focusProposal: (section) => {
+      const rows = sectionsRef.current;
+      const idx = rows.findIndex((row) => SectionId.equals(row.id, section.id));
+      if (idx < 0) return;
+      pendingCaretTargetRef.current = null;
+      setBootstrapFocusedSectionIndex(idx);
+      publishViewingSection(SectionId.text(section.id));
+    },
+  };
   const editorSessionCommands = useEditorSessionCommandsValue({
     boundProposalId,
     forcePublishing,
     publishPaused,
     forcePublish,
+    jumpSection: sectionAltJump.jump,
   });
   const claimedSections = boundProposalId
     ? (liveReplica.replica?.getClaimedSections() ?? NO_CLAIMED_SECTIONS)

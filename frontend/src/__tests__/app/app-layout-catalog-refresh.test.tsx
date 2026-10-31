@@ -147,7 +147,7 @@ describe("AppLayout tree refresh on catalog:changed", () => {
       } as WsServerEvent);
     });
 
-    // scheduleTreeRefresh debounces by 180ms; real timers handle the wait.
+    // scheduleTreeRefresh debounces by 100ms; real timers handle the wait.
     await waitFor(
       () => {
         expect(treeFetchCount).toBeGreaterThan(fetchCountBefore);
