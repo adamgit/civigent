@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyStructuralChange,
+  cutLeadingChunk,
+  isStructurallyClean,
   type AuthoritativeSectionIdentity,
   type StructuralChange,
 } from "../../crdt/structural-change.js";
+import { parseDocumentMarkdown } from "../../storage/markdown-sections.js";
 import type { FragmentContent } from "../../storage/section-formatting.js";
 import { HeadingLevel } from "../../types/shared.js";
 
@@ -66,17 +69,20 @@ describe("classifyStructuralChange — single-section variants", () => {
     expect(change.newHeadingLevel).toBe(3);
   });
 
-  it("heading-relocated: matching heading but orphan content before it", () => {
-    const change = classifyStructuralChange(
-      md("orphan preamble that drifted up\n\n## Overview\n\nthe real body"),
-      overview,
-    );
-    expect(change.kind).toBe("heading-relocated");
-    if (change.kind !== "heading-relocated") throw new Error("wrong kind");
-    expect(change.heading).toBe("Overview");
-    expect(change.combinedBody.indexOf("the real body")).toBeLessThan(
-      change.combinedBody.indexOf("orphan preamble"),
-    );
+  it("leading paragraph above a matching heading stays not clean, and the cut remainder is clean", () => {
+    const uncut = md("orphan preamble that drifted up\n\n## Overview\n\nthe real body");
+    expect(isStructurallyClean(parseDocumentMarkdown(uncut), overview)).toBe(false);
+    expect(() => classifyStructuralChange(uncut, overview)).toThrow(/cutLeadingChunk/);
+
+    const cut = cutLeadingChunk(uncut, overview);
+    expect(cut).not.toBeNull();
+    expect(cut!.chunk).toBe("orphan preamble that drifted up");
+    expect(cut!.chunk).not.toContain("the real body");
+
+    const change = classifyStructuralChange(cut!.remainder, overview);
+    expect(change.kind).toBe("clean");
+    expect(cut!.remainder).toContain("the real body");
+    expect(cut!.remainder).not.toContain("orphan preamble");
   });
 
   it("heading-deletion: the heading was removed, leaving orphan body", () => {
@@ -170,19 +176,23 @@ describe("classifyStructuralChange — multi-heading split shapes locate the sur
     expect(split.after?.map((s) => s.heading)).toEqual(["Extra Tail"]);
   });
 
-  it("preamble-plus-split-above: orphan preamble joins the survivor body (body first, preamble after)", () => {
-    const change = classifyStructuralChange(
-      md("stray intro\n\n## Added Above\n\nabove body\n\n## Overview\n\nbase overview body"),
-      overview,
-    );
+  it("leading paragraph above a new heading stays out of the split bodies", () => {
+    const uncut = md("stray intro\n\n## Added Above\n\nabove body\n\n## Overview\n\nbase overview body");
+    expect(isStructurallyClean(parseDocumentMarkdown(uncut), overview)).toBe(false);
+    expect(() => classifyStructuralChange(uncut, overview)).toThrow(/cutLeadingChunk/);
+
+    const cut = cutLeadingChunk(uncut, overview);
+    expect(cut).not.toBeNull();
+    expect(cut!.chunk).toBe("stray intro");
+
+    const change = classifyStructuralChange(cut!.remainder, overview);
     expect(change.kind).toBe("section-split");
     const split = asSplit(change);
     expect(split.before?.map((s) => s.heading)).toEqual(["Added Above"]);
+    expect(split.before?.[0]?.body).toBe("above body");
+    expect(split.before?.[0]?.body).not.toContain("stray intro");
     expect(split.survivor?.heading).toBe("Overview");
-    expect(split.survivor?.body).toContain("base overview body");
-    expect(split.survivor?.body).toContain("stray intro");
-    expect(split.survivor!.body.indexOf("base overview body")).toBeLessThan(
-      split.survivor!.body.indexOf("stray intro"),
-    );
+    expect(split.survivor?.body).toBe("base overview body");
+    expect(split.survivor?.body).not.toContain("stray intro");
   });
 });

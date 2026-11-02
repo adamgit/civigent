@@ -15,6 +15,7 @@ import {
   type ContentEntry,
   type FlatEntry,
   type HeadingRemovalEffect,
+  type HeadingRemovalMergeTarget,
   type ProposalDocumentState,
   type SkeletonNode,
   type StructuralMutationPlan,
@@ -1439,6 +1440,76 @@ export class ProposalShadowContentLayer {
   ): Promise<void> {
     await this.ensureProposalSkeletonForWrite(docPath);
     await writeBodyFile(entry, content);
+  }
+
+  async saveLeadingChunk(
+    docPath: DocPath,
+    headingPath: string[],
+    chunk: SectionBody,
+  ): Promise<HeadingRemovalMergeTarget> {
+    const trimmedChunk = stripLeadingNewlines(chunk);
+    if ((trimmedChunk as string).trim().length === 0) {
+      throw new Error(
+        `saveLeadingChunk called for [${headingPath.join(" > ")}] in ${docPath} with a whitespace-only chunk.`,
+      );
+    }
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const entry = skeleton.requireContentEntryByHeadingPath(headingPath);
+    const predecessor = skeleton.findPreviousBodyHolder(entry.sectionFile);
+
+    if (predecessor) {
+      const existing = bodyFromDisk(
+        await this.requireEffectiveSectionBody(predecessor.absolutePath, docPath, predecessor.sectionFile),
+      );
+      const merged = appendToBody(existing, trimmedChunk);
+      await this.writeOverlayBodyFile(docPath, predecessor, merged as string);
+      let visibleHeading = predecessor.heading;
+      let visibleHeadingLevel = predecessor.headingLevel;
+      if (predecessor.headingPath.length === 0) {
+        visibleHeading = "";
+        visibleHeadingLevel = HeadingLevel.beforeFirstHeading;
+      } else if (predecessor.heading === "") {
+        const owner = skeleton.requireStructuralNodeByHeadingPath(predecessor.headingPath);
+        visibleHeading = owner.heading;
+        visibleHeadingLevel = owner.headingLevel;
+      }
+      return {
+        oldEntry: predecessor,
+        newEntry: predecessor,
+        visibleHeadingPath: [...predecessor.headingPath],
+        visibleHeading,
+        visibleHeadingLevel,
+        wasCreated: false,
+        mergedBody: merged as string,
+      };
+    }
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const bfhEntry = ctx.createBfhAtFront();
+      return {
+        removed: [],
+        added: [bfhEntry],
+        bodyWrites: [{ absolutePath: bfhEntry.absolutePath, content: trimmedChunk as string }],
+        fragmentKeyRemaps: [],
+      } satisfies StructuralMutationPlan;
+    });
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+    const [bfh] = plan.added;
+    return {
+      oldEntry: null,
+      newEntry: bfh,
+      visibleHeadingPath: [],
+      visibleHeading: "",
+      visibleHeadingLevel: HeadingLevel.beforeFirstHeading,
+      wasCreated: true,
+      mergedBody: trimmedChunk as string,
+    };
   }
 
   /**

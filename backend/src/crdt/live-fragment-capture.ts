@@ -1,4 +1,5 @@
-import { classifyStructuralChange, type StructuralChange } from "./structural-change.js";
+import { isStructurallyClean } from "./structural-change.js";
+import { parseDocumentMarkdown } from "../storage/markdown-sections.js";
 import type { LiveSectionLayoutEntry } from "./live-section-layout.js";
 import { bodyFromStructuralAssembly, stripHeadingFromFragment, type FragmentContent } from "../storage/section-formatting.js";
 import type {
@@ -10,7 +11,7 @@ import type {
 export interface CapturedLiveFragment {
   identity: LiveSectionLayoutEntry;
   content: FragmentContent;
-  change: StructuralChange;
+  structurallyClean: boolean;
 }
 
 export function captureLiveFragments(
@@ -22,7 +23,7 @@ export function captureLiveFragments(
     return {
       identity,
       content,
-      change: classifyStructuralChange(content, {
+      structurallyClean: isStructurallyClean(parseDocumentMarkdown(content), {
         headingPath: identity.headingPath,
         heading: identity.heading,
         headingLevel: identity.headingLevel,
@@ -36,8 +37,8 @@ export function partitionCapturedLiveFragments(
 ): LiveSectionsSnapshotResult {
   const materializableBodies: LiveSectionSnapshot[] = [];
   const awaitingStructuralReconciliation: AwaitingStructuralReconciliationSection[] = [];
-  for (const { identity, content, change } of captured) {
-    if (change.kind !== "clean") {
+  for (const { identity, content, structurallyClean } of captured) {
+    if (!structurallyClean) {
       awaitingStructuralReconciliation.push({
         fragmentKey: identity.fragmentKey,
         headingPath: [...identity.headingPath],

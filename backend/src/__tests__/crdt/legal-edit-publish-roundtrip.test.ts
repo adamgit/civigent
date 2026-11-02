@@ -54,6 +54,8 @@ interface RoundtripCase {
   name: string;
   overviewFragment: string;
   expectedDocBlocks: string[];
+  /** Publish already settles once. Set so that publish is the second settle. */
+  settleBeforePublish?: boolean;
 }
 
 const CASES: RoundtripCase[] = [
@@ -82,13 +84,40 @@ const CASES: RoundtripCase[] = [
     ],
   },
   {
-    name: "preamble-relocated: orphan text above the matching heading joins the body",
+    name: "preamble-relocated: text above the matching heading appends to the previous body",
     overviewFragment: "stray intro\n\n## Overview\n\nkept overview body",
+    settleBeforePublish: true,
     expectedDocBlocks: [
       SAMPLE_SECTIONS.preamble,
+      "stray intro",
       "## Overview",
       "kept overview body",
+      "## Timeline",
+      SAMPLE_SECTIONS.timeline,
+    ],
+  },
+  {
+    name: "preamble-plus-rename: text above a renamed heading appends to the previous body",
+    overviewFragment: "stray intro\n\n## Overview Renamed\n\nkept overview body",
+    expectedDocBlocks: [
+      SAMPLE_SECTIONS.preamble,
       "stray intro",
+      "## Overview Renamed",
+      "kept overview body",
+      "## Timeline",
+      SAMPLE_SECTIONS.timeline,
+    ],
+  },
+  {
+    name: "preamble-plus-heading-above: text above a new heading appends to the previous body",
+    overviewFragment: "stray intro\n\n## Added Above\n\nabove body\n\n## Overview\n\nkept overview body",
+    expectedDocBlocks: [
+      SAMPLE_SECTIONS.preamble,
+      "stray intro",
+      "## Added Above",
+      "above body",
+      "## Overview",
+      "kept overview body",
       "## Timeline",
       SAMPLE_SECTIONS.timeline,
     ],
@@ -157,6 +186,9 @@ describe("legal-edit publish round-trip: every accepted shape publishes and asse
       session.liveFragments.replaceFragmentString(OVERVIEW_KEY, c.overviewFragment as FragmentContent);
       session.fragmentLastActivity.set(OVERVIEW_KEY, Date.now());
       await session.generator.materializeEdit({ touchedFragmentKeys: [OVERVIEW_KEY] });
+      if (c.settleBeforePublish) {
+        await session.enqueue(() => normalizeQuiescedStructureForTest(session));
+      }
 
       const outcome = await requestDocSessionPublish(SAMPLE_DOC_PATH);
       await drainLane(session);

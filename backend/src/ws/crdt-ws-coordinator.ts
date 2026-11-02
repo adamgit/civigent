@@ -47,7 +47,8 @@ import {
   type FragmentStringDelta,
 } from "../crdt/live-section-deltas.js";
 import { captureLiveFragments } from "../crdt/live-fragment-capture.js";
-import { EMPTY_FRAGMENT, fragmentFromStructuralAssembly, type FragmentContent } from "../storage/section-formatting.js";
+import { EMPTY_FRAGMENT, fragmentFromStructuralAssembly, appendBodyToFragment, buildFragmentContent, type FragmentContent, type SectionBody } from "../storage/section-formatting.js";
+import { classifyStructuralChange, cutLeadingChunk } from "../crdt/structural-change.js";
 import { validateLiveEditForDuplicateSiblingHeadings } from "../crdt/live-edit-structural-validation.js";
 import {
   computeStructuralSplitPlan,
@@ -59,12 +60,14 @@ import {
   applyStructuralHeadingEditPlan,
   reflectHeadingEditIntoProposal,
   updateFragmentPreservingIdentity,
+  deleteLeadingNodesBeforeFirstHeading,
   type StructuralSplitPlan,
   type HeadingRemovalPlan,
   type StructuralHeadingEditPlan,
 } from "../crdt/structural-appliers.js";
 import { applyBodyMoveToMarkdown } from "../crdt/body-move-markdown.js";
 import { removeProposalHeading } from "../storage/proposal-heading-removal.js";
+import { saveProposalLeadingChunk } from "../storage/proposal-leading-chunk-save.js";
 import { mutateProposalContent } from "../storage/mutate-proposal-content.js";
 import { publishWholesaleToCanonicalDetailed } from "../storage/commit-pipeline.js";
 import { getHeadSha } from "../storage/git-repo.js";
@@ -72,7 +75,7 @@ import { getDataRoot } from "../storage/data-root.js";
 import { resolveLiveSectionLayout, type LiveSectionLayoutEntry } from "../crdt/live-section-layout.js";
 import { buildWireLiveSectionsState } from "../crdt/live-sections-wire-state.js";
 import { buildQuiescencePublishSignals } from "../crdt/publish-trigger-signals.js";
-import { BEFORE_FIRST_HEADING_KEY } from "../crdt/ydoc-fragments.js";
+import { BEFORE_FIRST_HEADING_KEY, fragmentKeyFromSectionFile } from "../crdt/ydoc-fragments.js";
 import { checkProposalLocks } from "../domain/proposal-fsm-locks.js";
 import { emitContentCommittedEventsByDoc, emitSectionEditRejected } from "../api/application/events.js";
 import { LiveSnapshotIdentityInvariantError } from "../crdt/crdt-proposal-generator.js";
@@ -1062,7 +1065,7 @@ onSessionDiscard(cancelQuiescenceTimer);
  * Quiescence-time structural normalization.
  *
  * Applies each fragment's settled structural change (root-split, section-split,
- * heading-rename, heading-level-change, heading-relocated, heading-deletion)
+ * heading-rename, heading-level-change, heading-deletion)
  * into the shared Y.Doc and reflects the corresponding structural op into the
  * `inprogress` proposal. This function assumes the CRDT live-edit acceptance
  * gate already REJECTED any client update whose settled structure would be
@@ -1177,12 +1180,26 @@ async function normalizeQuiescedStructure(
           `left this state; refusing to normalize an untargetable fragment.`,
       );
     }
-    const [{ content, change }] = captureLiveFragments(
-      [identity],
-      (key) => session.liveFragments.readFragmentString(key),
-    );
+    const content = session.liveFragments.readFragmentString(fragmentKey);
+    const cut = cutLeadingChunk(content, identity);
+    const change = classifyStructuralChange(cut ? cut.remainder : content, identity);
 
     try {
+    let leadingChunkTargetKey: string | null = null;
+    if (cut) {
+      leadingChunkTargetKey = await settleLeadingChunk(
+        session,
+        proposalId,
+        fragmentKey,
+        identity.headingPath,
+        cut.chunk,
+        change.kind !== "section-split" && change.kind !== "heading-deletion",
+      );
+      if (leadingChunkTargetKey === null) {
+        return { applied, removedFragments, sessionDiscarded: true };
+      }
+      applied = true;
+    }
     if (change.kind === "root-split" || change.kind === "section-split") {
       await reflectSplitIntoProposal(
         proposalId,
@@ -1193,7 +1210,7 @@ async function normalizeQuiescedStructure(
       // Compute the plan once outside the transaction, matching the merge
       // branch's outside-compute pattern; the retry loop reuses the same plan
       // since the reflected proposal state is stable across attempts.
-      const plan = await computeStructuralSplitPlan(
+      let plan = await computeStructuralSplitPlan(
         session.liveFragments,
         session.liveFragments.ydoc,
         session.docPath,
@@ -1201,7 +1218,21 @@ async function normalizeQuiescedStructure(
         fragmentKey,
         change,
       );
-      if (!plan) continue;
+      if (
+        plan &&
+        leadingChunkTargetKey !== null &&
+        plan.seeds.delete(leadingChunkTargetKey) &&
+        plan.seeds.size === 0 &&
+        !plan.dissolveSurvivorBfh
+      ) {
+        plan = null;
+      }
+      if (!plan) {
+        if (cut && !(await cutLeadingChunkFromLiveSource(session, fragmentKey))) {
+          return { applied, removedFragments, sessionDiscarded: true };
+        }
+        continue;
+      }
       // The proposal reflection above has already run. If the live apply
       // cannot land (fragments kept moving after retry), the primitive throws
       // rather than returning `{ applied: false }`; discard the session so the
@@ -1268,11 +1299,7 @@ async function normalizeQuiescedStructure(
         removedFragments.push({ fragmentKey: plan.dissolvedBfhKey, headingPath: [] });
       }
       applied = true;
-    } else if (
-      change.kind === "heading-rename" ||
-      change.kind === "heading-level-change" ||
-      change.kind === "heading-relocated"
-    ) {
+    } else if (change.kind === "heading-rename" || change.kind === "heading-level-change") {
       const plan = computeStructuralHeadingEditPlan(session.liveFragments, fragmentKey, identity, change);
       const res = await session.generator.normalizeQuiescedSection<StructuralHeadingEditPlan>(
         session.liveFragments.ydoc,
@@ -1282,7 +1309,7 @@ async function normalizeQuiescedStructure(
       );
       if (res.applied) {
         for (const key of plan.affectedKeys) session.dirtyFragmentKeys.add(key);
-        await reflectHeadingEditIntoProposal(proposalId, session.docPath, plan, change.kind);
+        await reflectHeadingEditIntoProposal(proposalId, session.docPath, plan);
       }
       applied = applied || res.applied;
     }
@@ -1297,6 +1324,76 @@ async function normalizeQuiescedStructure(
   }
 
   return { applied, removedFragments, sessionDiscarded: false };
+}
+
+async function settleLeadingChunk(
+  session: DocSession,
+  proposalId: ProposalId,
+  fragmentKey: string,
+  headingPath: readonly string[],
+  chunk: SectionBody,
+  cutsSource: boolean,
+): Promise<string | null> {
+  const target = await saveProposalLeadingChunk(proposalId, session.docPath, [...headingPath], chunk);
+  const mergeTargetKey = fragmentKeyFromSectionFile(
+    target.newEntry.sectionFile,
+    target.visibleHeadingPath.length === 0,
+  );
+  const seedContent = buildFragmentContent(
+    target.mergedBody as SectionBody,
+    target.visibleHeadingLevel,
+    target.visibleHeading,
+  );
+  const liveFragments = session.liveFragments;
+  const ydoc = liveFragments.ydoc;
+  const affectedKeys = [fragmentKey, mergeTargetKey];
+  try {
+    await session.generator.normalizeQuiescedSection<true>(
+      ydoc,
+      affectedKeys,
+      () => true,
+      () => {
+        if (liveFragments.hasFragmentKey(mergeTargetKey)) {
+          if (chunk.trim().length > 0) {
+            updateFragmentPreservingIdentity(
+              ydoc,
+              mergeTargetKey,
+              appendBodyToFragment(liveFragments.readFragmentString(mergeTargetKey), chunk),
+            );
+          }
+        } else {
+          liveFragments.replaceFragmentString(mergeTargetKey, seedContent, SERVER_NORMALIZATION_ORIGIN);
+        }
+        if (cutsSource) deleteLeadingNodesBeforeFirstHeading(ydoc, fragmentKey);
+      },
+    );
+  } catch {
+    await invalidateSessionForReplacement(session.docPath, {
+      message: "document structure was updated during editing",
+    });
+    return null;
+  }
+  for (const key of affectedKeys) session.dirtyFragmentKeys.add(key);
+  return mergeTargetKey;
+}
+
+async function cutLeadingChunkFromLiveSource(session: DocSession, fragmentKey: string): Promise<boolean> {
+  const ydoc = session.liveFragments.ydoc;
+  try {
+    await session.generator.normalizeQuiescedSection<true>(
+      ydoc,
+      [fragmentKey],
+      () => true,
+      () => deleteLeadingNodesBeforeFirstHeading(ydoc, fragmentKey),
+    );
+  } catch {
+    await invalidateSessionForReplacement(session.docPath, {
+      message: "document structure was updated during editing",
+    });
+    return false;
+  }
+  session.dirtyFragmentKeys.add(fragmentKey);
+  return true;
 }
 
 export async function normalizeQuiescedStructureForTest(session: DocSession): Promise<boolean> {
@@ -2023,7 +2120,7 @@ export async function processArbitratedClientUpdate(
         }
         continue;
       }
-      if (captured.identity.headingPath.length === 0 || captured.change.kind === "clean") {
+      if (captured.identity.headingPath.length === 0 || captured.structurallyClean) {
         bodyOnlyKeys.push(fragmentKey);
       } else {
         hasStructuralTransition = true;
@@ -2169,7 +2266,7 @@ export async function moveLiveSection(
       if (!hasActivity && content.trim() === "") continue;
       return settlingRefusal;
     }
-    if (captured.change.kind !== "clean") {
+    if (!captured.structurallyClean) {
       return settlingRefusal;
     }
   }

@@ -90,9 +90,8 @@ export function updateFragmentPreservingIdentity(
 export interface StructuralSplitPlan {
   survivorKey: string;
   /**
-   * Delete survivor children in [0, deleteLeadingUntil): the nodes belonging to
-   * `before` sections (plus any orphan preamble the classification folded into
-   * the survivor body). 0 = nothing leads the survivor's own heading.
+   * Delete survivor children in [0, deleteLeadingUntil): every node before the
+   * survivor's own heading. 0 = nothing leads the survivor's own heading.
    */
   deleteLeadingUntil: number;
   /** Delete survivor children from this index to the end (the moved-out content). */
@@ -141,6 +140,17 @@ function indexOfNthHeading(ydoc: Y.Doc, fragmentKey: string, n: number): number 
     }
   }
   return frag.length;
+}
+
+export function deleteLeadingNodesBeforeFirstHeading(ydoc: Y.Doc, fragmentKey: string): void {
+  const frag = ydoc.getXmlFragment(fragmentKey);
+  const until = indexOfNthHeading(ydoc, fragmentKey, 1);
+  if (until >= frag.length) {
+    throw new Error(
+      `deleteLeadingNodesBeforeFirstHeading: live fragment "${fragmentKey}" has no heading node to keep.`,
+    );
+  }
+  if (until > 0) frag.delete(0, until);
 }
 
 /**
@@ -481,7 +491,7 @@ export async function reflectSplitIntoProposal(
   await unionCurrentProposalSections(proposalId, add);
 }
 
-// ─── RENAME / LEVEL-CHANGE / RELOCATED (heading edits) ────────────
+// ─── RENAME / LEVEL-CHANGE (heading edits) ────────────
 
 /**
  * A precomputed identity-preserving heading edit. The author already typed the
@@ -503,37 +513,20 @@ export interface StructuralHeadingEditPlan {
 }
 
 /**
- * Compute the heading-edit plan for a rename / level-change / relocated change.
+ * Compute the heading-edit plan for a rename / level-change change.
  * Runs OUTSIDE the transaction.
  */
 export function computeStructuralHeadingEditPlan(
   liveFragments: LiveFragmentStringsStore,
   dirtyKey: string,
   identity: { headingPath: readonly string[] },
-  change: Extract<StructuralChange, { kind: "heading-rename" | "heading-level-change" | "heading-relocated" }>,
+  change: Extract<StructuralChange, { kind: "heading-rename" | "heading-level-change" }>,
 ): StructuralHeadingEditPlan {
-  const newHeading = change.kind === "heading-relocated" ? change.heading : change.newHeading;
-  const newHeadingLevel =
-    change.kind === "heading-level-change"
-      ? change.newHeadingLevel
-      : change.kind === "heading-rename"
-        ? change.headingLevel
-        : change.headingLevel;
-
-  // For relocated, the canonical body is heading + combined body. For
-  // rename/level-change, the body is whatever currently follows the heading.
-  let target: FragmentContent;
-  if (change.kind === "heading-relocated") {
-    target = buildFragmentContent(change.combinedBody, newHeadingLevel, newHeading);
-  } else {
-    const current = liveFragments.readFragmentString(dirtyKey);
-    // Strip the (possibly wrong-level / multiple) leading heading lines the parser
-    // already accounted for, by rebuilding from the parsed single section's body.
-    // The simplest correct target is the live content with its heading line
-    // normalized: re-derive body from the live fragment minus its first heading.
-    const body = bodyFromFragmentStrippingLeadingHeading(current);
-    target = buildFragmentContent(body, newHeadingLevel, newHeading);
-  }
+  const newHeading = change.newHeading;
+  const newHeadingLevel = change.kind === "heading-level-change" ? change.newHeadingLevel : change.headingLevel;
+  const current = liveFragments.readFragmentString(dirtyKey);
+  const body = bodyFromFragmentStrippingLeadingHeading(current);
+  const target = buildFragmentContent(body, newHeadingLevel, newHeading);
 
   return {
     fragmentKey: dirtyKey,
@@ -581,28 +574,17 @@ async function effectiveSubtreeHeadingPaths(
 
 /**
  * Reflect a rename / level-change into the proposal (WS-3). A level change is a
- * move to the same parent at a new level; a pure rename is `renameSection`. The
- * relocated case needs no proposal reflection beyond the body rewrite (the
- * heading identity is unchanged), which the live materialize already captured.
+ * move to the same parent at a new level; a pure rename is `renameSection`.
  */
 export async function reflectHeadingEditIntoProposal(
   proposalId: ProposalId,
   docPath: DocPath,
   plan: StructuralHeadingEditPlan,
-  kind: StructuralChange["kind"],
 ): Promise<void> {
   const { ProposalEditor } = await import("../storage/proposal-editor.js");
   const editor = ProposalEditor.open(proposalId, "inprogress");
   const body = bodyFromFragmentStrippingLeadingHeading(plan.target);
   const { unionCurrentProposalSections } = await import("../storage/proposal-repository.js");
-
-  if (kind === "heading-relocated") {
-    await editor.writeSectionBodyVerbatim(docPath, plan.fromHeadingPath, body);
-    await unionCurrentProposalSections(proposalId, [
-      { doc_path: docPath, heading_path: [...plan.fromHeadingPath] },
-    ]);
-    return;
-  }
 
   const newEntry = await editor.retitleSection(docPath, plan.fromHeadingPath, plan.newHeading, plan.newHeadingLevel, body);
   const reKeyed = await effectiveSubtreeHeadingPaths(proposalId, docPath, newEntry.headingPath);

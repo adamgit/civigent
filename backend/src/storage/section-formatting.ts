@@ -225,6 +225,12 @@ export function buildFragmentContent(body: SectionBody, headingLevel: HeadingLev
   return mintFragmentContent(bodyStr.trim() ? `${headingLine}\n\n${bodyStr}` : headingLine);
 }
 
+function indexOfFirstNonBlankLine(lines: readonly string[]): number {
+  let idx = 0;
+  while (idx < lines.length && lines[idx].trim() === "") idx += 1;
+  return idx;
+}
+
 /**
  * Strip the heading line from a fragment, returning just the body.
  * If no heading line matches the expected level, returns the full content as body.
@@ -232,8 +238,9 @@ export function buildFragmentContent(body: SectionBody, headingLevel: HeadingLev
 export function stripHeadingFromFragment(markdown: FragmentContent, headingLevel: HeadingLevel): SectionBody {
   const headingPrefix = "#".repeat(headingLevel) + " ";
   const lines = fragmentContentText(markdown).split("\n");
-  if (lines.length > 0 && lines[0].startsWith(headingPrefix)) {
-    let startIdx = 1;
+  const headingIdx = headingLevel >= 1 ? indexOfFirstNonBlankLine(lines) : 0;
+  if (headingIdx < lines.length && lines[headingIdx].startsWith(headingPrefix)) {
+    let startIdx = headingIdx + 1;
     while (startIdx < lines.length && lines[startIdx].trim() === "") {
       startIdx++;
     }
@@ -252,8 +259,9 @@ export function stripHeadingFromFragment(markdown: FragmentContent, headingLevel
  */
 export function bodyFromFragmentStrippingLeadingHeading(fragment: FragmentContent): SectionBody {
   const lines = fragmentContentText(fragment).split("\n");
-  if (lines.length > 0 && /^#{1,6}\s/.test(lines[0])) {
-    let start = 1;
+  const headingIdx = indexOfFirstNonBlankLine(lines);
+  if (headingIdx < lines.length && /^#{1,6}\s/.test(lines[headingIdx])) {
+    let start = headingIdx + 1;
     while (start < lines.length && lines[start].trim() === "") start += 1;
     return mintSectionBody(trimTrailing(lines.slice(start).join("\n")));
   }
