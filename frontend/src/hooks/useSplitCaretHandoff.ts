@@ -1,6 +1,9 @@
 import { useMemo, useRef } from "react";
 import type { EditorView } from "@milkdown/prose/view";
+import type * as Y from "yjs";
+import { yXmlFragmentToProseMirrorRootNode } from "y-prosemirror";
 import {
+  appendedChunkBodyOffset,
   captureCaretBeforeStructuralApply,
   planCaretAfterSplit,
   sealEditorForCaretTransit,
@@ -15,7 +18,10 @@ export interface SplitCaretHandoffConfig {
   focusedFragmentKey: string | null;
   topology: readonly LiveSectionRef[];
   getView: (fragmentKey: string) => EditorView | null;
-  onRetarget: (plan: Extract<SplitCaretPlan, { action: "follow-promotion" }>) => void;
+  readFragment: (fragmentKey: string) => Y.XmlFragment | null;
+  onRetarget: (
+    plan: Extract<SplitCaretPlan, { action: "follow-promotion" | "follow-predecessor" }>,
+  ) => void;
 }
 
 function survivorIdentityFor(
@@ -61,11 +67,31 @@ export function useSplitCaretHandoff(): UseSplitCaretHandoffReturn {
           nextTopology,
         });
         if (!plan) return;
-        if (plan.action === "follow-promotion") {
-          const sourceView = configRef.current?.getView(capture.sourceFragmentKey);
-          if (sourceView) sealEditorForCaretTransit(sourceView);
-          configRef.current?.onRetarget(plan);
+        if (plan.action !== "follow-promotion" && plan.action !== "follow-predecessor") return;
+        if (plan.action === "follow-predecessor") {
+          const cfg = configRef.current;
+          const sourceView = cfg?.getView(capture.sourceFragmentKey);
+          if (!cfg || !sourceView) return;
+          const sourceFragment = cfg.readFragment(capture.sourceFragmentKey);
+          const predecessorFragment = cfg.readFragment(plan.fragmentKey);
+          if (!sourceFragment || !predecessorFragment) return;
+          let sourceDoc;
+          let predecessorDoc;
+          try {
+            sourceDoc = yXmlFragmentToProseMirrorRootNode(sourceFragment, sourceView.state.schema);
+            predecessorDoc = yXmlFragmentToProseMirrorRootNode(predecessorFragment, sourceView.state.schema);
+          } catch {
+            return;
+          }
+          const offset = appendedChunkBodyOffset(sourceDoc, predecessorDoc, plan.chunk, plan.offset);
+          if (offset === null) return;
+          sealEditorForCaretTransit(sourceView);
+          cfg.onRetarget({ ...plan, offset });
+          return;
         }
+        const sourceView = configRef.current?.getView(capture.sourceFragmentKey);
+        if (sourceView) sealEditorForCaretTransit(sourceView);
+        configRef.current?.onRetarget(plan);
       },
     }),
     [],

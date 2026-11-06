@@ -99,6 +99,20 @@ describe("promoted-address math", () => {
     expect(locateCaretInSplit(survivorDoc, caret, false)).toEqual({ kind: "kept-prefix" });
   });
 
+  it("caret in the paragraph above this section's heading is a leading chunk; a root paragraph stays kept-prefix", () => {
+    const above = doc(para("stray intro"), heading(2, "Overview"), para("kept"));
+    const inParagraph = posInChild(above, 0, "stray".length);
+    expect(locateCaretInSplit(above, inParagraph, false)).toEqual({
+      kind: "leading-chunk",
+      offset: "stray".length,
+      chunk: "stray intro",
+    });
+
+    const root = doc(para("root body"), heading(2, "Added"), para("promoted"));
+    const inRoot = posInChild(root, 0, "root".length);
+    expect(locateCaretInSplit(root, inRoot, true)).toEqual({ kind: "kept-prefix" });
+  });
+
   it("caret in the promoted body → ordinal 0, body slot, offset from the body start", () => {
     const caret = posInChild(survivorDoc, 3, 9);
     expect(locateCaretInSplit(survivorDoc, caret, false)).toEqual({

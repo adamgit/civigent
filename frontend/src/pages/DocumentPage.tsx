@@ -77,7 +77,7 @@ import {
   type AgentSectionRead,
 } from "../components/DocumentAgentReadNotes";
 import { apiClient, resolveWriterId, CanonicalWriteFailedError } from "../services/api-client";
-import type { ClaimedSection, LiveEditorBinding } from "../services/live-section-replica";
+import { unwrapLiveEditorBindingForMilkdown, type ClaimedSection, type LiveEditorBinding } from "../services/live-section-replica";
 import {
   SectionId,
   syntheticBeforeFirstHeadingSeed,
@@ -429,12 +429,29 @@ export function DocumentPage({ docPath, toolbarAccessory }: DocumentPageProps) {
     focusedFragmentKey,
     topology: liveReplica.topology,
     getView: (fk) => editorRefs.current.get(fk)?.getView() ?? null,
-    onRetarget: (plan) =>
+    readFragment: (fk) => {
+      const replica = liveReplica.replica;
+      if (!liveReplica.bound || !replica) return null;
+      const binding = replica.findInTopology(SectionId.brand(fk))?.createEditorBinding();
+      if (!binding) return null;
+      const { doc } = unwrapLiveEditorBindingForMilkdown(binding);
+      if (!doc.share.has(fk)) return null;
+      return doc.getXmlFragment(fk);
+    },
+    onRetarget: (plan) => {
+      if (plan.action === "follow-promotion") {
+        liveReplica.retargetCaret(plan.sectionId, {
+          slot: plan.slot,
+          offset: plan.offset,
+          fingerprint: plan.fingerprint,
+        });
+        return;
+      }
       liveReplica.retargetCaret(plan.sectionId, {
         slot: plan.slot,
         offset: plan.offset,
-        fingerprint: plan.fingerprint,
-      }),
+      });
+    },
   };
 
   const [injectedSections, setInjectedSections] = useState<

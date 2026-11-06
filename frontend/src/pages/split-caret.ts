@@ -13,6 +13,7 @@ const FINGERPRINT_MIN_SEARCH_LENGTH = 6;
 
 export type SplitCaretLocation =
   | { kind: "kept-prefix" }
+  | { kind: "leading-chunk"; offset: number; chunk: string }
   | {
       kind: "promoted";
       headingOrdinal: number;
@@ -45,12 +46,21 @@ export type SplitCaretPlan =
       slot: "heading" | "body";
       offset: number;
       fingerprint: CaretFingerprint;
+    }
+  | {
+      action: "follow-predecessor";
+      sectionId: SectionId;
+      fragmentKey: string;
+      slot: "body";
+      offset: number;
+      chunk: string;
     };
 
 export interface SplitCaretPlacement {
   slot: "heading" | "body";
-  offset: number;
-  fingerprint: CaretFingerprint;
+  offset?: number;
+  fingerprint?: CaretFingerprint;
+  match?: "first" | "last";
 }
 
 export interface SplitSurvivorIdentity {
@@ -60,6 +70,7 @@ export interface SplitSurvivorIdentity {
 
 type OwningSplitRegion =
   | { kind: "kept-prefix" }
+  | { kind: "leading-chunk" }
   | { kind: "promoted"; headingChildIndex: number; headingOrdinal: number };
 
 export interface CaretFrameHooks {
@@ -75,6 +86,55 @@ function posBeforeChild(doc: PmNode, childIndex: number): number {
   let pos = 0;
   for (let i = 0; i < childIndex; i++) pos += doc.child(i).nodeSize;
   return pos;
+}
+
+function firstHeadingChildIndex(doc: PmNode): number | null {
+  for (let i = 0; i < doc.childCount; i++) {
+    if (doc.child(i).type.name === "heading") return i;
+  }
+  return null;
+}
+
+function leadingChunkEnd(doc: PmNode): number {
+  const heading = firstHeadingChildIndex(doc);
+  return heading === null ? doc.content.size : posBeforeChild(doc, heading);
+}
+
+function bodyTextRange(doc: PmNode): { start: number; end: number } {
+  const heading = firstHeadingChildIndex(doc);
+  if (heading === null) {
+    return { start: doc.childCount === 0 ? 0 : posBeforeChild(doc, 0) + 1, end: doc.content.size };
+  }
+  const bodyChild = heading + 1;
+  if (bodyChild >= doc.childCount) {
+    const end = doc.content.size;
+    return { start: end, end };
+  }
+  return { start: posBeforeChild(doc, bodyChild) + 1, end: doc.content.size };
+}
+
+function leadingChunkText(doc: PmNode): string {
+  return doc.textBetween(0, leadingChunkEnd(doc), "\n");
+}
+
+function bodyPlainText(doc: PmNode): string {
+  const range = bodyTextRange(doc);
+  return doc.textBetween(range.start, range.end, "\n");
+}
+
+export function appendedChunkBodyOffset(
+  source: PmNode,
+  predecessor: PmNode,
+  chunk: string,
+  offset: number,
+): number | null {
+  if (chunk.trim().length === 0) return null;
+  if (leadingChunkText(source) === chunk) return null;
+  const bodyText = bodyPlainText(predecessor);
+  if (!bodyText.endsWith(chunk)) return null;
+  const dest = bodyText.length - (chunk.length - offset);
+  if (dest < 0 || dest > bodyText.length) return null;
+  return dest;
 }
 
 function textOffsetBetween(doc: PmNode, from: number, to: number): number {
@@ -139,7 +199,10 @@ function owningSplitRegion(
     }
   }
 
-  if (owningHeading === null) return { kind: "kept-prefix" };
+  if (owningHeading === null) {
+    if (isBeforeFirstHeading) return { kind: "kept-prefix" };
+    return { kind: "leading-chunk" };
+  }
   if (survivor !== null && owningHeading === survivor) return { kind: "kept-prefix" };
   if (leavingOrdinal < 0) return { kind: "kept-prefix" };
   return { kind: "promoted", headingChildIndex: owningHeading, headingOrdinal: leavingOrdinal };
@@ -154,6 +217,13 @@ export function locateCaretInSplit(
   const region = owningSplitRegion(doc, caretPos, isBeforeFirstHeading, identity);
   if (region.kind === "kept-prefix") return { kind: "kept-prefix" };
   const clamped = Math.max(0, Math.min(caretPos, doc.content.size));
+  if (region.kind === "leading-chunk") {
+    return {
+      kind: "leading-chunk",
+      offset: textOffsetBetween(doc, 0, clamped),
+      chunk: doc.textBetween(0, leadingChunkEnd(doc), "\n"),
+    };
+  }
   const caretChild = doc.resolve(clamped).index(0);
   if (caretChild === region.headingChildIndex) {
     return {
@@ -192,23 +262,35 @@ function captureSlotFingerprint(
   const region = owningSplitRegion(doc, caretPos, isBeforeFirstHeading, identity);
   if (region.kind === "kept-prefix") return captureFingerprint(doc, caretPos);
   const clamped = Math.max(0, Math.min(caretPos, doc.content.size));
-  const caretChild = doc.resolve(clamped).index(0);
 
   let slotStart: number;
   let slotEnd: number;
-  if (caretChild === region.headingChildIndex) {
-    slotStart = posBeforeChild(doc, region.headingChildIndex);
-    slotEnd = posBeforeChild(doc, region.headingChildIndex + 1);
-  } else {
-    let nextHeadingIndex = doc.childCount;
-    for (let i = region.headingChildIndex + 1; i < doc.childCount; i++) {
+  if (region.kind === "leading-chunk") {
+    let firstHeadingIndex = doc.childCount;
+    for (let i = 0; i < doc.childCount; i++) {
       if (doc.child(i).type.name === "heading") {
-        nextHeadingIndex = i;
+        firstHeadingIndex = i;
         break;
       }
     }
-    slotStart = posBeforeChild(doc, region.headingChildIndex + 1);
-    slotEnd = posBeforeChild(doc, nextHeadingIndex);
+    slotStart = 0;
+    slotEnd = posBeforeChild(doc, firstHeadingIndex);
+  } else {
+    const caretChild = doc.resolve(clamped).index(0);
+    if (caretChild === region.headingChildIndex) {
+      slotStart = posBeforeChild(doc, region.headingChildIndex);
+      slotEnd = posBeforeChild(doc, region.headingChildIndex + 1);
+    } else {
+      let nextHeadingIndex = doc.childCount;
+      for (let i = region.headingChildIndex + 1; i < doc.childCount; i++) {
+        if (doc.child(i).type.name === "heading") {
+          nextHeadingIndex = i;
+          break;
+        }
+      }
+      slotStart = posBeforeChild(doc, region.headingChildIndex + 1);
+      slotEnd = posBeforeChild(doc, nextHeadingIndex);
+    }
   }
 
   return {
@@ -259,6 +341,22 @@ export function planCaretAfterSplit(args: {
   nextTopology: readonly LiveSectionRef[];
 }): SplitCaretPlan | null {
   const { location, sourceFragmentKey, fingerprint, prevTopology, nextTopology } = args;
+
+  if (location.kind === "leading-chunk") {
+    const sourceId = SectionId.brand(sourceFragmentKey);
+    const sourceIndex = nextTopology.findIndex((r) => SectionId.equals(r.id, sourceId));
+    if (sourceIndex <= 0) return null;
+    const predecessor = nextTopology[sourceIndex - 1]!;
+    return {
+      action: "follow-predecessor",
+      sectionId: predecessor.id,
+      fragmentKey: SectionId.text(predecessor.id),
+      slot: "body",
+      offset: location.offset,
+      chunk: location.chunk,
+    };
+  }
+
   if (sameTopologyIds(prevTopology, nextTopology)) return null;
 
   const sourceId = SectionId.brand(sourceFragmentKey);
@@ -302,6 +400,7 @@ export function ensureBodyBlock(doc: PmNode): PmNode {
 
 export function insertBodyBlockIfMissing(view: EditorView): void {
   if (firstBodyBlockPos(view.state.doc) !== null) return;
+  if (view.state.doc.childCount === 0 || view.state.doc.child(0).type.name !== "heading") return;
   const para = view.state.schema.nodes.paragraph?.create();
   if (!para) return;
   view.dispatch(view.state.tr.insert(view.state.doc.content.size, para));
@@ -364,22 +463,36 @@ function slideWithinRange(
   rangeStart: number,
   rangeEnd: number,
   fingerprint: CaretFingerprint,
+  match: "first" | "last" = "first",
 ): number | null {
   const beforeNeedle = fingerprint.before.slice(-FINGERPRINT_MATCH_LENGTH);
   const afterNeedle = fingerprint.after.slice(0, FINGERPRINT_MATCH_LENGTH);
   const needle = beforeNeedle + afterNeedle;
   if (needle.length < FINGERPRINT_MIN_SEARCH_LENGTH) return null;
   const rangeText = doc.textBetween(rangeStart, rangeEnd, "\n");
-  const idx = rangeText.indexOf(needle);
+  const idx = match === "last" ? rangeText.lastIndexOf(needle) : rangeText.indexOf(needle);
   if (idx < 0) return null;
   return posAtOffsetWithinRange(doc, rangeStart, rangeEnd, idx + beforeNeedle.length);
 }
 
 export function pmPosForPlacement(doc: PmNode, target: SplitCaretPlacement): number {
+  if (target.fingerprint === undefined) {
+    if (target.slot === "heading") {
+      const headingStart = posBeforeChild(doc, 0) + 1;
+      const headingEnd = doc.childCount > 1 ? posBeforeChild(doc, 1) : doc.content.size;
+      return posAtOffsetWithinRange(doc, headingStart, headingEnd, target.offset ?? 0);
+    }
+    const range = bodyTextRange(doc);
+    return posAtOffsetWithinRange(doc, range.start, range.end, target.offset ?? 0);
+  }
+  const match = target.match ?? "first";
   if (target.slot === "heading") {
     const headingStart = posBeforeChild(doc, 0) + 1;
     const headingEnd = doc.childCount > 1 ? posBeforeChild(doc, 1) : doc.content.size;
-    const candidate = posAtOffsetWithinRange(doc, headingStart, headingEnd, target.offset);
+    if (match === "last") {
+      return slideWithinRange(doc, headingStart, headingEnd, target.fingerprint, "last") ?? headingStart;
+    }
+    const candidate = posAtOffsetWithinRange(doc, headingStart, headingEnd, target.offset ?? 0);
     if (fingerprintMatchesInRange(doc, candidate, headingStart, headingEnd, target.fingerprint)) {
       return candidate;
     }
@@ -387,9 +500,17 @@ export function pmPosForPlacement(doc: PmNode, target: SplitCaretPlacement): num
   }
 
   const bodyStart = firstBodyBlockPos(doc);
-  if (bodyStart === null) return 1;
+  if (bodyStart === null) {
+    if (match === "last") {
+      return slideWithinRange(doc, 0, doc.content.size, target.fingerprint, "last") ?? 1;
+    }
+    return 1;
+  }
   const bodyEnd = doc.content.size;
-  const candidate = posAtOffsetWithinRange(doc, bodyStart, bodyEnd, target.offset);
+  if (match === "last") {
+    return slideWithinRange(doc, bodyStart, bodyEnd, target.fingerprint, "last") ?? bodyStart;
+  }
+  const candidate = posAtOffsetWithinRange(doc, bodyStart, bodyEnd, target.offset ?? 0);
   if (fingerprintMatchesInRange(doc, candidate, bodyStart, bodyEnd, target.fingerprint)) {
     return candidate;
   }
