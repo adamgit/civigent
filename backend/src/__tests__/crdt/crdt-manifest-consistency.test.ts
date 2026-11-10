@@ -179,11 +179,12 @@ describe("manifest ↔ overlay consistency under CRDT-injected live edits", () =
       "add roadmap",
     );
     await mutateProposalContent(externalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Roadmap"],
       heading: "Roadmap",
       content: "roadmap body",
+      afterHeadingPath: ["Timeline"],
     });
     await publishMergeToCanonicalDetailed(externalId, {});
 

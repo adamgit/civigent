@@ -68,7 +68,7 @@ describe("multi-heading payload on a sub-skeleton parent", () => {
     await overlay.createDocument(docPath);
     await overlay.upsertSection(new SectionRef(docPath, ["Parent"]), "Parent", "Parent body.");
     await overlay.upsertSection(new SectionRef(docPath, ["Parent", "A"]), "A", "A body.");
-    await overlay.upsertSection(new SectionRef(docPath, ["Parent", "B"]), "B", "B body.");
+    await overlay.upsertSectionBeside(docPath, ["Parent", "B"], "B", "B body.", ["Parent", "A"], "after");
 
     const skeleton = await DocumentSkeleton.fromDisk(docPath, ctx.contentDir, ctx.contentDir);
     const parent = skeleton.requireContentEntryByHeadingPath(["Parent"]);

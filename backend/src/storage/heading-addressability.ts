@@ -41,6 +41,43 @@ export function collectParsedHeadingAddresses(
   return out;
 }
 
+/**
+ * Open-heading chain at the end of a parsed payload: every prefix of the last
+ * headed parsed section's `headingPath`, each paired with the `headingLevel`
+ * of the parsed section whose `headingPath` equals that prefix. Returns
+ * `[...targetParentPath, ...prefix]` for the deepest prefix whose level is
+ * smaller than `childHeadingLevel`, or `null` when no prefix qualifies.
+ */
+export function payloadChildParentPath(
+  targetParentPath: readonly string[],
+  parsedSections: ReadonlyArray<{ headingPath: readonly string[]; headingLevel: number }>,
+  childHeadingLevel: number,
+): string[] | null {
+  let lastHeaded: { headingPath: readonly string[]; headingLevel: number } | null = null;
+  for (const section of parsedSections) {
+    if (section.headingPath.length === 0) continue;
+    lastHeaded = section;
+  }
+  if (lastHeaded === null) return null;
+
+  const lastPath = lastHeaded.headingPath;
+  let deepestPrefix: readonly string[] | null = null;
+  for (let len = 1; len <= lastPath.length; len++) {
+    const prefix = lastPath.slice(0, len);
+    let prefixLevel: number | null = null;
+    for (const section of parsedSections) {
+      if (headingPathsAddressEqual(section.headingPath, prefix)) {
+        prefixLevel = section.headingLevel;
+      }
+    }
+    if (prefixLevel !== null && prefixLevel < childHeadingLevel) {
+      deepestPrefix = prefix;
+    }
+  }
+  if (deepestPrefix === null) return null;
+  return [...targetParentPath, ...deepestPrefix];
+}
+
 export function headingAddressCounts(
   paths: readonly (readonly string[])[],
 ): Map<string, { count: number; path: readonly string[] }> {

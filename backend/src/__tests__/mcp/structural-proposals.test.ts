@@ -141,6 +141,7 @@ describe("structural tools via proposals", () => {
         doc_path: SAMPLE_DOC_PATH,
         heading_path: ["NewSection"],
         content: "New section content.\n",
+        after_heading_path: ["Timeline"],
       });
 
       expect(res.result).toBeDefined();
@@ -321,35 +322,6 @@ describe("structural tools via proposals", () => {
   });
 
   describe("commit with structural changes", () => {
-    it("promotes skeleton overlay to canonical on commit", async () => {
-      const proposalId = await createProposal("Structural commit test");
-      const originalSkeleton = await readCanonicalSkeleton();
-
-      // Create a new section via MCP
-      await callMcpTool("create_section", {
-        proposal_id: proposalId,
-        doc_path: SAMPLE_DOC_PATH,
-        heading_path: ["Appendix"],
-        content: "Appendix content.\n",
-      });
-
-      // Canonical still unchanged
-      expect(await readCanonicalSkeleton()).toBe(originalSkeleton);
-
-      // Commit the proposal
-      const commitRes = await request(ctx.app)
-        .post(`/api/proposals/${proposalId}/commit`)
-        .set("Authorization", ctx.agentToken);
-
-      expect(commitRes.status).toBe(200);
-      expect(commitRes.body.outcome).toBe("accepted");
-
-      // Now canonical should include the new section
-      const newSkeleton = await readCanonicalSkeleton();
-      expect(newSkeleton).not.toBe(originalSkeleton);
-      expect(newSkeleton).toContain("Appendix");
-    });
-
     it("create_section before_heading_path order survives commit to canonical", async () => {
       // Absorb/merge can restore canonical sibling order even when the proposal
       // overlay looks right. Isolated doc so other commit tests cannot shift the baseline.

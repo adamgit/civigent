@@ -85,8 +85,8 @@ describe("insert-between outside-sibling reinclude → durable duplicate", () =>
     const editor = ProposalEditor.open(id, "draft");
 
     // Seed the same sibling pair the live sample doc uses.
-    await editor.createSection(SAMPLE_DOC_PATH, ["Overview"], "Overview", "base overview body");
-    await editor.createSection(SAMPLE_DOC_PATH, ["Timeline"], "Timeline", "timeline body");
+    await editor.writeSection(SAMPLE_DOC_PATH, ["Overview"], "Overview", "base overview body");
+    await editor.writeSection(SAMPLE_DOC_PATH, ["Timeline"], "Timeline", "timeline body");
 
     const before = await editor.listHeadingPaths(SAMPLE_DOC_PATH);
     expect(before.filter((p) => SectionRef.headingKey(p) === SectionRef.headingKey(["Timeline"]))).toHaveLength(1);

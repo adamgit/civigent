@@ -385,28 +385,6 @@ export function applyHeadingRemovalPlan(
 
 // ─── SPLIT (embedded heading promoted) — proposal reflection ──────
 
-/**
- * Reflect a settled split into the `inprogress` proposal (WS-3), promoting the
- * embedded heading(s) the author typed into a section body into real sections.
- * Consumes the classifier's already-parsed split shape — one classifier verdict
- * per settle pass; reflection never re-derives its own.
- *
- * root-split (BFH, `headingPath: []`) and section-split go through the SAME
- * shared machinery: when `renamedFromIdentity` (section-split only — the BFH
- * survivor has no heading to rename), the survivor is first retitled in place
- * to its new heading/level (id-preserving). Then the survivor + `after`
- * sections are written through the parser-driven
- * `writeSection(survivorPath, …, { expandHeadingsIntoSections })` — for `[]`
- * this is the target-relative-forest write from `upsertSectionFromMarkdownCore`
- * (the headless BFH survivor followed by promoted headings), for a headed
- * survivor it is the existing subtree-replace path. Each `before` section
- * (root-split has none) is created via `createSection` and ordered above the
- * survivor via `reorderSection(position: "before")`.
- *
- * The whole reflection is a no-op on a retry whose prior live apply aborted
- * (via `writeSection`'s identity-upsert fast path), so a clock-check abort
- * cannot duplicate proposal sections (item 23).
- */
 export async function reflectSplitIntoProposal(
   proposalId: ProposalId,
   docPath: DocPath,
@@ -473,19 +451,13 @@ export async function reflectSplitIntoProposal(
     add.push({ doc_path: docPath, heading_path: [...entry.headingPath] });
   }
 
-  const parentPath = [...identity.headingPath.slice(0, -1)];
-  for (const s of beforeSections) {
-    const createResult = await editor.createSection(
+  if (beforeSections.length > 0) {
+    const beforeResult = await editor.insertSiblingForestBefore(
       docPath,
-      [...parentPath, ...s.headingPath],
-      s.heading,
-      sectionWriteInputFromExternal(buildFragmentContent(s.body, s.headingLevel, s.heading)),
+      survivorPath,
+      beforeSections,
     );
-    add.push(...manifestDeltaFromResult(docPath, createResult).add);
-  }
-  for (const s of beforeSections) {
-    if (s.headingPath.length !== 1) continue;
-    await editor.reorderSection(docPath, [...parentPath, ...s.headingPath], survivorPath, "before");
+    add.push(...manifestDeltaFromResult(docPath, beforeResult).add);
   }
 
   await unionCurrentProposalSections(proposalId, add);

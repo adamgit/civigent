@@ -5,16 +5,29 @@ import {
   type LiveSectionSnapshot,
 } from "../../crdt/crdt-proposal-generator.js";
 import {
+  createTransientProposal,
   findInProgressProposalByAdoptionId,
   listInProgressProposals,
   readProposal,
 } from "../../storage/proposal-repository.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
+import { publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
 const writer: WriterIdentity = { id: "user-alice", type: "human", displayName: "Alice" };
+
+/** Land /guide.md in canonical: a live source only ever names sections that exist on disk. */
+async function seedGuide(markdown: string): Promise<void> {
+  const { id } = await createTransientProposal(writer, "seed /guide.md");
+  await mutateProposalContent(id, {
+    kind: "write_document_markdown",
+    files: [{ docPath: "/guide.md", markdown }],
+  });
+  await publishWholesaleToCanonical(id, "import", {});
+}
 
 function makeSource(sections: LiveSectionSnapshot[]): LiveDocumentSource {
   let current = sections;
@@ -53,6 +66,7 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("lazily creates one inprogress proposal on the first materialized edit", async () => {
+    await seedGuide("# Intro\n\nseed\n");
     const proposalAdoptionId = ProposalAdoptionId.create();
     const gen = new CRDTProposalGenerator({
       docPath: "/guide.md",
@@ -79,6 +93,7 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("materializes subsequent edits into the SAME proposal", async () => {
+    await seedGuide("# Intro\n\nseed\n\n# Details\n\nseed\n");
     const proposalAdoptionId = ProposalAdoptionId.create();
     const source = makeSource([
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "First." },
@@ -134,6 +149,7 @@ describe("CRDTProposalGenerator", () => {
   });
 
   it("updates the current-proposal section manifest as the live tree grows", async () => {
+    await seedGuide("# Intro\n\nseed\n\n## Sub\n\nseed\n");
     const proposalAdoptionId = ProposalAdoptionId.create();
     const source = makeSource([
       { headingPath: ["Intro"], heading: "Intro", level: 1, body: "x" },

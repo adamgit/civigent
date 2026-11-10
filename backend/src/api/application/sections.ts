@@ -7,7 +7,7 @@ import type {
 import { proposalSectionClaimsWithParsedDocPaths } from "../../types/shared.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
 import { CanonicalReader } from "../../storage/canonical-reader.js";
-import { mutateProposalContent, ProposalSectionNotFoundError } from "../../storage/mutate-proposal-content.js";
+import { mutateProposalContent, ProposalSectionNotFoundError, ProposalSectionReorderError } from "../../storage/mutate-proposal-content.js";
 import { prependHeadings } from "../../storage/document-reader.js";
 import { SectionNotFoundError } from "../../storage/section-reader.js";
 import type { AuthorizedDocRead } from "../../auth/authorized-read.js";
@@ -328,10 +328,18 @@ export class SectionNotFoundForMoveError extends Error {
   }
 }
 
+export class SectionPlacementForMoveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SectionPlacementForMoveError";
+  }
+}
+
 export async function moveSectionUseCase(
   docPath: DocPath,
   headingPath: string[],
   newParentPath: string[],
+  anchor: { beforeHeadingPath?: string[]; afterHeadingPath?: string[] },
   writer: SectionWriter,
 ): Promise<StructuralMutationResult> {
   const { id: proposalId } = await createTransientProposal(
@@ -342,10 +350,13 @@ export async function moveSectionUseCase(
   
   
   try {
-    await mutateProposalContent(proposalId, { kind: "move_section", docPath, headingPath, newParentPath });
+    await mutateProposalContent(proposalId, { kind: "move_section", docPath, headingPath, newParentPath, ...anchor });
   } catch (error) {
     if (error instanceof ProposalSectionNotFoundError) {
       throw new SectionNotFoundForMoveError(error.message);
+    }
+    if (error instanceof ProposalSectionReorderError) {
+      throw new SectionPlacementForMoveError(error.message);
     }
     throw error;
   }

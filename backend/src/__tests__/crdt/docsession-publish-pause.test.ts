@@ -5,10 +5,13 @@ import {
   type LiveDocumentSource,
 } from "../../crdt/crdt-proposal-generator.js";
 import {
+  createTransientProposal,
   findInProgressProposalByAdoptionId,
   listInProgressProposals,
   locateProposalContentRoot,
 } from "../../storage/proposal-repository.js";
+import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
+import { publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-data-root.js";
 import { ProposalAdoptionId, type WriterIdentity } from "../../types/shared.js";
 
@@ -101,6 +104,13 @@ describe("CRDTProposalGenerator publish (final materialization + commit)", () =>
 
   beforeEach(async () => {
     ctx = await createTempDataRoot();
+    // The live source names Intro, so /guide.md must exist on disk with it.
+    const { id } = await createTransientProposal(writer, "seed /guide.md");
+    await mutateProposalContent(id, {
+      kind: "write_document_markdown",
+      files: [{ docPath: "/guide.md", markdown: "# Intro\n\nseed\n" }],
+    });
+    await publishWholesaleToCanonical(id, "import", {});
   });
 
   afterEach(async () => {

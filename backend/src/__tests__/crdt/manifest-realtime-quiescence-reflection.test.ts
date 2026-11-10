@@ -306,9 +306,10 @@ describe("real-time proposal-manifest reflection at quiescence (publish deferred
     });
     const proposalId = created.id;
     const editor = ProposalEditor.open(proposalId, "inprogress");
-    await editor.writeSection(docPath, ["Alpha"], "Alpha", "alpha body");
-    await editor.writeSection(docPath, ["Beta"], "Beta", "beta body");
-    await editor.writeSection(docPath, ["Beta", "Child"], "Child", "child body");
+    await editor.writeDocumentFromMarkdown(
+      docPath,
+      "# Alpha\n\nalpha body\n\n# Beta\n\nbeta body\n\n## Child\n\nchild body\n",
+    );
 
     // Claim Alpha, Beta, and Beta>Child at their CURRENT (pre-merge) paths.
     await updateCurrentProposalSections(proposalId, [

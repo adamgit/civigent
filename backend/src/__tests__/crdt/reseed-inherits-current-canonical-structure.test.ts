@@ -78,11 +78,12 @@ describe("DocSession reseed inherits sections canonical gained after the proposa
       "add roadmap",
     );
     await mutateProposalContent(externalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Roadmap"],
       heading: "Roadmap",
       content: "ROADMAP BODY ADDED AFTER THE PROPOSAL OPENED",
+      afterHeadingPath: ["Timeline"],
     });
     await publishMergeToCanonicalDetailed(externalId, {});
 

@@ -38,6 +38,8 @@ import type { FragmentContent } from "../storage/section-formatting.js";
 import {
   collectParsedHeadingAddresses,
   headingAddressKey,
+  headingPathsAddressEqual,
+  payloadChildParentPath,
   worsenedDuplicateHeadingAddresses,
 } from "../storage/heading-addressability.js";
 
@@ -88,6 +90,77 @@ function countAddress(paths: readonly (readonly string[])[], addressKey: string)
   return count;
 }
 
+function isDirectLayoutChild(
+  entry: LiveSectionLayoutEntry,
+  parentPath: readonly string[],
+): boolean {
+  return (
+    entry.headingPath.length === parentPath.length + 1
+    && headingPathsAddressEqual(entry.headingPath.slice(0, parentPath.length), parentPath)
+  );
+}
+
+function noteMover(
+  moversByAddressKey: Map<string, Set<string>>,
+  moverFragmentKey: string,
+  newPath: readonly string[],
+): void {
+  const addressKey = headingAddressKey(newPath);
+  let movers = moversByAddressKey.get(addressKey);
+  if (!movers) {
+    movers = new Set();
+    moversByAddressKey.set(addressKey, movers);
+  }
+  movers.add(moverFragmentKey);
+}
+
+function readdressPrefix(
+  postPathByFragmentKey: Map<string, string[]>,
+  oldPrefix: readonly string[],
+  newPrefix: readonly string[],
+  moverFragmentKey: string,
+  moversByAddressKey: Map<string, Set<string>>,
+): void {
+  if (headingPathsAddressEqual(oldPrefix, newPrefix)) return;
+  for (const [fragmentKey, path] of [...postPathByFragmentKey.entries()]) {
+    if (path.length < oldPrefix.length) continue;
+    if (!headingPathsAddressEqual(path.slice(0, oldPrefix.length), oldPrefix)) continue;
+    const newPath = [...newPrefix, ...path.slice(oldPrefix.length)];
+    postPathByFragmentKey.set(fragmentKey, newPath);
+    noteMover(moversByAddressKey, moverFragmentKey, newPath);
+  }
+}
+
+function nearestPrecedingRealSibling(
+  layout: readonly LiveSectionLayoutEntry[],
+  touched: LiveSectionLayoutEntry,
+): LiveSectionLayoutEntry | null {
+  const parentPath = touched.headingPath.slice(0, -1);
+  let preceding: LiveSectionLayoutEntry | null = null;
+  for (const entry of layout) {
+    if (entry.fragmentKey === touched.fragmentKey) break;
+    if (isDirectLayoutChild(entry, parentPath)) preceding = entry;
+  }
+  return preceding;
+}
+
+function rightmostRealHeadingDescent(
+  layout: readonly LiveSectionLayoutEntry[],
+  sibling: LiveSectionLayoutEntry,
+): Array<{ headingPath: string[]; headingLevel: number }> {
+  const descent: Array<{ headingPath: string[]; headingLevel: number }> = [
+    { headingPath: [...sibling.headingPath], headingLevel: sibling.headingLevel },
+  ];
+  for (;;) {
+    const current = descent[descent.length - 1]!;
+    const kids = layout.filter((entry) => isDirectLayoutChild(entry, current.headingPath));
+    if (kids.length === 0) break;
+    const last = kids[kids.length - 1]!;
+    descent.push({ headingPath: [...last.headingPath], headingLevel: last.headingLevel });
+  }
+  return descent;
+}
+
 /**
  * Validate every semantically changed fragment by comparing pre-update and
  * post-update heading-path occupancy against the current live layout,
@@ -108,9 +181,16 @@ export function validateLiveEditForDuplicateSiblingHeadings(
   }
   const touchedKeys = new Set(touchedEntries.map((entry) => entry.fragmentKey));
 
-  const basePaths = input.layout
-    .filter((entry) => !touchedKeys.has(entry.fragmentKey) && entry.headingPath.length > 0)
-    .map((entry) => entry.headingPath);
+  const untouchedHeaded = input.layout.filter(
+    (entry) => !touchedKeys.has(entry.fragmentKey) && entry.headingPath.length > 0,
+  );
+  const preBasePaths = untouchedHeaded.map((entry) => entry.headingPath);
+
+  const postPathByFragmentKey = new Map<string, string[]>();
+  for (const entry of untouchedHeaded) {
+    postPathByFragmentKey.set(entry.fragmentKey, [...entry.headingPath]);
+  }
+  const moversByAddressKey = new Map<string, Set<string>>();
 
   const preByFragment = new Map<string, string[][]>();
   const postByFragment = new Map<string, string[][]>();
@@ -125,12 +205,69 @@ export function validateLiveEditForDuplicateSiblingHeadings(
     );
   }
 
+  for (const touched of touchedEntries) {
+    if (touched.headingPath.length === 0) continue;
+    const parsedPost = parseDocumentMarkdown(input.readPostUpdateMarkdown(touched.fragmentKey));
+    let headedCount = 0;
+    for (const section of parsedPost) {
+      if (section.headingPath.length > 0) headedCount += 1;
+    }
+    const touchedParentPath = touched.headingPath.slice(0, -1);
+    const directChildren = input.layout.filter(
+      (entry) => !touchedKeys.has(entry.fragmentKey) && isDirectLayoutChild(entry, touched.headingPath),
+    );
+
+    if (headedCount >= 2) {
+      for (const child of directChildren) {
+        const newParentPath = payloadChildParentPath(
+          touchedParentPath,
+          parsedPost,
+          child.headingLevel,
+        );
+        if (
+          newParentPath === null
+          || headingPathsAddressEqual(newParentPath, touched.headingPath)
+        ) {
+          continue;
+        }
+        const newChildPath = [...newParentPath, child.headingPath[child.headingPath.length - 1]!];
+        readdressPrefix(
+          postPathByFragmentKey,
+          child.headingPath,
+          newChildPath,
+          touched.fragmentKey,
+          moversByAddressKey,
+        );
+      }
+    } else if (headedCount === 0) {
+      const preceding = nearestPrecedingRealSibling(input.layout, touched);
+      const descent = preceding === null ? [] : rightmostRealHeadingDescent(input.layout, preceding);
+      for (const child of directChildren) {
+        while (descent.length > 0 && descent[descent.length - 1]!.headingLevel >= child.headingLevel) {
+          descent.pop();
+        }
+        const newParentPath = descent.length === 0
+          ? [...touchedParentPath]
+          : [...descent[descent.length - 1]!.headingPath];
+        const newChildPath = [...newParentPath, child.headingPath[child.headingPath.length - 1]!];
+        readdressPrefix(
+          postPathByFragmentKey,
+          child.headingPath,
+          newChildPath,
+          touched.fragmentKey,
+          moversByAddressKey,
+        );
+        descent.push({ headingPath: newChildPath, headingLevel: child.headingLevel });
+      }
+    }
+  }
+
   const preOccupancy = [
-    ...basePaths,
+    ...preBasePaths,
     ...touchedEntries.flatMap((entry) => preByFragment.get(entry.fragmentKey)!),
   ];
   const postOccupancy = [
-    ...basePaths,
+    ...postPathByFragmentKey.values(),
     ...touchedEntries.flatMap((entry) => postByFragment.get(entry.fragmentKey)!),
   ];
 
@@ -139,7 +276,8 @@ export function validateLiveEditForDuplicateSiblingHeadings(
     const participants = touchedEntries.filter((entry) => {
       const preCount = countAddress(preByFragment.get(entry.fragmentKey)!, duplicate.key);
       const postCount = countAddress(postByFragment.get(entry.fragmentKey)!, duplicate.key);
-      return postCount > preCount;
+      if (postCount > preCount) return true;
+      return moversByAddressKey.get(duplicate.key)?.has(entry.fragmentKey) === true;
     });
     if (participants.length === 0) continue;
     rejectionGroups.push(buildRejectionGroup(participants, duplicate.path));

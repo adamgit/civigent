@@ -19,6 +19,7 @@ import {
   liveMoveBodyUseCase,
   hasActiveSession,
   SectionNotFoundForMoveError,
+  SectionPlacementForMoveError,
   InvalidDocPathError,
   DirectoryAtDocPathError,
   DocumentNotFoundError,
@@ -254,18 +255,43 @@ export function registerSectionRoutes(
         return;
       }
 
-      const { new_parent_path } = req.body ?? {};
+      const { new_parent_path, before_heading_path, after_heading_path } = req.body ?? {};
       if (!Array.isArray(new_parent_path)) {
         sendApiError(res, 400, "new_parent_path (string[]) is required.");
+        return;
+      }
+      if (before_heading_path !== undefined && !Array.isArray(before_heading_path)) {
+        sendApiError(res, 400, "before_heading_path must be a string[].");
+        return;
+      }
+      if (after_heading_path !== undefined && !Array.isArray(after_heading_path)) {
+        sendApiError(res, 400, "after_heading_path must be a string[].");
+        return;
+      }
+      if (before_heading_path !== undefined && after_heading_path !== undefined) {
+        sendApiError(res, 400, "Provide at most one of before_heading_path and after_heading_path.");
         return;
       }
 
       let result;
       try {
-        result = await moveSectionUseCase(docPath, headingPath, new_parent_path, writer);
+        result = await moveSectionUseCase(
+          docPath,
+          headingPath,
+          new_parent_path,
+          {
+            ...(before_heading_path !== undefined ? { beforeHeadingPath: before_heading_path } : {}),
+            ...(after_heading_path !== undefined ? { afterHeadingPath: after_heading_path } : {}),
+          },
+          writer,
+        );
       } catch (error) {
         if (error instanceof SectionNotFoundForMoveError) {
           sendApiError(res, 404, error.message);
+          return;
+        }
+        if (error instanceof SectionPlacementForMoveError) {
+          sendApiError(res, 400, error.message);
           return;
         }
         throw error;

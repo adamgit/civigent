@@ -25,11 +25,11 @@
 
 import type { ActiveProposal, ProposalSectionClaim, DocumentTargetRef, LiveMovePosition } from "../types/shared.js";
 import { documentTargetRef, HeadingLevel } from "../types/shared.js";
-import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
+import type { ContentEntry, FlatEntry, SectionInsertPlacement } from "./document-skeleton.js";
 import type { ProposalWriteResult, ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 import { ProposalEditor } from "./proposal-editor.js";
 import { readActiveProposal, updateProposalSections } from "./proposal-repository.js";
-import { recordOrphanedSectionRemovals } from "./content-layer.js";
+import { recordOrphanedSectionRemovals, ProposalSectionReorderError } from "./content-layer.js";
 import { mintProposalManifest, unionSections, type ProposalManifest } from "./proposal-manifest.js";
 import { sectionWriteInputFromExternal, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import type { DocPath } from "../types/shared.js";
@@ -43,7 +43,7 @@ export type ProposalContentOperation =
   | { kind: "write_section"; docPath: DocPath; headingPath: string[]; heading: string; content: SectionBodyWithPotentialSubsections; expandHeadingsIntoSections?: boolean; justification?: string }
   | { kind: "create_section"; docPath: DocPath; headingPath: string[]; heading: string; content?: SectionBodyWithPotentialSubsections; beforeHeadingPath?: string[]; afterHeadingPath?: string[]; justification?: string }
   | { kind: "delete_section"; docPath: DocPath; headingPath: string[] }
-  | { kind: "move_section"; docPath: DocPath; headingPath: string[]; newParentPath: string[] }
+  | { kind: "move_section"; docPath: DocPath; headingPath: string[]; newParentPath: string[]; beforeHeadingPath?: string[]; afterHeadingPath?: string[] }
   | { kind: "reorder_section"; docPath: DocPath; headingPath: string[]; targetHeadingPath: string[]; position: LiveMovePosition }
   | { kind: "rename_section"; docPath: DocPath; headingPath: string[]; newHeading: string }
   | { kind: "write_document_markdown"; files: Array<{ docPath: DocPath; markdown: string }> }
@@ -73,8 +73,8 @@ export interface MutateProposalContentResult {
   documentHeadingPaths?: string[][];
 }
 
-/** Thrown when a `move_section` target is not present in the proposal's effective
- *  section list. Callers map this to a 404 / tool-error with prose. */
+/** Thrown when a `move_section` target or a placement anchor is not present in the
+ *  proposal's effective section list. Callers map this to a 404 / tool-error with prose. */
 export class ProposalSectionNotFoundError extends Error {
   constructor(message: string) {
     super(message);
@@ -82,12 +82,7 @@ export class ProposalSectionNotFoundError extends Error {
   }
 }
 
-export class ProposalSectionReorderError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ProposalSectionReorderError";
-  }
-}
+export { ProposalSectionReorderError };
 
 function samePath(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((seg, i) => seg === b[i]);
@@ -122,6 +117,31 @@ function checkSiblingReorder(
   const targetParentPath = targetHeadingPath.slice(0, -1);
   if (!samePath(parentPath, targetParentPath)) {
     throw new ProposalSectionReorderError("Sections can only be reordered among siblings that share the same parent.");
+  }
+}
+
+/**
+ * The `create_section` / `move_section` twin of `checkSiblingReorder`: same
+ * parent and `[]` rules, and the anchor must exist, but the section may not yet
+ * be at `headingPath` — so a bad anchor rejects before anything is written.
+ */
+function checkSiblingPlacement(
+  docPath: DocPath,
+  headingPath: string[],
+  anchorHeadingPath: string[],
+  rows: Array<{ headingPath: string[] }>,
+): void {
+  if (headingPath.length === 0) {
+    throw new ProposalSectionReorderError("Cannot place the before-first-heading section beside a sibling.");
+  }
+  if (anchorHeadingPath.length === 0) {
+    throw new ProposalSectionReorderError("Cannot place a section relative to the before-first-heading section.");
+  }
+  if (!rows.some((e) => samePath(e.headingPath, anchorHeadingPath))) {
+    throw new ProposalSectionNotFoundError(`Section not found: ${anchorHeadingPath.join(" > ")} in ${docPath}`);
+  }
+  if (!samePath(headingPath.slice(0, -1), anchorHeadingPath.slice(0, -1))) {
+    throw new ProposalSectionReorderError("Sections can only be placed beside siblings that share the same parent.");
   }
 }
 
@@ -163,36 +183,46 @@ export async function mutateProposalContent(
       ) {
         throw new ProposalSectionReorderError("Provide at most one of before_heading_path and after_heading_path.");
       }
-      const writeResult =
-        operation.kind === "write_section"
-          ? await editor.writeSection(operation.docPath, operation.headingPath, operation.heading, operation.content, {
-              expandHeadingsIntoSections: operation.expandHeadingsIntoSections,
-            })
-          : await editor.createSection(operation.docPath, operation.headingPath, operation.heading, operation.content ?? sectionWriteInputFromExternal(""));
+      const anchor = operation.kind === "create_section"
+        ? operation.beforeHeadingPath ?? operation.afterHeadingPath
+        : undefined;
+      // Placement is "put this heading here," not "only if newly inserted": an
+      // existing section is written and moved beside the anchor; a missing one
+      // is installed in that slot. Only the requested leaf is placed —
+      // parser-expanded descendants are not given their own placement. With no
+      // anchor, a missing section is installed only where it would be the only
+      // real sibling; otherwise the call rejects before writing.
+      if (anchor !== undefined) {
+        checkSiblingPlacement(operation.docPath, operation.headingPath, anchor, await editor.listEffectiveSections(operation.docPath));
+      }
+      const writeResult = operation.kind === "write_section"
+        ? await editor.writeSection(
+            operation.docPath,
+            operation.headingPath,
+            operation.heading,
+            operation.content,
+            { expandHeadingsIntoSections: operation.expandHeadingsIntoSections },
+          )
+        : anchor !== undefined
+          ? await editor.upsertSectionBeside(
+              operation.docPath,
+              operation.headingPath,
+              operation.heading,
+              operation.content ?? sectionWriteInputFromExternal(""),
+              anchor,
+              operation.beforeHeadingPath !== undefined ? "before" : "after",
+            )
+          : await editor.upsertSectionAtOnlySiblingSlot(
+              operation.docPath,
+              operation.headingPath,
+              operation.heading,
+              operation.content ?? sectionWriteInputFromExternal(""),
+            );
       extras.writeResult = writeResult;
       if (writeResult.createdDocument === true) {
         documentTargetsForImplicitCreates.push(documentTargetRef(operation.docPath));
       }
       await recordOrphanedSectionRemovals(proposalId, operation.docPath, writeResult);
-      // Create-at-position is still one semantic mutate call: the engine create
-      // stays append-only and placement is the existing reorder primitive on the
-      // requested leaf only (parser-expanded descendants are not reordered;
-      // auto-created ancestors stay where `materializeAncestorHeadings` pushed
-      // them). If the heading already existed, the upsert still runs and the
-      // reorder still moves that leaf — placement is "put this heading here,"
-      // not "only if newly inserted."
-      if (operation.kind === "create_section") {
-        const anchor = operation.beforeHeadingPath ?? operation.afterHeadingPath;
-        if (anchor !== undefined) {
-          checkSiblingReorder(operation.docPath, operation.headingPath, anchor, await editor.listEffectiveSections(operation.docPath));
-          await editor.reorderSection(
-            operation.docPath,
-            operation.headingPath,
-            anchor,
-            operation.beforeHeadingPath !== undefined ? "before" : "after",
-          );
-        }
-      }
       // Authoritative affected set: every parser-expanded section written, every
       // section removed by the restructure, and both sides of any structure change
       // — NOT just the requested heading path.
@@ -232,13 +262,47 @@ export async function mutateProposalContent(
       // Resolve the new level from the effective section list (boundary-owned, so
       // callers never open an editor): keep the section's level when moving to
       // root, else nest one below the new parent.
-      const current = (await editor.listEffectiveSections(operation.docPath)).find((e) =>
-        samePath(e.headingPath, operation.headingPath),
-      );
+      if (operation.beforeHeadingPath !== undefined && operation.afterHeadingPath !== undefined) {
+        throw new ProposalSectionReorderError("Provide at most one of before_heading_path and after_heading_path.");
+      }
+      const rows = await editor.listEffectiveSections(operation.docPath);
+      const current = rows.find((e) => samePath(e.headingPath, operation.headingPath));
       if (!current) {
         throw new ProposalSectionNotFoundError(
           `Section not found: ${operation.headingPath.join(" > ")} in ${operation.docPath}`,
         );
+      }
+      const anchor = operation.beforeHeadingPath ?? operation.afterHeadingPath;
+      let destination: SectionInsertPlacement;
+      if (anchor !== undefined) {
+        if (samePath(anchor, operation.headingPath)) {
+          throw new ProposalSectionReorderError("Cannot place a section beside itself.");
+        }
+        checkSiblingPlacement(
+          operation.docPath,
+          [...operation.newParentPath, operation.headingPath[operation.headingPath.length - 1]],
+          anchor,
+          rows,
+        );
+        destination = {
+          kind: operation.beforeHeadingPath !== undefined ? "before" : "after",
+          anchorHeadingPath: anchor,
+        };
+      } else {
+        // With no anchor the moved section must become the only child section
+        // of the new parent; the section itself does not count when it already
+        // sits under that parent.
+        const destinationHasChildSections = rows.some((e) =>
+          e.headingPath.length === operation.newParentPath.length + 1
+          && samePath(e.headingPath.slice(0, -1), operation.newParentPath)
+          && !samePath(e.headingPath, operation.headingPath),
+        );
+        if (destinationHasChildSections) {
+          throw new ProposalSectionReorderError(
+            `[${operation.newParentPath.join(" > ")}] already has child sections in ${operation.docPath}; provide before_heading_path or after_heading_path to name the sibling the moved section should sit beside.`,
+          );
+        }
+        destination = { kind: "only-child", parentPath: operation.newParentPath };
       }
       const newHeadingLevel = operation.newParentPath.length === 0
         ? current.headingLevel
@@ -248,7 +312,7 @@ export async function mutateProposalContent(
       const moveResult = await editor.moveSection(
         operation.docPath,
         operation.headingPath,
-        operation.newParentPath,
+        destination,
         newHeadingLevel,
       );
       extras.moveResult = moveResult;

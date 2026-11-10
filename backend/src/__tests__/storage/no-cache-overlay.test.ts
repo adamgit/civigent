@@ -144,21 +144,9 @@ describe("ProposalShadowContentLayer no-cache model (item 213)", () => {
 
     // Stage a two-section doc entirely in canonical
     const canonical = shadow(canonicalDir, canonicalDir);
-    await canonical.createDocument(docPath);
-    await canonical.upsertSection(
-      new SectionRef(docPath, ["NewParent"]),
-      "NewParent",
-      "parent placeholder body",
-    );
-    await canonical.upsertSection(
-      new SectionRef(docPath, ["A"]),
-      "A",
-      aBody,
-    );
-    await canonical.upsertSection(
-      new SectionRef(docPath, ["B"]),
-      "B",
-      bBody,
+    await canonical.createDocumentFromMarkdown(
+      docPath,
+      `# NewParent\n\nparent placeholder body\n\n# A\n\n${aBody}\n\n# B\n\n${bBody}\n`,
     );
 
     // Move section A under NewParent through the overlay layer. The
@@ -166,7 +154,7 @@ describe("ProposalShadowContentLayer no-cache model (item 213)", () => {
     // raw overlay-path readFile in moveSubtree would have returned "" and
     // the move would silently empty A's body at the destination.
     const overlay = shadow(overlayDir, canonicalDir);
-    await overlay.moveSubtree(docPath, ["A"], ["NewParent"], 2);
+    await overlay.moveSubtree(docPath, ["A"], { kind: "only-child", parentPath: ["NewParent"] }, 2);
 
     // After the move A's body must be preserved at the new location.
     // (Level 2 means A is now a child of NewParent, which was originally

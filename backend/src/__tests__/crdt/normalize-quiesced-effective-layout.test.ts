@@ -343,11 +343,12 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       "add roadmap externally",
     );
     await mutateProposalContent(externalProposalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Roadmap"],
       heading: "Roadmap",
       content: "external roadmap body",
+      afterHeadingPath: ["Timeline"],
     });
     const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);
@@ -411,11 +412,12 @@ describe("normalizeQuiescedStructure() — effective-layout identity + predecess
       "add appendix externally",
     );
     await mutateProposalContent(externalProposalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Appendix"],
       heading: "Appendix",
       content: "external appendix body",
+      afterHeadingPath: ["Timeline"],
     });
     const absorb = await publishMergeToCanonicalDetailed(externalProposalId, {});
     const changedHeadingPaths = absorb.changedSections.map((s) => [...s.headingPath]);

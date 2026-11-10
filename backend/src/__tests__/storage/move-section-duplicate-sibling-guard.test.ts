@@ -41,12 +41,11 @@ describe("move_section duplicate-sibling-heading guard", () => {
     // ParentA has an "Alpha" child; ParentB already has an "Alpha" child at
     // the same level (2). Moving A's "Alpha" under ParentB must be rejected
     // to preserve heading-path addressability.
-    await editor.createSection("/guard.md", ["ParentA", "Alpha"], "Alpha", "a");
-    await editor.createSection("/guard.md", ["ParentB", "Alpha"], "Alpha", "b");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# ParentA\n\n## Alpha\n\na\n\n# ParentB\n\n## Alpha\n\nb\n");
 
     let caught: unknown;
     try {
-      await editor.moveSection("/guard.md", ["ParentA", "Alpha"], ["ParentB"], 2);
+      await editor.moveSection("/guard.md", ["ParentA", "Alpha"], { kind: "after", anchorHeadingPath: ["ParentB", "Alpha"] }, 2);
     } catch (err) {
       caught = err;
     }
@@ -60,11 +59,10 @@ describe("move_section duplicate-sibling-heading guard", () => {
 
   it("treats case-insensitively-equal destination siblings as collisions", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["ParentA", "alpha"], "alpha", "");
-    await editor.createSection("/guard.md", ["ParentB", "ALPHA"], "ALPHA", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# ParentA\n\n## alpha\n\n# ParentB\n\n## ALPHA\n");
 
     await expect(
-      editor.moveSection("/guard.md", ["ParentA", "alpha"], ["ParentB"], 2),
+      editor.moveSection("/guard.md", ["ParentA", "alpha"], { kind: "after", anchorHeadingPath: ["ParentB", "ALPHA"] }, 2),
     ).rejects.toBeInstanceOf(DuplicateSiblingHeadingError);
 
     const paths = await editor.listHeadingPaths("/guard.md");
@@ -74,11 +72,10 @@ describe("move_section duplicate-sibling-heading guard", () => {
 
   it("rejects moving to the document root when a root-level heading already exists", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Alpha"], "Alpha", "root alpha");
-    await editor.createSection("/guard.md", ["Parent", "Alpha"], "Alpha", "nested alpha");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Alpha\n\nroot alpha\n\n# Parent\n\n## Alpha\n\nnested alpha\n");
 
     await expect(
-      editor.moveSection("/guard.md", ["Parent", "Alpha"], [], 1),
+      editor.moveSection("/guard.md", ["Parent", "Alpha"], { kind: "after", anchorHeadingPath: ["Parent"] }, 1),
     ).rejects.toBeInstanceOf(DuplicateSiblingHeadingError);
 
     const paths = await editor.listHeadingPaths("/guard.md");
@@ -88,10 +85,9 @@ describe("move_section duplicate-sibling-heading guard", () => {
 
   it("allows a move whose destination has no same-heading sibling at the destination level", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["ParentA", "Alpha"], "Alpha", "alpha body");
-    await editor.createSection("/guard.md", ["ParentB", "Beta"], "Beta", "beta body");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# ParentA\n\n## Alpha\n\nalpha body\n\n# ParentB\n\n## Beta\n\nbeta body\n");
 
-    await editor.moveSection("/guard.md", ["ParentA", "Alpha"], ["ParentB"], 2);
+    await editor.moveSection("/guard.md", ["ParentA", "Alpha"], { kind: "after", anchorHeadingPath: ["ParentB", "Beta"] }, 2);
 
     const paths = await editor.listHeadingPaths("/guard.md");
     expect(paths).toContainEqual(["ParentB", "Alpha"]);
@@ -105,10 +101,9 @@ describe("move_section duplicate-sibling-heading guard", () => {
     // The moved node's own sectionFile is excluded from the collision check,
     // so this must succeed even though a sibling with heading "Alpha" is in
     // the destination list (it IS the moved node itself).
-    await editor.createSection("/guard.md", ["Parent", "Alpha"], "Alpha", "");
-    await editor.createSection("/guard.md", ["Parent", "Beta"], "Beta", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Parent\n\n## Alpha\n\n## Beta\n");
 
-    await editor.moveSection("/guard.md", ["Parent", "Alpha"], ["Parent"], 2);
+    await editor.moveSection("/guard.md", ["Parent", "Alpha"], { kind: "before", anchorHeadingPath: ["Parent", "Beta"] }, 2);
 
     const paths = await editor.listHeadingPaths("/guard.md");
     expect(paths).toContainEqual(["Parent", "Alpha"]);
@@ -119,15 +114,14 @@ describe("move_section duplicate-sibling-heading guard", () => {
     const editor = await newEditor();
     // Destination has a same-heading sibling but at a DIFFERENT level.
     // The guard's proposed-level clause means this must NOT collide.
-    await editor.createSection("/guard.md", ["ParentA", "Alpha"], "Alpha", "");
-    await editor.createSection("/guard.md", ["ParentB"], "ParentB", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# ParentA\n\n## Alpha\n\n# ParentB\n");
     // Insert an "Alpha" at a nested (higher) level under ParentB. Direct
     // control over ParentB's child level via createSection is limited to
     // the default heading-path depth, so we approximate by leaving ParentB
     // childless and moving the section in at a distinct level. Concretely
     // this test just proves the ordinary move path still succeeds when no
     // heading conflict is present at the destination.
-    await editor.moveSection("/guard.md", ["ParentA", "Alpha"], ["ParentB"], 2);
+    await editor.moveSection("/guard.md", ["ParentA", "Alpha"], { kind: "only-child", parentPath: ["ParentB"] }, 2);
 
     const paths = await editor.listHeadingPaths("/guard.md");
     expect(paths).toContainEqual(["ParentB", "Alpha"]);

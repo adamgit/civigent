@@ -18,7 +18,7 @@ import type { ToolRegistry, ToolHandler } from "../tool-registry.js";
 import { jsonToolResult } from "../tool-registry.js";
 import { AgentPayloadContract } from "../agent-payload-contract.js";
 import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
-import { DocumentNotFoundError } from "../../storage/document-reader.js";
+import { DirectoryAtDocPathError, DocumentNotFoundError } from "../../storage/document-reader.js";
 import { InvalidDocPathError } from "../../storage/path-utils.js";
 import {
   readProposal,
@@ -131,7 +131,12 @@ const createSectionHandler: ToolHandler = async (args, ctx) => {
         ...(afterHeadingPath !== undefined ? { afterHeadingPath } : {}),
       }));
     } catch (mutateError) {
-      if (mutateError instanceof ProposalSectionReorderError || mutateError instanceof ProposalSectionNotFoundError) {
+      if (
+        mutateError instanceof ProposalSectionReorderError ||
+        mutateError instanceof ProposalSectionNotFoundError ||
+        mutateError instanceof DocumentNotFoundError ||
+        mutateError instanceof DirectoryAtDocPathError
+      ) {
         return makeToolErrorResult(mutateError.message);
       }
       throw mutateError;
@@ -222,6 +227,8 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   const rawDocPath = args.doc_path as string | undefined;
   const headingPath = args.heading_path as string[] | undefined;
   const newParentPath = args.new_parent_path as string[] | undefined;
+  const beforeHeadingPath = args.before_heading_path as string[] | undefined;
+  const afterHeadingPath = args.after_heading_path as string[] | undefined;
 
   if (!proposalId) return makeToolErrorResult("Missing required parameter: proposal_id");
   if (!rawDocPath) return makeToolErrorResult("Missing required parameter: doc_path");
@@ -230,6 +237,15 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
   }
   if (!Array.isArray(newParentPath)) {
     return makeToolErrorResult("Missing required parameter: new_parent_path (string[])");
+  }
+  if (beforeHeadingPath !== undefined && !Array.isArray(beforeHeadingPath)) {
+    return makeToolErrorResult("Missing required parameter: before_heading_path (string[])");
+  }
+  if (afterHeadingPath !== undefined && !Array.isArray(afterHeadingPath)) {
+    return makeToolErrorResult("Missing required parameter: after_heading_path (string[])");
+  }
+  if (beforeHeadingPath !== undefined && afterHeadingPath !== undefined) {
+    return makeToolErrorResult("Provide at most one of before_heading_path and after_heading_path.");
   }
 
   const parsedDocPath = parseToolArgumentDocPath(rawDocPath);
@@ -253,9 +269,14 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
         docPath,
         headingPath,
         newParentPath,
+        ...(beforeHeadingPath !== undefined ? { beforeHeadingPath } : {}),
+        ...(afterHeadingPath !== undefined ? { afterHeadingPath } : {}),
       }));
     } catch (moveError) {
-      if (moveError instanceof ProposalSectionNotFoundError) {
+      if (
+        moveError instanceof ProposalSectionNotFoundError ||
+        moveError instanceof ProposalSectionReorderError
+      ) {
         return makeToolErrorResult(moveError.message);
       }
       throw moveError;
@@ -270,6 +291,8 @@ const moveSectionHandler: ToolHandler = async (args, ctx) => {
       doc_path: docPath,
       heading_path: headingPath,
       new_parent_path: newParentPath,
+      ...(beforeHeadingPath !== undefined ? { before_heading_path: beforeHeadingPath } : {}),
+      ...(afterHeadingPath !== undefined ? { after_heading_path: afterHeadingPath } : {}),
       moved: true,
       agent_write_policy: agentWritePolicyWriteBody(policyResult, [{ doc_path: docPath, heading_path: headingPath }]),
     });
@@ -522,7 +545,7 @@ export function registerStructuralTools(registry: ToolRegistry): void {
     "createSection",
     {
       name: "create_section",
-      description: "Create a section at the specified heading path within a document. Operates within a proposal. Missing ancestor headings are auto-created. Omit both placement fields and the new section is placed last among its parent's siblings; before_heading_path / after_heading_path name an existing same-parent sibling to sit beside (provide at most one).",
+      description: "Create a section at the specified heading path within a document. Operates within a proposal. before_heading_path / after_heading_path name an existing same-parent sibling the section should sit immediately beside (provide at most one). With neither: an existing section is rewritten where it sits; a missing section is created only when every new heading would be the only section under its parent (missing ancestors included), and otherwise the call is rejected — name a sibling to place it beside.",
       inputSchema: {
         type: "object",
         properties: {
@@ -561,14 +584,16 @@ export function registerStructuralTools(registry: ToolRegistry): void {
     "moveSection",
     {
       name: "move_section",
-      description: "Reparent a section via new_parent_path. Operates within a proposal. The moved subtree becomes last among the new parent's children; use reorder_section to choose sibling order.",
+      description: "Reparent a section via new_parent_path. Operates within a proposal. before_heading_path / after_heading_path name an existing child of the new parent the moved subtree should sit immediately beside (provide at most one). With neither, the move is allowed only when the moved section would be the only section under the new parent, and otherwise the call is rejected — name a sibling to place it beside.",
       inputSchema: {
         type: "object",
         properties: {
           proposal_id: { type: "string", description: "Active proposal ID (required)" },
           doc_path: { type: "string", description: "Document path (must end with .md)" },
           heading_path: { type: "array", items: { type: "string" }, description: "Current heading path" },
-          new_parent_path: { type: "array", items: { type: "string" }, description: "Heading path of the new parent ([] moves to top level). The moved subtree is appended last among that parent's children; use reorder_section to place it among its siblings." },
+          new_parent_path: { type: "array", items: { type: "string" }, description: "Heading path of the new parent ([] moves to top level)." },
+          before_heading_path: { type: "array", items: { type: "string" }, description: "Heading path of an existing child of the new parent the moved section should sit immediately before. An anchor is a heading path, not an index; [] is illegal (the before-first-heading section cannot anchor a reorder)." },
+          after_heading_path: { type: "array", items: { type: "string" }, description: "Heading path of an existing child of the new parent the moved section should sit immediately after. An anchor is a heading path, not an index; [] is illegal (the before-first-heading section cannot anchor a reorder)." },
         },
         required: ["proposal_id", "doc_path", "heading_path", "new_parent_path"],
       },

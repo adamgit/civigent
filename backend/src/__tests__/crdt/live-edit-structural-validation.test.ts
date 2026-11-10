@@ -285,4 +285,40 @@ describe("validateLiveEditForDuplicateSiblingHeadings", () => {
     const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
     expect(rejectionGroups).toEqual([]);
   });
+  it("rejects a same-level heading typed into a parent section when an existing child would move under it beside a same-name typed child", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::overview", ["Overview"], 2),
+      layoutEntry("section::a", ["Overview", "A"], 3),
+      layoutEntry("section::timeline", ["Timeline"], 2),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::overview"],
+      layout,
+      readPreUpdateMarkdown: () => "## Overview\n\nbody." as never,
+      readPostUpdateMarkdown: () => "## Overview\n\nbody.\n\n## New\n\n### A\n\ntyped a." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toHaveLength(1);
+    expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
+    expect(rejectionGroups[0]?.fragmentKeys).toEqual(["section::overview"]);
+  });
+
+  it("rejects a heading deletion whose child would be reparented beside a same-name sibling", async () => {
+    const layout: LiveSectionLayoutEntry[] = [
+      layoutEntry("section::intro", ["Intro"], 2),
+      layoutEntry("section::intro-x", ["Intro", "X"], 3),
+      layoutEntry("section::p", ["P"], 2),
+      layoutEntry("section::p-x", ["P", "X"], 3),
+    ];
+    const input: StructuralValidationInput = {
+      touchedFragmentKeys: ["section::p"],
+      layout,
+      readPreUpdateMarkdown: () => "## P\n\np body." as never,
+      readPostUpdateMarkdown: () => "p body." as never,
+    };
+    const { rejectionGroups } = validateLiveEditForDuplicateSiblingHeadings(input);
+    expect(rejectionGroups).toHaveLength(1);
+    expect(rejectionGroups[0]?.reasonCode).toBe("duplicate-sibling-heading");
+    expect(rejectionGroups[0]?.fragmentKeys).toEqual(["section::p"]);
+  });
 });

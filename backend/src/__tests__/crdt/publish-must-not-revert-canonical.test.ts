@@ -81,11 +81,12 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
       "add roadmap section",
     );
     await mutateProposalContent(externalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Roadmap"],
       heading: "Roadmap",
       content: "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
+      afterHeadingPath: ["Timeline"],
     });
     await publishMergeToCanonicalDetailed(externalId, {});
 
@@ -137,11 +138,12 @@ describe("data-loss regression: DocSession publish must not revert canonical to 
       "add roadmap section",
     );
     await mutateProposalContent(externalId, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: SAMPLE_DOC_PATH,
       headingPath: ["Roadmap"],
       heading: "Roadmap",
       content: "ROADMAP COMMITTED AFTER THE INPROGRESS PROPOSAL WAS OPENED",
+      afterHeadingPath: ["Timeline"],
     });
     await publishMergeToCanonicalDetailed(externalId, {});
     const current = await readProposal(inflightId);

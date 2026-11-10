@@ -151,12 +151,14 @@ describe("BUG1b FIXED: Overlay upsertSectionFromMarkdown normalizes multi-headin
 
   it("upsertSectionFromMarkdown with single headed section still works", async () => {
     const layer = new ProposalShadowContentLayer(ctx.contentDir, ctx.contentDir);
-    const ref = new SectionRef(docPath, ["Overview"]);
+    // The previous case split Overview into A and B; Timeline is still present.
+    const ref = new SectionRef(docPath, ["Timeline"]);
 
     // Single-section headed markdown should preserve the targeted section.
     await expect(
-      layer.upsertSection(ref, "Overview", "## Overview\n\nJust plain body text.\n", { expandHeadingsIntoSections: true }),
+      layer.upsertSection(ref, "Timeline", "## Timeline\n\nJust plain body text.\n", { expandHeadingsIntoSections: true }),
     ).resolves.not.toThrow();
+    expect(await layer.listHeadingPaths(docPath)).toContainEqual(["Timeline"]);
   });
 });
 

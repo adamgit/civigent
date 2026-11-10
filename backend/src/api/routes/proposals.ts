@@ -42,6 +42,7 @@ import {
   cancelProposalUseCase,
   ProposalNotFoundError,
   InvalidProposalStateError,
+  ProposalSectionReorderError,
 } from "../application/proposals.js";
 import {
   readProposalSectionList,
@@ -108,6 +109,10 @@ export function registerProposalRoutes(
       };
       res.status(201).json(response);
     } catch (error) {
+      if (error instanceof ProposalSectionReorderError) {
+        sendApiError(res, 400, error.message);
+        return;
+      }
       next(error);
     }
   });

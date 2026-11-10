@@ -39,8 +39,7 @@ describe("ProposalReader", () => {
 
   it("reads effective structure and content from proposal-staged sections", async () => {
     const editor = await newEditor();
-    await editor.writeSection("/doc.md", ["Alpha"], "Alpha", "alpha body");
-    await editor.writeSection("/doc.md", ["Beta"], "Beta", "beta body");
+    await editor.writeDocumentFromMarkdown("/doc.md", "# Alpha\n\nalpha body\n\n# Beta\n\nbeta body\n");
 
     const reader = ProposalReader.open(editor.id, "draft");
     expect(await reader.getDocumentState("/doc.md")).toBe("live");
@@ -58,8 +57,7 @@ describe("ProposalReader", () => {
 
   it("readEffectiveDocument returns effective heading paths plus bodies", async () => {
     const editor = await newEditor();
-    await editor.writeSection("/rb.md", ["One"], "One", "body one");
-    await editor.writeSection("/rb.md", ["Two"], "Two", "body two");
+    await editor.writeDocumentFromMarkdown("/rb.md", "# One\n\nbody one\n\n# Two\n\nbody two\n");
 
     const reader = ProposalReader.open(editor.id, "draft");
     const sections = await reader.readEffectiveDocument("/rb.md");

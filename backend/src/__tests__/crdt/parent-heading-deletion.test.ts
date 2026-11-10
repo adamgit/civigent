@@ -56,11 +56,16 @@ async function build(): Promise<Built> {
     writer: WRITER,
   });
   const editor = ProposalEditor.open(id, "inprogress");
-  await editor.writeSection(DOC, ["Chapter 1"], "Chapter 1", "chapter one body");
-  await editor.writeSection(DOC, ["Chapter 2"], "Chapter 2", "chapter two intro body");
-  await editor.writeSection(DOC, ["Chapter 2", "2.1"], "2.1", "body of 2.1");
-  await editor.writeSection(DOC, ["Chapter 2", "2.2"], "2.2", "body of 2.2");
-  await editor.writeSection(DOC, ["Chapter 3"], "Chapter 3", "chapter three body");
+  await editor.writeDocumentFromMarkdown(
+    DOC,
+    [
+      "## Chapter 1", "", "chapter one body", "",
+      "## Chapter 2", "", "chapter two intro body", "",
+      "### 2.1", "", "body of 2.1", "",
+      "### 2.2", "", "body of 2.2", "",
+      "## Chapter 3", "", "chapter three body", "",
+    ].join("\n"),
+  );
   return { proposalId: id, editor, reader: ProposalReader.open(id, "inprogress") };
 }
 

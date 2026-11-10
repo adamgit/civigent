@@ -50,7 +50,7 @@ function mintSectionWriteInput(raw: string): SectionBodyWithPotentialSubsections
 
 /**
  * External/API boundary: raw request/tool markdown entering the parser-driven
- * section write path (`writeSection`/`createSection`/`upsertSection`). The
+ * section write path (`writeSection`/`upsertSectionBeside`/`upsertSectionAtOnlySiblingSlot`/`upsertSection`). The
  * content is NOT trimmed/normalized here — the parser owns structural expansion.
  */
 export function sectionWriteInputFromExternal(raw: string): SectionBodyWithPotentialSubsections {

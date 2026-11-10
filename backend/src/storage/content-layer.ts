@@ -16,7 +16,10 @@ import {
   type FlatEntry,
   type HeadingRemovalEffect,
   type HeadingRemovalMergeTarget,
+  type MutationTransactionContext,
   type ProposalDocumentState,
+  type SectionInsertPlacement,
+  type SectionNodePlacement,
   type SkeletonNode,
   type StructuralMutationPlan,
 } from "./document-skeleton.js";
@@ -27,12 +30,13 @@ import type { DocStructureNode } from "../types/shared.js";
 import { DocPath, HeadingLevel } from "../types/shared.js";
 import { SectionRef } from "../domain/section-ref.js";
 import { markdownToJSON, jsonToMarkdown } from "@ks/milkdown-serializer";
-import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
+import { bodyFromDisk, bodyFromParser, stripHeadingFromFragment, buildFragmentContent, assembleFragments, fragmentFromBodyHolder, stripLeadingNewlines, appendToBody, fragmentFromExternalContent, sectionWriteInputFromExternal, type SectionBody, type FragmentContent, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import { isBodyHolderShape, isDocumentBeforeFirstHeading, parsedSectionIsHeadless } from "./section-shape.js";
 import type { ParsedSection } from "./markdown-sections.js";
 import {
   findDuplicateHeadingAddresses,
   headingPathsAddressEqual,
+  payloadChildParentPath,
 } from "./heading-addressability.js";
 
 async function writeBodyFile(entry: ContentEntry | FlatEntry, content: string): Promise<void> {
@@ -96,7 +100,7 @@ function upsertResultFromHeadingRemoval(
   };
 }
 
-type ParsedMarkdownRewriteSection = Readonly<{
+export type ParsedMarkdownRewriteSection = Readonly<{
   heading: string;
   headingLevel: HeadingLevel;
   body: string;
@@ -224,6 +228,124 @@ function buildBodyWritesForReplacement(
   return bodyWrites;
 }
 
+function placementParentPath(placement: SectionNodePlacement): string[] {
+  switch (placement.kind) {
+    case "replace":
+      return placement.headingPath.slice(0, -1);
+    case "only-child":
+      return [...placement.parentPath];
+    default:
+      return placement.anchorHeadingPath.slice(0, -1);
+  }
+}
+
+function planSiblingInstall(
+  ctx: MutationTransactionContext,
+  docPath: DocPath,
+  placement: SectionNodePlacement,
+  parsedSections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  existingContentByResultingPath?: ReadonlyMap<string, string>,
+): { added: FlatEntry[]; bodyWrites: StructuralMutationPlan["bodyWrites"] } {
+  const parent = placementParentPath(placement);
+  const { replacementRoots, bodyByResultingHeadingPath } = buildReplacementRoots(
+    parent,
+    parsedSections,
+    existingContentByResultingPath,
+  );
+  ctx.addBodyHoldersToParents(replacementRoots);
+  ctx.placeSectionNodes(placement, replacementRoots);
+
+  const parentSkeletonPath = ctx.resolveSkeletonPathFor(parent);
+  const added: FlatEntry[] = [];
+  for (const node of replacementRoots) {
+    added.push(...ctx.flattenNode(node, parent, parentSkeletonPath));
+  }
+  return { added, bodyWrites: buildBodyWritesForReplacement(docPath, added, bodyByResultingHeadingPath) };
+}
+
+/** Real (headed) child headings of `parentPath`, in walk order. */
+function realSiblingHeadings(skeleton: DocumentSkeleton, parentPath: readonly string[]): string[] {
+  const entries = parentPath.length === 0
+    ? skeleton.allStructuralEntries().filter((e) => e.headingPath.length === 1 && !e.isSubSkeleton)
+    : skeleton.subtreeEntries([...parentPath]).filter((e) => e.headingPath.length === parentPath.length + 1);
+  return entries.map((e) => e.headingPath[parentPath.length]);
+}
+
+/** Real (headed) direct children of `parentPath`, in walk order. Body holders excluded. */
+function planPayloadChildMoves(
+  ref: SectionRef,
+  headedSections: ReadonlyArray<ParsedSection>,
+  skeleton: DocumentSkeleton,
+): Array<{ childSectionFile: string; newParentPath: string[] }> {
+  const parentPrefix = ref.headingPath.slice(0, -1);
+  const createdPaths = headedSections
+    .slice(1)
+    .map((parsed) => [...parentPrefix, ...parsed.headingPath])
+    .filter((resultingPath) => !skeleton.has(resultingPath));
+  const destinationChildren = new Map<string, Array<{ heading: string; sectionFile: string }>>();
+  for (const createdPath of createdPaths) {
+    const parentKey = headingPathKey(createdPath.slice(0, -1));
+    const siblings = destinationChildren.get(parentKey) ?? [];
+    siblings.push({ heading: createdPath[createdPath.length - 1]!, sectionFile: "" });
+    destinationChildren.set(parentKey, siblings);
+  }
+
+  const moves: Array<{ childSectionFile: string; newParentPath: string[] }> = [];
+  for (const child of realDirectChildEntries(skeleton, ref.headingPath)) {
+    const newParentPath = payloadChildParentPath(parentPrefix, headedSections, child.headingLevel);
+    if (newParentPath === null) continue;
+    if (!createdPaths.some((createdPath) => headingPathsAddressEqual(createdPath, newParentPath))) continue;
+    const parentKey = headingPathKey(newParentPath);
+    const siblings = destinationChildren.get(parentKey) ?? [];
+    const conflict = siblings.find((sibling) =>
+      headingPathsAddressEqual([...newParentPath, sibling.heading], [...newParentPath, child.heading]),
+    );
+    if (conflict) {
+      throw new DuplicateSiblingHeadingError({
+        operation: "move",
+        docPath: ref.docPath,
+        parentHeadingPath: newParentPath,
+        proposedHeading: child.heading,
+        proposedHeadingLevel: child.headingLevel,
+        conflictingSectionFile: conflict.sectionFile,
+        targetSectionFile: child.sectionFile,
+      });
+    }
+    siblings.push({ heading: child.heading, sectionFile: child.sectionFile });
+    destinationChildren.set(parentKey, siblings);
+    moves.push({ childSectionFile: child.sectionFile, newParentPath });
+  }
+  return moves;
+}
+
+function realDirectChildEntries(skeleton: DocumentSkeleton, parentPath: readonly string[]): FlatEntry[] {
+  return skeleton.allStructuralEntries().filter((entry) =>
+    entry.headingPath.length === parentPath.length + 1
+    && headingPathsAddressEqual(entry.headingPath.slice(0, parentPath.length), parentPath)
+    && !isBodyHolderShape(entry)
+  );
+}
+
+/** Keep the claim on content entries an install created, even when the fill
+ *  that followed wrote nothing over them. */
+function withInstalledContentEntries(
+  result: UpsertSectionFromMarkdownDetailedResult,
+  installed: readonly FlatEntry[],
+): UpsertSectionFromMarkdownDetailedResult {
+  const writtenEntries = [...result.writtenEntries];
+  const alreadyAccountedFor = new Set([
+    ...writtenEntries.map((e) => e.absolutePath),
+    ...result.removedContentEntries.map((e) => e.absolutePath),
+  ]);
+  for (const entry of installed) {
+    if (entry.isSubSkeleton) continue;
+    if (alreadyAccountedFor.has(entry.absolutePath)) continue;
+    alreadyAccountedFor.add(entry.absolutePath);
+    writtenEntries.push(entry);
+  }
+  return { ...result, writtenEntries };
+}
+
 export class SectionNotFoundError extends Error {}
 export class DocumentNotFoundError extends Error {}
 export class DirectoryAtDocPathError extends Error {}
@@ -242,6 +364,13 @@ async function throwForAbsentDocument(docPath: DocPath, contentRoots: string[]):
 }
 export class DocumentAssemblyError extends Error {}
 export class MultiSectionContentError extends Error {}
+
+export class ProposalSectionReorderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalSectionReorderError";
+  }
+}
 
 export class DuplicateSiblingHeadingError extends Error {
   readonly operation: "rename" | "move" | "rewrite" | "insert";
@@ -663,11 +792,21 @@ export class ProposalShadowContentLayer {
     return this.loadWritableSkeleton(docPath);
   }
 
+  private async loadDeletedSectionFiles(docPath: DocPath): Promise<ReadonlySet<string> | undefined> {
+    return this.overlayRoot !== this.canonicalRoot && this.deletedSectionFilesProvider
+      ? await this.deletedSectionFilesProvider(docPath)
+      : undefined;
+  }
+
   private async loadWritableSkeleton(docPath: DocPath): Promise<DocumentSkeletonInternal> {
-    const structureRoot = skeletonFileExistsSync(docPath, this.overlayRoot)
-      ? this.overlayRoot
-      : this.canonicalRoot;
-    const nodes = await DocumentSkeletonInternal.loadNodesFromRoot(docPath, structureRoot);
+    const nodes = skeletonFileExistsSync(docPath, this.overlayRoot)
+      ? await DocumentSkeletonInternal.loadEffectiveNodes(
+          docPath,
+          this.overlayRoot,
+          this.canonicalRoot,
+          await this.loadDeletedSectionFiles(docPath),
+        )
+      : await DocumentSkeletonInternal.loadNodesFromRoot(docPath, this.canonicalRoot);
     return DocumentSkeletonInternal.fromNodes(
       docPath,
       nodes,
@@ -690,9 +829,7 @@ export class ProposalShadowContentLayer {
     if (state === "missing") {
       await throwForAbsentDocument(docPath, [this.overlayRoot, this.canonicalRoot]);
     }
-    const deletedSectionFiles = this.overlayRoot !== this.canonicalRoot && this.deletedSectionFilesProvider
-      ? await this.deletedSectionFilesProvider(docPath)
-      : undefined;
+    const deletedSectionFiles = await this.loadDeletedSectionFiles(docPath);
     return DocumentSkeleton.fromDisk(docPath, this.overlayRoot, this.canonicalRoot, deletedSectionFiles);
   }
 
@@ -903,8 +1040,10 @@ export class ProposalShadowContentLayer {
     }
 
     let skeleton = await this.getWritableSkeleton(ref.docPath);
-    if (!skeleton.has(ref.headingPath)) {
-      await this.materializeAncestorHeadings(ref.docPath, ref.headingPath);
+    let createdBfh = false;
+    if (ref.headingPath.length === 0 && !skeleton.has([])) {
+      await this.createEmptyBfhAtFront(ref.docPath);
+      createdBfh = true;
       skeleton = await this.getWritableSkeleton(ref.docPath);
     }
     const entry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
@@ -913,7 +1052,7 @@ export class ProposalShadowContentLayer {
     const currentBody = bodyFromDisk(
       (await this.readEffectiveSectionBody(entry.absolutePath)) ?? "",
     );
-    if ((currentBody as string) === (newBody as string)) {
+    if (!createdBfh && (currentBody as string) === (newBody as string)) {
       return {
         writtenEntries: [],
         removedContentEntries: [],
@@ -973,12 +1112,100 @@ export class ProposalShadowContentLayer {
       await this.createDocument(ref.docPath);
       createdDocument = true;
     }
-    const preWriteSkeleton = await this.getWritableSkeleton(ref.docPath);
+    let preWriteSkeleton = await this.getWritableSkeleton(ref.docPath);
     let skeleton = preWriteSkeleton;
-    let materializedEntries: FlatEntry[] = [];
-    if (!skeleton.has(ref.headingPath)) {
-      materializedEntries = await this.materializeAncestorHeadings(ref.docPath, ref.headingPath);
+    const materializedEntries: FlatEntry[] = [];
+    if (targetingBfh && !skeleton.has([])) {
+      materializedEntries.push(await this.createEmptyBfhAtFront(ref.docPath));
       skeleton = await this.getWritableSkeleton(ref.docPath);
+    }
+    if (!skeleton.has(ref.headingPath)) {
+      const installSkeleton = await this.getWritableSkeleton(ref.docPath);
+      let firstMissing = 0;
+      while (
+        firstMissing < ref.headingPath.length
+        && installSkeleton.has(ref.headingPath.slice(0, firstMissing + 1))
+      ) {
+        firstMissing++;
+      }
+      const parentPath = ref.headingPath.slice(0, firstMissing);
+      if (realSiblingHeadings(installSkeleton, parentPath).length > 0) {
+        const parentLabel = parentPath.length === 0 ? "the document root" : `[${parentPath.join(" > ")}]`;
+        throw new ProposalSectionReorderError(
+          `Cannot create [${ref.headingPath.join(" > ")}] in ${ref.docPath} without a placement anchor: ` +
+          `"${ref.headingPath[firstMissing]}" would join existing sibling sections under ${parentLabel}.`,
+        );
+      }
+
+      const chain: ParsedMarkdownRewriteSection[] = [];
+      for (let i = firstMissing + 1; i <= ref.headingPath.length; i++) {
+        const segmentPath = ref.headingPath.slice(0, i);
+        chain.push({
+          headingPath: segmentPath.slice(firstMissing),
+          heading: segmentPath[segmentPath.length - 1],
+          headingLevel: HeadingLevel.parse(await this.resolveTargetHeadingLevel(new SectionRef(ref.docPath, segmentPath))),
+          body: "",
+        });
+      }
+
+      const parentIsLeaf =
+        parentPath.length > 0
+        && installSkeleton.subtreeEntries(parentPath).length === 1;
+      const parentBody = parentIsLeaf
+        ? (await this.readEffectiveSectionBody(
+            installSkeleton.requireContentEntryByHeadingPath(parentPath).absolutePath,
+          )) ?? ""
+        : null;
+
+      const plan = await installSkeleton.applyStructuralMutationTransaction((ctx) => {
+        const siblings = ctx.findSiblingList(parentPath);
+        assertNoDuplicateSiblingHeadingCollision(siblings, {
+          operation: "insert",
+          docPath: ref.docPath,
+          parentHeadingPath: parentPath,
+          targetSectionFile: "",
+          proposedHeading: chain[0].heading,
+          proposedHeadingLevel: chain[0].headingLevel,
+        });
+        const { added, bodyWrites } = planSiblingInstall(
+          ctx,
+          ref.docPath,
+          { kind: "only-child", parentPath },
+          chain,
+        );
+
+        if (parentBody !== null) {
+          const parentNode = ctx.locateStructuralNodeByHeadingPath(parentPath)?.node;
+          if (!parentNode) {
+            throw new Error(
+              `Skeleton integrity error in ${ref.docPath}: leaf parent ` +
+              `[${parentPath.join(" > ")}] vanished during upsertSectionFromMarkdownCore`,
+            );
+          }
+          ctx.addBodyHoldersToParents([parentNode]);
+          const bodyHolder = parentNode.children.find((c) => isBodyHolderShape(c));
+          if (!bodyHolder) {
+            throw new Error(
+              `Skeleton integrity error in ${ref.docPath}: addBodyHoldersToParents did not ` +
+              `add a body holder for [${parentPath.join(" > ")}]`,
+            );
+          }
+          const [bodyHolderEntry] = ctx.flattenNode(bodyHolder, parentPath, ctx.resolveSkeletonPathFor(parentPath));
+          added.push(bodyHolderEntry);
+          bodyWrites.push({ absolutePath: bodyHolderEntry.absolutePath, content: parentBody });
+        }
+        return { removed: [], added, bodyWrites, fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+      });
+      for (const write of plan.bodyWrites) {
+        await this.writeOverlayBodyFile(
+          ref.docPath,
+          { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+          write.content,
+        );
+      }
+      materializedEntries.push(...plan.added);
+      skeleton = await this.getWritableSkeleton(ref.docPath);
+      preWriteSkeleton = skeleton;
     }
     const withImplicitStructuralCreates = (
       result: UpsertSectionFromMarkdownDetailedResult,
@@ -1191,6 +1418,9 @@ export class ProposalShadowContentLayer {
 
     const parentPrefix = ref.headingPath.slice(0, -1);
 
+    const skeletonBeforePlacement = await this.getWritableSkeleton(ref.docPath);
+    const plannedChildMoves = planPayloadChildMoves(ref, headedSections, skeletonBeforePlacement);
+
     if ((leadingOrphanBody as string).length > 0) {
       const skeleton = await this.getWritableSkeleton(ref.docPath);
       const parentEntry = skeleton.requireContentEntryByHeadingPath(ref.headingPath);
@@ -1229,39 +1459,65 @@ export class ProposalShadowContentLayer {
       const parentIsSubSkeletonParent = parentPath.length > 0
         && skeleton.has(parentPath)
         && skeleton.subtreeEntries(parentPath).length > 1;
-      if (!skeleton.has(resultingPath) && parentIsSubSkeletonParent) {
-        const directChildren = skeleton.subtreeEntries(parentPath)
-          .filter((e) => e.headingPath.length === parentPath.length + 1);
-        const prevLeaf = lastDispatchedLeafByParent.get(headingPathKey(parentPath)) ?? null;
-        let insertIndex = 0;
-        if (prevLeaf !== null) {
-          const prevIdx = directChildren.findIndex(
-            (e) => headingsEqual(e.headingPath[parentPath.length], prevLeaf),
-          );
-          if (prevIdx < 0) {
-            throw new Error(
-              `Skeleton integrity error in ${ref.docPath}: dispatched sibling ` +
-              `"${prevLeaf}" not found under [${parentPath.join(" > ")}] while ` +
-              `positioning "${parsed.heading}".`,
-            );
-          }
-          insertIndex = prevIdx + 1;
-        }
-        mergeInto(await this.insertNewChildSectionAtPosition(
-          ref.docPath,
-          parentPath,
-          insertIndex,
-          parsed.heading,
-          parsed.headingLevel,
-          parsed.body as unknown as SectionBody,
-        ));
-      } else {
+      const prevLeaf = lastDispatchedLeafByParent.get(headingPathKey(parentPath)) ?? null;
+      if (skeleton.has(resultingPath)) {
         mergeInto(await this.upsertSectionFromMarkdownCore(
           new SectionRef(ref.docPath, resultingPath),
           singleSectionMarkdown(parsed),
         ));
+      } else if (parentIsSubSkeletonParent) {
+        const placement: { kind: "before" | "after"; anchorHeadingPath: string[] } = prevLeaf !== null
+          ? { kind: "after", anchorHeadingPath: [...parentPath, prevLeaf] }
+          : {
+              kind: "before",
+              anchorHeadingPath: skeleton.subtreeEntries(parentPath)
+                .filter((e) => e.headingPath.length === parentPath.length + 1)[0].headingPath,
+            };
+        mergeInto(await this.insertNewChildSectionBeside(
+          ref.docPath,
+          placement,
+          parsed.heading,
+          parsed.headingLevel,
+          parsed.body as unknown as SectionBody,
+        ));
+      } else if (parentPath.length === 0 && prevLeaf !== null) {
+        mergeInto(await this.upsertSectionBeside(
+          ref.docPath,
+          resultingPath,
+          parsed.heading,
+          sectionWriteInputFromExternal(singleSectionMarkdown(parsed)),
+          [prevLeaf],
+          "after",
+        ));
+      } else {
+        mergeInto(await this.upsertSectionAtOnlySiblingSlot(
+          ref.docPath,
+          resultingPath,
+          parsed.heading,
+          sectionWriteInputFromExternal(singleSectionMarkdown(parsed)),
+        ));
       }
       lastDispatchedLeafByParent.set(headingPathKey(parentPath), parsed.heading);
+    }
+
+    for (const { childSectionFile, newParentPath } of plannedChildMoves) {
+      const skeleton = await this.getWritableSkeleton(ref.docPath);
+      const child = skeleton.requireEntryBySectionFileId(childSectionFile);
+      const destChildren = realDirectChildEntries(skeleton, newParentPath);
+      const destination: SectionInsertPlacement = destChildren.length === 0
+        ? { kind: "only-child", parentPath: newParentPath }
+        : { kind: "after", anchorHeadingPath: destChildren[destChildren.length - 1]!.headingPath };
+      const { added } = await this.moveSubtree(
+        ref.docPath,
+        child.headingPath,
+        destination,
+        child.headingLevel,
+      );
+      for (const entry of added) {
+        if (entry.isSubSkeleton) continue;
+        aggregate.writtenEntries.push(entry);
+        aggregate.liveReloadEntries.push(entry);
+      }
     }
 
     return aggregate;
@@ -1841,7 +2097,7 @@ export class ProposalShadowContentLayer {
   async moveSubtree(
     docPath: DocPath,
     headingPath: string[],
-    newParentPath: string[],
+    destination: SectionInsertPlacement,
     newHeadingLevel: HeadingLevel,
   ): Promise<{ removed: FlatEntry[]; added: FlatEntry[] }> {
     if (headingPath.length === 0) {
@@ -1849,6 +2105,7 @@ export class ProposalShadowContentLayer {
         `Cannot move the before-first-heading section in ${docPath}.`,
       );
     }
+    const newParentPath = placementParentPath(destination);
     const skeleton = await this.getWritableSkeleton(docPath);
 
     const preEntries = skeleton.subtreeEntries(headingPath);
@@ -1859,10 +2116,6 @@ export class ProposalShadowContentLayer {
       preBodies.set(relKey, (await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
     }
 
-    // A destination parent that is currently a LEAF holds its body in its own
-    // file, which this move turns into a sub-skeleton. Its body must travel into
-    // the body holder minted below, exactly as `materializeAncestorHeadings`
-    // migrates one — otherwise the move silently empties the new parent.
     const destParentIsLeaf =
       newParentPath.length > 0
       && skeleton.has(newParentPath)
@@ -1900,8 +2153,7 @@ export class ProposalShadowContentLayer {
         children: movedNode.children,
       };
 
-      const destSiblings = ctx.findSiblingList(newParentPath);
-      destSiblings.push(relabeled);
+      ctx.placeSectionNodes(destination, [relabeled]);
 
       const destSkeletonPath = ctx.resolveSkeletonPathFor(newParentPath);
       let migratedDestParentBodyPath: string | null = null;
@@ -1910,11 +2162,11 @@ export class ProposalShadowContentLayer {
         if (parentNode) {
           ctx.addBodyHoldersToParents([parentNode]);
           if (destParentBody !== null) {
-            const bodyHolder = parentNode.children[0];
-            if (!bodyHolder || bodyHolder.headingLevel !== 0 || bodyHolder.heading !== "") {
+            const bodyHolder = parentNode.children.find((c) => isBodyHolderShape(c));
+            if (!bodyHolder) {
               throw new Error(
                 `Skeleton integrity error in ${docPath}: addBodyHoldersToParents did not ` +
-                `prepend a body holder for the move destination [${newParentPath.join(" > ")}]`,
+                `add a body holder for the move destination [${newParentPath.join(" > ")}]`,
               );
             }
             migratedDestParentBodyPath = path.join(
@@ -2010,38 +2262,266 @@ export class ProposalShadowContentLayer {
     });
   }
 
-  private async insertNewChildSectionAtPosition(
+  /**
+   * Place a parsed forest immediately before `anchorHeadingPath`, as siblings
+   * of the anchor, in one structural transaction. `sections` are addressed
+   * relative to the anchor's parent; each carries its own heading level and
+   * body. A top-level heading that is already a sibling is a duplicate and
+   * rejects before anything is written.
+   */
+  async insertSiblingForestBefore(
     docPath: DocPath,
-    parentHeadingPath: string[],
-    insertIndex: number,
+    anchorHeadingPath: string[],
+    sections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const parentPath = anchorHeadingPath.slice(0, -1);
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const siblings = ctx.findSiblingList(parentPath);
+      for (const section of sections) {
+        if (section.headingPath.length !== 1) continue;
+        assertNoDuplicateSiblingHeadingCollision(siblings, {
+          operation: "insert",
+          docPath,
+          parentHeadingPath: parentPath,
+          targetSectionFile: "",
+          proposedHeading: section.heading,
+          proposedHeadingLevel: section.headingLevel,
+        });
+      }
+      const { added, bodyWrites } = planSiblingInstall(
+        ctx,
+        docPath,
+        { kind: "before", anchorHeadingPath },
+        sections,
+      );
+      return { removed: [], added, bodyWrites, fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+    const addedNonSub = plan.added.filter((e) => !e.isSubSkeleton);
+    return {
+      writtenEntries: addedNonSub,
+      removedContentEntries: [],
+      fragmentKeyRemaps: [],
+      liveReloadEntries: [...addedNonSub],
+      structureChanges: [],
+    };
+  }
+
+  /**
+   * Write `headingPath` so it sits immediately before or after the same-parent
+   * sibling `anchorHeadingPath`. An existing section is written and then
+   * reordered; a missing one is installed in the slot first, then filled.
+   * Callers validate the anchor before calling.
+   */
+  async upsertSectionBeside(
+    docPath: DocPath,
+    headingPath: string[],
+    heading: string,
+    content: SectionBodyWithPotentialSubsections,
+    anchorHeadingPath: string[],
+    position: "before" | "after",
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const ref = new SectionRef(docPath, headingPath);
+    const skeleton = await this.getWritableSkeleton(docPath);
+    if (skeleton.has(headingPath)) {
+      const result = await this.upsertSection(ref, heading, content);
+      await this.reorderSiblingSection(docPath, headingPath, anchorHeadingPath, position);
+      return result;
+    }
+
+    const parentPath = headingPath.slice(0, -1);
+    const leaf = headingPath[headingPath.length - 1];
+    const headingLevel = HeadingLevel.parse(await this.resolveTargetHeadingLevel(ref));
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      assertNoDuplicateSiblingHeadingCollision(ctx.findSiblingList(parentPath), {
+        operation: "insert",
+        docPath,
+        parentHeadingPath: parentPath,
+        targetSectionFile: "",
+        proposedHeading: leaf,
+        proposedHeadingLevel: headingLevel,
+      });
+      const { added, bodyWrites } = planSiblingInstall(
+        ctx,
+        docPath,
+        { kind: position, anchorHeadingPath },
+        [{ headingPath: [leaf], heading: leaf, headingLevel, body: "" }],
+      );
+      return { removed: [], added, bodyWrites, fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+
+    const result = await this.upsertSection(ref, heading, content);
+    return withInstalledContentEntries(result, plan.added);
+  }
+
+  /**
+   * Write `headingPath` with no placement anchor. An existing section is
+   * rewritten where it sits. A missing one is installed only where each new
+   * segment would be the only real sibling; otherwise this rejects before
+   * writing anything.
+   */
+  async upsertSectionAtOnlySiblingSlot(
+    docPath: DocPath,
+    headingPath: string[],
+    heading: string,
+    content: SectionBodyWithPotentialSubsections,
+    opts?: { expandHeadingsIntoSections?: boolean },
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const ref = new SectionRef(docPath, headingPath);
+    const state = await this.getDocumentState(docPath);
+    if (state === "tombstone") {
+      throw new DocumentNotFoundError(`Document "${docPath}" is pending deletion in this proposal.`);
+    }
+    if (headingPath.length === 0) {
+      return await this.upsertSection(ref, heading, content, opts);
+    }
+
+    let firstMissing = 0;
+    if (state === "live") {
+      const existing = await this.getWritableSkeleton(docPath);
+      while (firstMissing < headingPath.length && existing.has(headingPath.slice(0, firstMissing + 1))) {
+        firstMissing++;
+      }
+      if (firstMissing === headingPath.length) {
+        return await this.upsertSection(ref, heading, content, opts);
+      }
+      const parentPath = headingPath.slice(0, firstMissing);
+      if (realSiblingHeadings(existing, parentPath).length > 0) {
+        const parentLabel = parentPath.length === 0 ? "the document root" : `[${parentPath.join(" > ")}]`;
+        throw new ProposalSectionReorderError(
+          `Cannot create [${headingPath.join(" > ")}] in ${docPath} without a placement anchor: ` +
+          `"${headingPath[firstMissing]}" would join existing sibling sections under ${parentLabel}.`,
+        );
+      }
+    }
+
+    let createdDocument = false;
+    if (state === "missing") {
+      await this.createDocument(docPath);
+      createdDocument = true;
+    }
+
+    const parentPath = headingPath.slice(0, firstMissing);
+    const chain: ParsedMarkdownRewriteSection[] = [];
+    for (let i = firstMissing + 1; i <= headingPath.length; i++) {
+      const segmentPath = headingPath.slice(0, i);
+      chain.push({
+        headingPath: segmentPath.slice(firstMissing),
+        heading: segmentPath[segmentPath.length - 1],
+        headingLevel: HeadingLevel.parse(await this.resolveTargetHeadingLevel(new SectionRef(docPath, segmentPath))),
+        body: "",
+      });
+    }
+
+    const skeleton = await this.getWritableSkeleton(docPath);
+    const parentIsLeaf =
+      parentPath.length > 0
+      && skeleton.subtreeEntries(parentPath).length === 1;
+    const parentBody = parentIsLeaf
+      ? (await this.readEffectiveSectionBody(
+          skeleton.requireContentEntryByHeadingPath(parentPath).absolutePath,
+        )) ?? ""
+      : null;
+
+    const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
+      const siblings = ctx.findSiblingList(parentPath);
+      assertNoDuplicateSiblingHeadingCollision(siblings, {
+        operation: "insert",
+        docPath,
+        parentHeadingPath: parentPath,
+        targetSectionFile: "",
+        proposedHeading: chain[0].heading,
+        proposedHeadingLevel: chain[0].headingLevel,
+      });
+      const { added, bodyWrites } = planSiblingInstall(
+        ctx,
+        docPath,
+        { kind: "only-child", parentPath },
+        chain,
+      );
+
+      if (parentBody !== null) {
+        const parentNode = ctx.locateStructuralNodeByHeadingPath(parentPath)?.node;
+        if (!parentNode) {
+          throw new Error(
+            `Skeleton integrity error in ${docPath}: leaf parent ` +
+            `[${parentPath.join(" > ")}] vanished during upsertSectionAtOnlySiblingSlot`,
+          );
+        }
+        ctx.addBodyHoldersToParents([parentNode]);
+        const bodyHolder = parentNode.children.find((c) => isBodyHolderShape(c));
+        if (!bodyHolder) {
+          throw new Error(
+            `Skeleton integrity error in ${docPath}: addBodyHoldersToParents did not ` +
+            `add a body holder for [${parentPath.join(" > ")}]`,
+          );
+        }
+        const [bodyHolderEntry] = ctx.flattenNode(bodyHolder, parentPath, ctx.resolveSkeletonPathFor(parentPath));
+        added.push(bodyHolderEntry);
+        bodyWrites.push({ absolutePath: bodyHolderEntry.absolutePath, content: parentBody });
+      }
+      return { removed: [], added, bodyWrites, fragmentKeyRemaps: [] } satisfies StructuralMutationPlan;
+    });
+    for (const write of plan.bodyWrites) {
+      await this.writeOverlayBodyFile(
+        docPath,
+        { absolutePath: write.absolutePath, isSubSkeleton: false } as FlatEntry,
+        write.content,
+      );
+    }
+
+    const result = await this.upsertSection(ref, heading, content, opts);
+    return {
+      ...withInstalledContentEntries(result, plan.added),
+      createdDocument: createdDocument || result.createdDocument === true,
+    };
+  }
+
+  private async insertNewChildSectionBeside(
+    docPath: DocPath,
+    placement: { kind: "before" | "after"; anchorHeadingPath: string[] },
     heading: string,
     headingLevel: HeadingLevel,
     body: SectionBody,
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    const parentHeadingPath = placement.anchorHeadingPath.slice(0, -1);
     if (parentHeadingPath.length === 0) {
       throw new Error(
-        `insertNewChildSectionAtPosition called with parentHeadingPath=[] in ${docPath}. ` +
+        `insertNewChildSectionBeside called with a root-level anchor in ${docPath}. ` +
         `Root-level structure is owned by the document-level primitives, not the ` +
         `sub-skeleton-parent child insert.`,
       );
     }
     if (heading === "") {
       throw new Error(
-        `insertNewChildSectionAtPosition in ${docPath}: heading must be non-empty; ` +
+        `insertNewChildSectionBeside in ${docPath}: heading must be non-empty; ` +
         `body holders are materialized via addBodyHoldersToParents, never inserted here.`,
       );
     }
     const skeleton = await this.getWritableSkeleton(docPath);
     if (skeleton.subtreeEntries(parentHeadingPath).length <= 1) {
       throw new Error(
-        `insertNewChildSectionAtPosition in ${docPath}: parent ` +
+        `insertNewChildSectionBeside in ${docPath}: parent ` +
         `[${parentHeadingPath.join(" > ")}] is not a sub-skeleton parent.`,
       );
     }
     const sectionFile = generateSectionFilename(heading);
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
-      const children = ctx.findSiblingList(parentHeadingPath);
-      assertNoDuplicateSiblingHeadingCollision(children, {
+      assertNoDuplicateSiblingHeadingCollision(ctx.findSiblingList(parentHeadingPath), {
         operation: "insert",
         docPath,
         parentHeadingPath,
@@ -2049,17 +2529,8 @@ export class ProposalShadowContentLayer {
         proposedHeading: heading,
         proposedHeadingLevel: headingLevel,
       });
-      const bodyHolderOffset = children.length > 0 && isBodyHolderShape(children[0]) ? 1 : 0;
-      const realChildCount = children.length - bodyHolderOffset;
-      if (insertIndex < 0 || insertIndex > realChildCount) {
-        throw new Error(
-          `insertNewChildSectionAtPosition in ${docPath}: insertIndex ${insertIndex} ` +
-          `is out of range for parent [${parentHeadingPath.join(" > ")}] with ` +
-          `${realChildCount} child section(s).`,
-        );
-      }
       const node: SkeletonNode = { heading, headingLevel, sectionFile, children: [] };
-      children.splice(bodyHolderOffset + insertIndex, 0, node);
+      ctx.placeSectionNodes(placement, [node]);
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentHeadingPath);
       const added = ctx.flattenNode(node, parentHeadingPath, parentSkeletonPath);
       return {
@@ -2107,11 +2578,6 @@ export class ProposalShadowContentLayer {
     for (const existing of skeleton.subtreeEntries(headingPath)) {
       existingContentByResultingPath.set(headingPathKey(existing.headingPath), existing.sectionFile);
     }
-    const { replacementRoots, bodyByResultingHeadingPath } = buildReplacementRoots(
-      parentPath,
-      parsedSections,
-      existingContentByResultingPath,
-    );
 
     const leadingOrphanBody = (options?.leadingOrphanBody ?? "") as SectionBody;
     const hasOrphan = (leadingOrphanBody as string).length > 0;
@@ -2132,29 +2598,27 @@ export class ProposalShadowContentLayer {
       if (!located || located.node.sectionFile !== targetNode.sectionFile) {
         throw staleHeadingPath(docPath, headingPath, "cannot rewrite");
       }
-      const { siblings, index: idx, node: oldNode } = located;
-      for (const root of replacementRoots) {
-        if (root.heading === "") continue;
+      const { siblings, node: oldNode } = located;
+      for (const section of parsedSections) {
+        if (section.headingPath.length !== 1) continue;
         assertNoDuplicateSiblingHeadingCollision(siblings, {
           operation: "rewrite",
           docPath,
           parentHeadingPath: parentPath,
           targetSectionFile: oldNode.sectionFile,
-          proposedHeading: root.heading,
-          proposedHeadingLevel: root.headingLevel,
+          proposedHeading: section.heading,
+          proposedHeadingLevel: section.headingLevel,
         });
       }
       const parentSkeletonPath = ctx.resolveSkeletonPathFor(parentPath);
       const removed = ctx.flattenNode(oldNode, parentPath, parentSkeletonPath);
-      ctx.addBodyHoldersToParents(replacementRoots);
-      siblings.splice(idx, 1, ...replacementRoots);
-
-      const added: FlatEntry[] = [];
-      for (const node of replacementRoots) {
-        added.push(...ctx.flattenNode(node, parentPath, parentSkeletonPath));
-      }
-
-      const bodyWrites = buildBodyWritesForReplacement(docPath, added, bodyByResultingHeadingPath);
+      const { added, bodyWrites } = planSiblingInstall(
+        ctx,
+        docPath,
+        { kind: "replace", headingPath },
+        parsedSections,
+        existingContentByResultingPath,
+      );
 
       if (hasOrphan) {
         if (preMutationMergeTarget) {
@@ -2282,129 +2746,19 @@ export class ProposalShadowContentLayer {
     }
   }
 
-  private async materializeAncestorHeadings(docPath: DocPath, headingPath: string[]): Promise<FlatEntry[]> {
+  /** Insert an empty before-first-heading section at the front of the roots —
+   *  the only slot a BFH may occupy. The caller has checked none exists. */
+  private async createEmptyBfhAtFront(docPath: DocPath): Promise<FlatEntry> {
     const skeleton = await this.getWritableSkeleton(docPath);
-    const created: FlatEntry[] = [];
-
-    let leafParentPath: string[] | null = null;
-    let leafParentBody: SectionBody | null = null;
-    let bhAbsolutePathForMigration: string | null = null;
-    for (let i = 1; i < headingPath.length; i++) {
-      const ancestorPath = headingPath.slice(0, i);
-      if (!skeleton.has(ancestorPath)) break;
-      const isLeaf = skeleton.subtreeEntries(ancestorPath).length === 1;
-      if (isLeaf) {
-        leafParentPath = ancestorPath;
-      }
-    }
-    if (leafParentPath !== null) {
-      const entry = skeleton.requireContentEntryByHeadingPath(leafParentPath);
-      leafParentBody = bodyFromDisk((await this.readEffectiveSectionBody(entry.absolutePath)) ?? "");
-    }
-
     const plan = await skeleton.applyStructuralMutationTransaction((ctx) => {
-      const newlyAdded: FlatEntry[] = [];
-
-      if (headingPath.length === 0 && !skeleton.has([])) {
-        const bfhFile = generateBeforeFirstHeadingFilename();
-        const bfhNode: SkeletonNode = { heading: "", headingLevel: HeadingLevel.beforeFirstHeading, sectionFile: bfhFile, children: [] };
-        ctx.roots.unshift(bfhNode);
-        newlyAdded.push(...ctx.flattenNode(bfhNode, [], resolveSkeletonPath(docPath, this.overlayRoot)));
-      }
-
-      let topNewParentPath: string[] | null = null;
-      const newSegmentPaths: string[][] = [];
-      for (let i = 1; i <= headingPath.length; i++) {
-        const ancestorPath = headingPath.slice(0, i);
-        if (skeleton.has(ancestorPath)) continue;
-        if (topNewParentPath === null) topNewParentPath = ancestorPath;
-        const parentPath = ancestorPath.slice(0, -1);
-        const parentSiblings = ctx.findSiblingList(parentPath);
-        const headingLevel = HeadingLevel.parse(parentPath.length === 0
-          ? 1
-          : skeleton.requireStructuralNodeByHeadingPath(parentPath).headingLevel + 1);
-        const heading = ancestorPath[ancestorPath.length - 1];
-        const node: SkeletonNode = {
-          heading,
-          headingLevel,
-          sectionFile: generateSectionFilename(heading),
-          children: [],
-        };
-        parentSiblings.push(node);
-        newSegmentPaths.push([...ancestorPath]);
-      }
-
-      let migratedBhHeadingPath: string[] | null = null;
-      if (leafParentPath !== null && leafParentBody !== null) {
-        const parentNode = ctx.locateStructuralNodeByHeadingPath(leafParentPath)?.node;
-        if (!parentNode) {
-          throw new Error(
-            `Skeleton integrity error in ${docPath}: leaf parent ` +
-            `[${leafParentPath.join(" > ")}] vanished during materializeAncestorHeadings`,
-          );
-        }
-        ctx.addBodyHoldersToParents([parentNode]);
-        const bh = parentNode.children[0];
-        if (!bh || bh.headingLevel !== 0 || bh.heading !== "") {
-          throw new Error(
-            `Skeleton integrity error in ${docPath}: addBodyHoldersToParents ` +
-            `did not prepend body holder for [${leafParentPath.join(" > ")}]`,
-          );
-        }
-        const parentSkeletonPath = ctx.resolveSkeletonPathFor(leafParentPath);
-        bhAbsolutePathForMigration = path.join(`${parentSkeletonPath}.sections`, bh.sectionFile);
-        migratedBhHeadingPath = [...leafParentPath];
-        if (topNewParentPath === null || leafParentPath.length < topNewParentPath.length) {
-          topNewParentPath = [...leafParentPath];
-        }
-      }
-
-      for (const segPath of newSegmentPaths) {
-        const node = ctx.locateStructuralNodeByHeadingPath(segPath)?.node;
-        if (node) ctx.addBodyHoldersToParents([node]);
-      }
-
-      if (topNewParentPath !== null) {
-        const located = ctx.locateStructuralNodeByHeadingPath(topNewParentPath);
-        if (!located) {
-          throw new Error(
-            `Skeleton integrity error in ${docPath}: top new ancestor ` +
-            `[${topNewParentPath.join(" > ")}] vanished during materializeAncestorHeadings`,
-          );
-        }
-        newlyAdded.push(
-          ...ctx.flattenNode(located.node, located.parentPath, located.parentSkeletonPath),
-        );
-      }
-
-      const migratedBhKey = migratedBhHeadingPath !== null
-        ? migratedBhHeadingPath.join("\u0000")
-        : null;
-      const bodyWrites: StructuralMutationPlan["bodyWrites"] = [];
-      const seenBodyPaths = new Set<string>();
-      for (const e of newlyAdded) {
-        if (e.isSubSkeleton) continue;
-        if (seenBodyPaths.has(e.absolutePath)) continue;
-        seenBodyPaths.add(e.absolutePath);
-        const isMigratedBh =
-          migratedBhKey !== null
-          && e.headingLevel === 0
-          && e.heading === ""
-          && e.headingPath.join("\u0000") === migratedBhKey;
-        bodyWrites.push({
-          absolutePath: e.absolutePath,
-          content: isMigratedBh ? (leafParentBody as unknown as string) : "",
-        });
-      }
-
+      const bfhEntry = ctx.createBfhAtFront();
       return {
         removed: [],
-        added: newlyAdded,
-        bodyWrites,
+        added: [bfhEntry],
+        bodyWrites: [{ absolutePath: bfhEntry.absolutePath, content: "" }],
         fragmentKeyRemaps: [],
       } satisfies StructuralMutationPlan;
     });
-
     for (const write of plan.bodyWrites) {
       await this.writeOverlayBodyFile(
         docPath,
@@ -2412,8 +2766,7 @@ export class ProposalShadowContentLayer {
         write.content,
       );
     }
-    created.push(...plan.added);
-    return created;
+    return plan.added[0];
   }
 
   async tombstoneDocumentExplicit(docPath: DocPath): Promise<void> {

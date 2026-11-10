@@ -53,11 +53,12 @@ describe("proposal-bound effective document state (item 29)", () => {
     const { id } = await createTransientProposal(WRITER, "i29 proposal edit");
     // Add a section that does not exist in canonical.
     await mutateProposalContent(id, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: DOC,
       headingPath: ["Proposal Only"],
       heading: "Proposal Only",
       content: sectionWriteInputFromExternal("Proposal-only body."),
+      afterHeadingPath: ["Canonical Title"],
     });
 
     const reader = ProposalReader.open(id, "pending");
@@ -74,11 +75,12 @@ describe("proposal-bound effective document state (item 29)", () => {
     const { id } = await createTransientProposal(WRITER, "i29 tombstone");
     // First establish a proposal skeleton, then delete the document in the proposal.
     await mutateProposalContent(id, {
-      kind: "write_section",
+      kind: "create_section",
       docPath: DOC,
       headingPath: ["Proposal Only"],
       heading: "Proposal Only",
       content: sectionWriteInputFromExternal("Proposal-only body."),
+      afterHeadingPath: ["Canonical Title"],
     });
     expect(await ProposalReader.open(id, "pending").getDocumentState(DOC)).toBe("live");
 

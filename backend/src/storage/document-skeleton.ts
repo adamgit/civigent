@@ -1193,6 +1193,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
         this.flattenNode(node, parentPath, parentSkeletonPath),
       addBodyHoldersToParents: (nodes) => addBodyHoldersToParents(nodes),
       locateStructuralNodeByHeadingPath: (headingPath) => this.locateStructuralNodeByHeadingPath(headingPath),
+      placeSectionNodes: (placement, nodes) => this.placeSectionNodes(placement, nodes),
       createBfhAtFront: () => {
         if (this.roots[0]?.headingLevel === 0 && this.roots[0]?.heading === "") {
           throw new Error(
@@ -1224,6 +1225,32 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
     validateMutationPlan(plan, this.docPath);
     await this.persistSkeletonTree();
     return plan;
+  }
+
+  private placeSectionNodes(placement: SectionNodePlacement, nodes: SkeletonNode[]): void {
+    if (placement.kind === "replace") {
+      const located = this.locateStructuralNodeByHeadingPath(placement.headingPath);
+      if (!located) throw staleHeadingPath(this.docPath, placement.headingPath, "cannot replace");
+      located.siblings.splice(located.index, 1, ...nodes);
+      return;
+    }
+    if (placement.kind === "only-child") {
+      const siblings = this.findSiblingList(placement.parentPath);
+      if (siblings.some((n) => !isBodyHolderShape(n))) {
+        throw new Error(
+          `Cannot add a section under [${placement.parentPath.join(" > ")}] in ${this.docPath} ` +
+          `without an anchor: that parent already has child sections.`,
+        );
+      }
+      siblings.push(...nodes);
+      return;
+    }
+    if (placement.anchorHeadingPath.length === 0) {
+      throw new Error(`Cannot place sections relative to the before-first-heading section in ${this.docPath}.`);
+    }
+    const located = this.locateStructuralNodeByHeadingPath(placement.anchorHeadingPath);
+    if (!located) throw staleHeadingPath(this.docPath, placement.anchorHeadingPath, `cannot place ${placement.kind} (anchor)`);
+    located.siblings.splice(placement.kind === "before" ? located.index : located.index + 1, 0, ...nodes);
   }
 
   // --- Heading removal (one engine: predecessor merge / document-start anchor / reparent) ---
@@ -1806,6 +1833,7 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
   // inMemoryEmpty:             creates an in-memory-only empty skeleton (no disk writes)
   // createEmptySkeletonInRoot: creates AND persists an empty skeleton into a content root
   // loadNodesFromRoot:         single-root structure read (no instance), for proposal-composed loads
+  // loadEffectiveNodes:        canonical merged with a proposal overlay (no instance), the structure reads see
   // fromNodes:                 builds a single-root mutable skeleton from pre-assembled nodes
   // materializeInheritedSkeletonFromCanonical: first-edit canonical init (persists inherited structure)
 
@@ -1817,6 +1845,22 @@ export class DocumentSkeletonInternal extends DocumentSkeleton {
    */
   static async loadNodesFromRoot(docPath: DocPath, contentRoot: string): Promise<SkeletonNode[]> {
     const nodes = readSkeletonRootTree(resolveSkeletonPath(docPath, contentRoot));
+    validateNoDuplicateRoots(nodes, docPath);
+    return nodes;
+  }
+
+  /**
+   * Effective structure read: current canonical merged with the overlay spine,
+   * minus `deletedSectionFiles` — the same tree `fromDisk` builds. Returns
+   * fresh nodes the caller may mutate.
+   */
+  static async loadEffectiveNodes(
+    docPath: DocPath,
+    overlayRoot: string,
+    canonicalRoot: string,
+    deletedSectionFiles?: ReadonlySet<string>,
+  ): Promise<SkeletonNode[]> {
+    const nodes = buildSkeletonTree(docPath, overlayRoot, canonicalRoot, deletedSectionFiles);
     validateNoDuplicateRoots(nodes, docPath);
     return nodes;
   }
@@ -2262,7 +2306,20 @@ export interface MutationTransactionContext {
    * check `roots[0]?.level === 0 && roots[0]?.heading === ""` first.
    */
   createBfhAtFront(): FlatEntry;
+  /**
+   * Put `nodes` into the tree by heading path: in place of an existing
+   * section, immediately before or after a same-parent anchor section, or
+   * under a parent that has no child sections yet.
+   */
+  placeSectionNodes(placement: SectionNodePlacement, nodes: SkeletonNode[]): void;
 }
+
+export type SectionNodePlacement =
+  | { kind: "replace"; headingPath: string[] }
+  | { kind: "before" | "after"; anchorHeadingPath: string[] }
+  | { kind: "only-child"; parentPath: string[] };
+
+export type SectionInsertPlacement = Exclude<SectionNodePlacement, { kind: "replace" }>;
 
 /**
  * Plan returned from a structural mutation closure.

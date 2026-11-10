@@ -22,6 +22,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   ProposalShadowContentLayer,
+  type ParsedMarkdownRewriteSection,
   type UpsertSectionFromMarkdownDetailedResult,
 } from "./content-layer.js";
 import { ProposalReader } from "./proposal-reader.js";
@@ -35,8 +36,8 @@ import { resolveSkeletonPath } from "./document-skeleton.js";
 import { gitShowFile, extractHistoricalTree } from "./git-repo.js";
 import { ContentLayer } from "./content-layer.js";
 import { SectionRef } from "../domain/section-ref.js";
-import type { ContentEntry, FlatEntry } from "./document-skeleton.js";
-import { sectionWriteInputFromExternal, type SectionBody, type SectionBodyWithPotentialSubsections } from "./section-formatting.js";
+import type { ContentEntry, FlatEntry, SectionInsertPlacement } from "./document-skeleton.js";
+import type { SectionBody, SectionBodyWithPotentialSubsections } from "./section-formatting.js";
 import type { ProposalId, ProposalStatus } from "../types/shared.js";
 import type { ProposalSubtreeMutationResult } from "./proposal-facade-types.js";
 
@@ -102,27 +103,56 @@ export class ProposalEditor extends ProposalReader {
   // ─── Structural section operations ────────────────────────────────
 
   /**
-   * Create a section at a heading path with optional initial content. Routes
-   * through the same auto-creating parser-driven upsert path as
-   * `writeSection`, so markdown structural-expansion semantics are preserved.
+   * Place a parsed forest immediately before `anchorHeadingPath`, as siblings
+   * of the anchor. `sections` are addressed relative to the anchor's parent.
    */
-  async createSection(
+  async insertSiblingForestBefore(
+    docPath: DocPath,
+    anchorHeadingPath: string[],
+    sections: ReadonlyArray<ParsedMarkdownRewriteSection>,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    return this.shadow.insertSiblingForestBefore(docPath, anchorHeadingPath, sections);
+  }
+
+  /**
+   * Write a section so it sits immediately before or after a same-parent
+   * sibling. A missing section is installed in that slot, then filled.
+   */
+  async upsertSectionBeside(
     docPath: DocPath,
     headingPath: string[],
     heading: string,
-    initialContent: SectionBodyWithPotentialSubsections = sectionWriteInputFromExternal(""),
+    content: SectionBodyWithPotentialSubsections,
+    anchorHeadingPath: string[],
+    position: "before" | "after",
   ): Promise<UpsertSectionFromMarkdownDetailedResult> {
-    return this.shadow.upsertSection(new SectionRef(docPath, headingPath), heading, initialContent);
+    return this.shadow.upsertSectionBeside(docPath, headingPath, heading, content, anchorHeadingPath, position);
   }
 
-  /** Move a subtree under a new parent at a specified level. */
+  /**
+   * Write a section with no placement anchor: rewrite it where it sits, or
+   * install it where each new segment is the only real sibling, or reject.
+   */
+  async upsertSectionAtOnlySiblingSlot(
+    docPath: DocPath,
+    headingPath: string[],
+    heading: string,
+    content: SectionBodyWithPotentialSubsections,
+  ): Promise<UpsertSectionFromMarkdownDetailedResult> {
+    return this.shadow.upsertSectionAtOnlySiblingSlot(docPath, headingPath, heading, content);
+  }
+
+  /**
+   * Move a subtree to `destination` at a specified level: beside a same-parent
+   * anchor, or as the only child section of a parent that has none.
+   */
   async moveSection(
     docPath: DocPath,
     headingPath: string[],
-    newParentPath: string[],
+    destination: SectionInsertPlacement,
     newHeadingLevel: HeadingLevel,
   ): Promise<ProposalSubtreeMutationResult> {
-    return this.shadow.moveSubtree(docPath, headingPath, newParentPath, newHeadingLevel);
+    return this.shadow.moveSubtree(docPath, headingPath, destination, newHeadingLevel);
   }
 
   /**
@@ -130,8 +160,9 @@ export class ProposalEditor extends ProposalReader {
    * after `targetHeadingPath`. Pure positional reorder (no key remap, no body
    * rewrite). Two callers: live cross-section drag/drop
    * (`requestDocSessionMove` / MW-10) and proposal-scoped mutate
-   * (`reorder_section` and `create_section` placement via
-   * `mutateProposalContent`).
+   * (`reorder_section` via `mutateProposalContent`). A `create_section` with
+   * an anchor reorders only a section that already existed; a new one is
+   * installed beside its anchor by `upsertSectionBeside`.
    */
   async reorderSection(
     docPath: DocPath,

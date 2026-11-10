@@ -91,6 +91,7 @@ describe("manifest ↔ overlay consistency under proposal editing", () => {
       headingPath: ["Timeline"],
       heading: "Timeline",
       content: "re-created timeline body",
+      afterHeadingPath: ["Overview"],
     });
     await assertManifestConsistent(id, SAMPLE_DOC_PATH, STATUS);
     expect(await effectiveKeys(id)).toContain("Timeline");

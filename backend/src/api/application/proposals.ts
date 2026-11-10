@@ -34,12 +34,13 @@ import { propagateCommitToLiveSessions } from "../../ws/crdt-ws-coordinator.js";
 import { clearImpairment, raiseImpairmentForLeftoverProposal } from "../../runtime/impairment-registry.js";
 import { AgentWritePolicy, humanBypassPolicyResult } from "../../domain/agent-write-policy.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
+import { ProposalSectionReorderError } from "../../storage/mutate-proposal-content.js";
 import { listProposalOverlayDocumentPaths } from "../../storage/proposal-overlay-ownership.js";
 import { sectionWriteInputFromExternal } from "../../storage/section-formatting.js";
 import { SectionRef } from "../../domain/section-ref.js";
 import { DocPath } from "../../types/shared.js";
 
-export { ProposalNotFoundError, InvalidProposalStateError, isProposalStatus };
+export { ProposalNotFoundError, InvalidProposalStateError, ProposalSectionReorderError, isProposalStatus };
 
 export type ProposalWriter = Pick<WriterIdentity, "id" | "type" | "displayName" | "email">;
 
@@ -372,12 +373,20 @@ async function stageProposalSectionContent(
   const createdDocPaths: DocPath[] = [];
   for (const s of sections) {
     const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
-    const writeResult = await editor.writeSection(
-      DocPath.parse(s.doc_path),
-      s.heading_path,
-      heading,
-      sectionWriteInputFromExternal(s.content),
-    );
+    let writeResult;
+    try {
+      writeResult = await editor.writeSection(
+        DocPath.parse(s.doc_path),
+        s.heading_path,
+        heading,
+        sectionWriteInputFromExternal(s.content),
+      );
+    } catch (error) {
+      if (error instanceof ProposalSectionReorderError) {
+        return { ok: false, status: 400, message: error.message };
+      }
+      throw error;
+    }
     if (proposal.status === "inprogress" && writeResult.createdDocument === true) {
       createdDocPaths.push(s.doc_path);
     }

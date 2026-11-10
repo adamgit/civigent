@@ -46,15 +46,13 @@ const NESTED_DOC_PATH = "/ops/nested.md";
  */
 async function createNestedDocument(dataRoot: string): Promise<void> {
   const { ProposalShadowContentLayer } = await import("../../storage/content-layer.js");
-  const { SectionRef } = await import("../../domain/section-ref.js");
   const contentDir = join(dataRoot, "content");
-  // Overlay root === canonical root, so these writes land directly in canonical.
+  // Overlay root === canonical root, so this write lands directly in canonical.
   const layer = new ProposalShadowContentLayer(contentDir, contentDir);
-  await layer.upsertSection(new SectionRef(NESTED_DOC_PATH, ["Alpha"]), "Alpha", "alpha body" as never);
-  await layer.upsertSection(
-    new SectionRef(NESTED_DOC_PATH, ["Alpha", "Alpha Child"]), "Alpha Child", "alpha child body" as never,
+  await layer.createDocumentFromMarkdown(
+    NESTED_DOC_PATH,
+    "# Alpha\n\nalpha body\n\n## Alpha Child\n\nalpha child body\n\n# Beta\n\nbeta body\n",
   );
-  await layer.upsertSection(new SectionRef(NESTED_DOC_PATH, ["Beta"]), "Beta", "beta body" as never);
   await gitExec(["add", "content/"], dataRoot);
   await gitExec([
     "-c", "user.name=Test", "-c", "user.email=test@test.local",

@@ -39,8 +39,7 @@ async function newEditor(): Promise<ProposalEditor> {
 describe("rename_section duplicate-sibling-heading guard", () => {
   it("rejects a top-level rename that collides with a same-parent sibling", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Overview"], "Overview", "overview body");
-    await editor.createSection("/guard.md", ["Timeline"], "Timeline", "timeline body");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Overview\n\noverview body\n\n# Timeline\n\ntimeline body\n");
 
     await expect(
       editor.renameSection("/guard.md", ["Overview"], "Timeline"),
@@ -53,8 +52,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("treats case-insensitively-equal siblings as collisions", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Overview"], "Overview", "");
-    await editor.createSection("/guard.md", ["Timeline"], "Timeline", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Overview\n\n# Timeline\n");
 
     await expect(
       editor.renameSection("/guard.md", ["Overview"], "TIMELINE"),
@@ -67,8 +65,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("rejects a nested-child rename that collides with a same-parent sibling", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Parent", "Alpha"], "Alpha", "alpha");
-    await editor.createSection("/guard.md", ["Parent", "Beta"], "Beta", "beta");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Parent\n\n## Alpha\n\nalpha\n\n## Beta\n\nbeta\n");
 
     await expect(
       editor.renameSection("/guard.md", ["Parent", "Alpha"], "Beta"),
@@ -81,12 +78,12 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("does not treat cousin sections in different subtrees as a collision", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["ParentOne", "Alpha"], "Alpha", "");
-    await editor.createSection("/guard.md", ["ParentTwo", "Alpha"], "Alpha", "");
     // Renaming an unrelated sibling under ParentOne to "Beta" must succeed
     // (Beta only appears as a cousin under ParentTwo, not as a sibling).
-    await editor.createSection("/guard.md", ["ParentOne", "Gamma"], "Gamma", "");
-    await editor.createSection("/guard.md", ["ParentTwo", "Beta"], "Beta", "");
+    await editor.writeDocumentFromMarkdown(
+      "/guard.md",
+      "# ParentOne\n\n## Alpha\n\n## Gamma\n\n# ParentTwo\n\n## Alpha\n\n## Beta\n",
+    );
 
     await editor.renameSection("/guard.md", ["ParentOne", "Gamma"], "Beta");
 
@@ -98,8 +95,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("allows a rename to a fresh heading with no sibling conflict", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Alpha"], "Alpha", "alpha body");
-    await editor.createSection("/guard.md", ["Beta"], "Beta", "beta body");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Alpha\n\nalpha body\n\n# Beta\n\nbeta body\n");
 
     await editor.renameSection("/guard.md", ["Alpha"], "Alpha Renamed");
 
@@ -111,8 +107,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("allows a no-op rename to the target's own current heading", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Overview"], "Overview", "body");
-    await editor.createSection("/guard.md", ["Timeline"], "Timeline", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Overview\n\nbody\n\n# Timeline\n");
 
     // Renaming a section to its own heading is a no-op and must not
     // self-collide.
@@ -125,9 +120,8 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("rejects renaming a sub-skeleton parent to a duplicate sibling heading", async () => {
     const editor = await newEditor();
-    // Parent1 becomes a sub-skeleton parent by having a child.
-    await editor.createSection("/guard.md", ["Parent1", "Child"], "Child", "child body");
-    await editor.createSection("/guard.md", ["Parent2"], "Parent2", "p2");
+    // Parent1 is a sub-skeleton parent by having a child.
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Parent1\n\n## Child\n\nchild body\n\n# Parent2\n\np2\n");
 
     await expect(
       editor.renameSection("/guard.md", ["Parent1"], "Parent2"),
@@ -141,8 +135,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("rejects a CRDT-style retitleSection into a duplicate sibling heading", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Overview"], "Overview", "");
-    await editor.createSection("/guard.md", ["Timeline"], "Timeline", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Overview\n\n# Timeline\n");
 
     // retitleSection covers the CRDT quiescence reflection path
     // (`reflectHeadingEditIntoProposal → editor.retitleSection`). The guard
@@ -159,8 +152,7 @@ describe("rename_section duplicate-sibling-heading guard", () => {
 
   it("allows a retitleSection level-change when heading text does not collide", async () => {
     const editor = await newEditor();
-    await editor.createSection("/guard.md", ["Overview"], "Overview", "");
-    await editor.createSection("/guard.md", ["Timeline"], "Timeline", "");
+    await editor.writeDocumentFromMarkdown("/guard.md", "# Overview\n\n# Timeline\n");
 
     await editor.retitleSection("/guard.md", ["Overview"], "Overview Renamed", 2, "renamed body");
 

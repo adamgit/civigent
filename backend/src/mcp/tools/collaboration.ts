@@ -17,7 +17,7 @@ import { makeToolErrorResult, parseToolArgumentDocPath } from "../protocol.js";
 import type { McpContentBlock, McpToolCallResult } from "../protocol.js";
 import { readSectionWithHeading, SectionNotFoundError } from "../../storage/section-reader.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
-import { mutateProposalContent } from "../../storage/mutate-proposal-content.js";
+import { mutateProposalContent, ProposalSectionReorderError } from "../../storage/mutate-proposal-content.js";
 import { HeadingNotFoundError } from "../../storage/heading-resolver.js";
 import { recordAgentRead } from "../../ws/agent-read.js";
 import {
@@ -367,14 +367,21 @@ const createProposalHandler: ToolHandler = async (args, ctx) => {
     // stored) so manifest derivation dedups against the declared section and
     // preserves its justification (the agent-write-policy bypass, spec 12).
     const heading = s.heading_path.length === 0 ? "" : s.heading_path[s.heading_path.length - 1]!;
-    await mutateProposalContent(mcpProposalId, {
-      kind: "write_section",
-      docPath: s.doc_path,
-      headingPath: s.heading_path,
-      heading,
-      content: sectionWriteInputFromExternal(s.content),
-      justification: s.justification,
-    });
+    try {
+      await mutateProposalContent(mcpProposalId, {
+        kind: "write_section",
+        docPath: s.doc_path,
+        headingPath: s.heading_path,
+        heading,
+        content: sectionWriteInputFromExternal(s.content),
+        justification: s.justification,
+      });
+    } catch (error) {
+      if (error instanceof ProposalSectionReorderError) {
+        return makeToolErrorResult(error.message);
+      }
+      throw error;
+    }
   }
 
   // Evaluate immediately (informational — agent must call publish_proposal explicitly)
@@ -768,6 +775,9 @@ const writeProposalSectionHandler: ToolHandler = async (args, ctx) => {
       return makeToolErrorResult(`Proposal not found: ${proposalId}`);
     }
     if (error instanceof InvalidProposalStateError) {
+      return makeToolErrorResult(error.message);
+    }
+    if (error instanceof ProposalSectionReorderError) {
       return makeToolErrorResult(error.message);
     }
     throw error;

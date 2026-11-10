@@ -258,10 +258,9 @@ describe("commit-pipeline", () => {
     expect(absorb.rewrittenDocumentPaths).toContain(newNotePath);
   });
 
-  // Empty create_section materializes the heading in the overlay, then
-  // isIdentityUpsert returns writtenEntries: [] so mutate adds no section claim
-  // and no document target. Exclusive-scope absorb on the rename pair never
-  // walks that overlay; publish still commits.
+  // An empty create_section claims the heading it installs. Alongside a rename
+  // (document targets → wholesale absorb), that section claim must still land in
+  // canonical, whether the create made a new document or added to an existing one.
   it("commit lands an empty create_section that shares the proposal with a rename", async () => {
     const sourcePath = "/canary-empty/source.md";
     const renamedPath = "/canary-empty/legacy/source.md";
@@ -308,6 +307,7 @@ describe("commit-pipeline", () => {
       docPath: hostPath,
       headingPath: [newHeading],
       heading: newHeading,
+      afterHeadingPath: ["Timeline"],
     });
     await mutateProposalContent(id, {
       kind: "rename_document",

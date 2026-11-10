@@ -1,8 +1,8 @@
 /**
  * Unit tests for ProposalEditor — the mutating proposal-scoped facade.
  *
- * Covers single-write auto-creation (new doc, new leaf heading, multi-level
- * ancestor chain), atomicity (no partial heading chain observable), structural
+ * Covers single-write auto-creation (new doc, multi-level ancestor chain),
+ * rejection of an unanchored new sibling, atomicity (no partial heading chain observable), structural
  * ops (create/move/rename/delete section, rename/delete document via
  * tombstone), and replayDocumentFromGitCommit returning restored heading paths
  * with no normalization.
@@ -12,6 +12,7 @@ import { createTempDataRoot, type TempDataRootContext } from "../helpers/temp-da
 import { createProposal } from "../../storage/proposal-repository.js";
 import { ProposalEditor } from "../../storage/proposal-editor.js";
 import { ProposalReader } from "../../storage/proposal-reader.js";
+import { ProposalSectionReorderError } from "../../storage/content-layer.js";
 import { importFilesToProposal } from "../../storage/import-service.js";
 import { publishWholesaleToCanonical } from "../../storage/commit-pipeline.js";
 import { getHeadSha } from "../../storage/git-repo.js";
@@ -45,15 +46,19 @@ describe("ProposalEditor", () => {
     expect(body).toContain("Hello world.");
   });
 
-  it("auto-creates a new leaf heading in an existing document", async () => {
+  it("rejects a new sibling heading without a placement anchor, and installs it beside its anchor", async () => {
     const editor = await newEditor();
     await editor.writeSection("/doc.md", ["First"], "First", "first body");
 
-    await editor.writeSection("/doc.md", ["Second"], "Second", "second body");
+    await expect(
+      editor.writeSection("/doc.md", ["Second"], "Second", "second body"),
+    ).rejects.toBeInstanceOf(ProposalSectionReorderError);
+    expect(await editor.listHeadingPaths("/doc.md")).toEqual([["First"]]);
 
-    const headingPaths = await editor.listHeadingPaths("/doc.md");
-    expect(headingPaths).toContainEqual(["First"]);
-    expect(headingPaths).toContainEqual(["Second"]);
+    await editor.upsertSectionBeside("/doc.md", ["Second"], "Second", "second body", ["First"], "after");
+
+    expect(await editor.listHeadingPaths("/doc.md")).toEqual([["First"], ["Second"]]);
+    expect(await editor.readEffectiveSection("/doc.md", ["Second"])).toContain("second body");
   });
 
   it("auto-creates a multi-level ancestor chain in a single write", async () => {
@@ -131,8 +136,7 @@ describe("ProposalEditor", () => {
 
   it("createSection / renameSection / moveSection / deleteSection", async () => {
     const editor = await newEditor();
-    await editor.createSection("/s.md", ["Alpha"], "Alpha", "alpha body");
-    await editor.createSection("/s.md", ["Beta"], "Beta", "beta body");
+    await editor.writeDocumentFromMarkdown("/s.md", "# Alpha\n\nalpha body\n\n# Beta\n\nbeta body\n");
 
     // rename
     await editor.renameSection("/s.md", ["Alpha"], "Alpha Renamed");
@@ -141,7 +145,7 @@ describe("ProposalEditor", () => {
     expect(paths).not.toContainEqual(["Alpha"]);
 
     // move Beta under Alpha Renamed at level 3
-    await editor.moveSection("/s.md", ["Beta"], ["Alpha Renamed"], 3);
+    await editor.moveSection("/s.md", ["Beta"], { kind: "only-child", parentPath: ["Alpha Renamed"] }, 3);
     paths = await editor.listHeadingPaths("/s.md");
     expect(paths).toContainEqual(["Alpha Renamed", "Beta"]);
     expect(paths).not.toContainEqual(["Beta"]);
