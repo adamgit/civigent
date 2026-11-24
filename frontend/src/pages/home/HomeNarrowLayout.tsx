@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 import type { HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
 import type { HomeActiveFolder } from "./home-folder-activity";
-import type { HomeAgentActivityRowModel } from "./home-agent-activity";
-import type { HomeRecentDocument } from "./home-recent-documents";
+import type { HomeAgentRowsData } from "./home-agent-activity";
+import type { HomeRecentDocumentsData } from "./home-recent-documents";
+import type { Feed } from "../../utils/feed-state";
+import { FeedView } from "../../components/feed/FeedView";
 import { HomeHeader } from "../../components/home/HomeHeader";
 import { HomeSingleUserSlide } from "../../components/home/HomeSingleUserSlide";
 import { HomeDocsSearchRow } from "../../components/home/HomeDocsSearchRow";
@@ -18,10 +20,9 @@ interface HomeNarrowLayoutProps {
   involvementPreset: HumanInvolvementPresetName | null;
   folderCount: number;
   documentCount: number;
-  folders: HomeActiveFolder[];
-  agentRows: HomeAgentActivityRowModel[];
-  recentDocuments: HomeRecentDocument[];
-  recentDocumentTotal: number;
+  folders: Feed<HomeActiveFolder[]>;
+  agentRows: Feed<HomeAgentRowsData>;
+  recentDocuments: Feed<HomeRecentDocumentsData>;
   alerts: ReactNode;
   singleUser: boolean;
   authMode: LoginProvider | null;
@@ -36,7 +37,6 @@ export function HomeNarrowLayout({
   folders,
   agentRows,
   recentDocuments,
-  recentDocumentTotal,
   alerts,
   singleUser,
   authMode,
@@ -62,14 +62,20 @@ export function HomeNarrowLayout({
             </div>
           ) : null}
           <HomeDocsSearchRow folderCount={folderCount} documentCount={documentCount} layoutMode="narrow" />
-          <HomeActiveFoldersSection folders={folders} layoutMode="narrow" />
+          <FeedView feed={folders} subject="folder activity">
+            {(loadedFolders) => <HomeActiveFoldersSection folders={loadedFolders} layoutMode="narrow" />}
+          </FeedView>
           <HomeAgentActivitySection rows={agentRows} layoutMode="narrow" />
-          <HomeRecentDocumentsSection
-            documents={recentDocuments}
-            totalCount={recentDocumentTotal}
-            layoutMode="narrow"
-            windowId={HOME_RECENT_WINDOW_DEFAULT}
-          />
+          <FeedView feed={recentDocuments} subject="recent documents">
+            {({ documents, totalCount }) => (
+              <HomeRecentDocumentsSection
+                documents={documents}
+                totalCount={totalCount}
+                layoutMode="narrow"
+                windowId={HOME_RECENT_WINDOW_DEFAULT}
+              />
+            )}
+          </FeedView>
         </div>
       </div>
     </div>

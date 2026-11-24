@@ -3,16 +3,21 @@ import { Link, useOutletContext } from "react-router-dom";
 import type { AppLayoutOutletContext } from "../app/AppLayout";
 import { useCurrentUser } from "../contexts/CurrentUserContext";
 import { apiClient, resolveWriterId } from "../services/api-client";
-import { KnowledgeStoreWsClient } from "../services/ws-client";
-import { type AgentRosterEntry, type ActivityItem, type AgentRead, type AnyProposal, type HumanInvolvementPresetName, type LoginProvider } from "../types/shared.js";
+import type { ActivityItem, AnyProposal, DocumentTreeEntry, LoginProvider } from "../types/shared.js";
 import { useDocLayoutMode } from "../hooks/useDocLayoutMode";
+import { useAgentActivityFeeds } from "../hooks/useAgentActivityFeeds";
+import {
+  combineFeeds,
+  loadedFeedDataOr,
+  mapLoadedFeed,
+  requirePrimaryFeedWithOptionalExtras,
+  type Feed,
+} from "../utils/feed-state";
 import { HomeNarrowLayout } from "./home/HomeNarrowLayout";
 import { HomeWideLayout } from "./home/HomeWideLayout";
 // Restore the previous wide home with:
 // import { HomeWideLayoutClassic as HomeWideLayout } from "./home/HomeWideLayoutClassic";
 import {
-  HOME_ACTIVITY_FETCH_DAYS,
-  HOME_ACTIVITY_FETCH_LIMIT,
   HOME_RECENT_WINDOW_DAYS,
   homeFolderWindowDays,
   homeRecentWindowDays,
@@ -26,12 +31,16 @@ import {
 import { homeHostLabel, homePageTagline } from "./home/home-title";
 import { countTreeTotals } from "./home/home-tree-stats";
 import { buildActiveFolders } from "./home/home-folder-activity";
-import { buildRecentDocuments, countRecentDocuments } from "./home/home-recent-documents";
-import { buildAgentActivityRows } from "./home/home-agent-activity";
-import { buildAgentTasks } from "../components/home/experiment/build-agent-tasks";
-import { PULSE_FETCH_HOURS } from "../components/home/experiment/build-pulse-hours";
-import type { HomeMcpPulseAction } from "../components/home/experiment/types";
+import {
+  buildRecentDocuments,
+  countRecentDocuments,
+  type HomeRecentDocumentsData,
+} from "./home/home-recent-documents";
+import { buildAgentActivityRows, type HomeAgentRowsData } from "./home/home-agent-activity";
 import { formatHomeTime } from "./home/home-time";
+
+const NO_ACTIVITY: ActivityItem[] = [];
+const NO_PROPOSALS: AnyProposal[] = [];
 
 export function HomePage() {
   const {
@@ -39,6 +48,8 @@ export function HomePage() {
     setDocLayoutNarrow,
     appName,
     entries,
+    treeLoading,
+    treeError,
   } = useOutletContext<AppLayoutOutletContext>();
   const layoutMode = useDocLayoutMode();
   useLayoutEffect(() => {
@@ -58,20 +69,9 @@ export function HomePage() {
   const [bootstrapMessage, setBootstrapMessage] = useState<string | null>(null);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
-  const [involvementPreset, setInvolvementPreset] = useState<HumanInvolvementPresetName | null>(null);
-  const [agents, setAgents] = useState<readonly AgentRosterEntry[]>([]);
-  const [agentsError, setAgentsError] = useState<string | null>(null);
-
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
-  const [activityError, setActivityError] = useState<string | null>(null);
-  const [proposals, setProposals] = useState<AnyProposal[]>([]);
+  const { roster, activity, proposals, agentPulse, agentReads } = useAgentActivityFeeds();
   const [recentWindowId, setRecentWindowId] = useState<HomeRecentWindowId>(readHomeRecentWindow);
   const [folderWindowId, setFolderWindowId] = useState<HomeFolderWindowId>(readHomeFolderWindow);
-  const [proposalsError, setProposalsError] = useState<string | null>(null);
-  const [mcpActions, setMcpActions] = useState<HomeMcpPulseAction[]>([]);
-  const [pulseError, setPulseError] = useState<string | null>(null);
-  const [agentReads, setAgentReads] = useState<AgentRead[]>([]);
-  const wsClient = useMemo(() => new KnowledgeStoreWsClient(), []);
 
   useEffect(() => {
     if (!currentUser?.is_admin) {
@@ -116,133 +116,6 @@ export function HomePage() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .getAgentRoster()
-      .then((res) => {
-        if (!cancelled) {
-          setInvolvementPreset(res.posture.preset);
-          setAgents(res.agents);
-          setAgentsError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setAgentsError(err instanceof Error ? err.message : String(err));
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS)
-      .then((res) => {
-        if (!cancelled) {
-          setActivity(res.items);
-          setActivityError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setActivityError(err instanceof Error ? err.message : String(err));
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .listLiveProposals()
-      .then((res) => {
-        if (!cancelled) {
-          setProposals(res.proposals);
-          setProposalsError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setProposalsError(err instanceof Error ? err.message : String(err));
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .getAgentMcpPulse(PULSE_FETCH_HOURS)
-      .then((res) => {
-        if (!cancelled) {
-          const fromServer = res.actions ?? [];
-          setMcpActions((prev) => {
-            const seen = new Set(
-              fromServer.map((action) => `${action.agent_id}\0${action.ts}\0${action.method}\0${action.doc_path ?? ""}`),
-            );
-            const live = prev.filter(
-              (action) => !seen.has(`${action.agent_id}\0${action.ts}\0${action.method}\0${action.doc_path ?? ""}`),
-            );
-            return live.length === 0 ? fromServer : [...fromServer, ...live];
-          });
-          setPulseError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setMcpActions([]);
-          setPulseError(err instanceof Error ? err.message : String(err));
-        }
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    wsClient.connect();
-    let refreshTimer: number | null = null;
-    const refreshFeeds = () => {
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        apiClient
-          .getActivity(HOME_ACTIVITY_FETCH_LIMIT, HOME_ACTIVITY_FETCH_DAYS)
-          .then((res) => {
-            setActivity(res.items);
-            setActivityError(null);
-          })
-          .catch((err) => { setActivityError(err instanceof Error ? err.message : String(err)); });
-        apiClient
-          .listLiveProposals()
-          .then((res) => {
-            setProposals(res.proposals);
-            setProposalsError(null);
-          })
-          .catch((err) => { setProposalsError(err instanceof Error ? err.message : String(err)); });
-        apiClient
-          .getAgentRoster()
-          .then((res) => {
-            setInvolvementPreset(res.posture.preset);
-            setAgents(res.agents);
-            setAgentsError(null);
-          })
-          .catch((err) => { setAgentsError(err instanceof Error ? err.message : String(err)); });
-      }, 180);
-    };
-    wsClient.onEvent((event) => {
-      if (event.type === "agent:reading") {
-        const { type: _type, ...read } = event;
-        setAgentReads((prev) => [...prev, read]);
-        return;
-      }
-      if (
-        event.type === "content:committed" ||
-        event.type === "proposal:draft" ||
-        event.type === "proposal:inprogress" ||
-        event.type === "proposal:withdrawn"
-      ) {
-        refreshFeeds();
-      }
-    });
-    return () => {
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      wsClient.disconnect();
-    };
-  }, [wsClient]);
 
   const handleBootstrap = async () => {
     setBootstrapWorking(true);
@@ -261,37 +134,54 @@ export function HomePage() {
   };
 
   const treeTotals = useMemo(() => countTreeTotals(entries), [entries]);
+  const treeFeed = useMemo<Feed<DocumentTreeEntry[]>>(() => {
+    if (treeLoading) return { status: "loading" };
+    if (treeError) return { status: "failed", error: new Error(treeError) };
+    return { status: "loaded", data: entries, refreshError: null };
+  }, [treeLoading, treeError, entries]);
+  const activityItems = loadedFeedDataOr(activity, NO_ACTIVITY);
   const folderWindowDays = homeFolderWindowDays(folderWindowId);
   const activeFolders = useMemo(
-    () => buildActiveFolders(entries, activity, Date.now(), folderWindowDays),
-    [entries, activity, folderWindowDays],
+    () =>
+      mapLoadedFeed(combineFeeds({ tree: treeFeed, activity }), (data) =>
+        buildActiveFolders(data.tree, data.activity, Date.now(), folderWindowDays),
+      ),
+    [treeFeed, activity, folderWindowDays],
   );
   const lastChangeAt = useMemo(() => {
     let latest = "";
-    for (const item of activity) {
+    for (const item of activityItems) {
       if (!latest || Date.parse(item.timestamp) > Date.parse(latest)) latest = item.timestamp;
     }
     return latest || null;
-  }, [activity]);
+  }, [activityItems]);
   const currentWriterId = currentUser?.id ?? resolveWriterId();
   const recentWindowDays =
     layoutMode === "wide" ? homeRecentWindowDays(recentWindowId) : HOME_RECENT_WINDOW_DAYS;
   const recentDocuments = useMemo(
-    () => buildRecentDocuments(activity, currentWriterId, Date.now(), recentWindowDays),
+    () =>
+      mapLoadedFeed(activity, (items): HomeRecentDocumentsData => ({
+        documents: buildRecentDocuments(items, currentWriterId, Date.now(), recentWindowDays),
+        totalCount: countRecentDocuments(items, Date.now(), recentWindowDays),
+      })),
     [activity, currentWriterId, recentWindowDays],
   );
-  const recentDocumentTotal = useMemo(
-    () => countRecentDocuments(activity, Date.now(), recentWindowDays),
-    [activity, recentWindowDays],
-  );
   const agentRows = useMemo(
-    () => buildAgentActivityRows(agents, proposals, activity, formatHomeTime),
-    [agents, proposals, activity],
+    () =>
+      mapLoadedFeed(
+        requirePrimaryFeedWithOptionalExtras(roster, {
+          proposals: { subject: "proposals", feed: proposals, valueWhileUnavailable: NO_PROPOSALS },
+          activity: { subject: "recent activity", feed: activity, valueWhileUnavailable: NO_ACTIVITY },
+        }),
+        ({ primary, extras, extrasShortfalls }): HomeAgentRowsData => ({
+          rows: buildAgentActivityRows(primary.agents, extras.proposals, extras.activity, formatHomeTime),
+          extrasShortfalls,
+        }),
+      ),
+    [roster, proposals, activity],
   );
-  const agentTasks = useMemo(
-    () => buildAgentTasks(proposals, mcpActions, agentReads, agents, activity),
-    [proposals, mcpActions, agentReads, agents, activity],
-  );
+  const involvementPreset = roster.status === "loaded" ? roster.data.posture.preset : null;
+  const agentCount = roster.status === "loaded" ? roster.data.agents.length : 0;
 
   const alerts = (
     <>
@@ -310,21 +200,6 @@ export function HomePage() {
       {degradedError && (
         <p className="text-error" style={{ marginBottom: "1rem" }}>
           Could not check for degraded proposals: {degradedError}
-        </p>
-      )}
-      {agentsError && (
-        <p className="text-error" style={{ marginBottom: "1rem" }}>
-          Could not load agents: {agentsError}
-        </p>
-      )}
-      {activityError && (
-        <p className="text-error" style={{ marginBottom: "1rem" }}>
-          Could not load recent activity: {activityError}
-        </p>
-      )}
-      {proposalsError && (
-        <p className="text-error" style={{ marginBottom: "1rem" }}>
-          Could not load proposals: {proposalsError}
         </p>
       )}
       {bootstrapAvailable && currentUser && (
@@ -379,7 +254,6 @@ export function HomePage() {
     involvementPreset,
     folders: activeFolders,
     recentDocuments,
-    recentDocumentTotal,
     alerts,
     singleUser,
     authMode: authMode ?? (singleUser ? "single_user" : null),
@@ -403,7 +277,7 @@ export function HomePage() {
       tagline={homePageTagline(appName)}
       documentCount={treeTotals.documentCount}
       folderCount={treeTotals.folderCount}
-      agentCount={agents.length}
+      agentCount={agentCount}
       lastChangeAt={lastChangeAt}
       folderWindowId={folderWindowId}
       onFolderWindowChange={(id) => {
@@ -415,11 +289,8 @@ export function HomePage() {
         setRecentWindowId(id);
         writeHomeRecentWindow(id);
       }}
-      mcpActions={mcpActions}
+      agentPulse={agentPulse}
       agentReads={agentReads}
-      pulseActivity={activity}
-      agentTasks={agentTasks}
-      pulseError={pulseError}
     />
   );
 }

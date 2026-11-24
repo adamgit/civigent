@@ -1,5 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, ScrollRestoration, useLocation, useNavigate } from "react-router-dom";
+import {
+  SingleFlightCoalescingLoader,
+  type CoalescedLoadMode,
+  type CoalescedLoadOutcome,
+} from "../services/coalescing-loader";
 import { apiClient, SystemStartingError, setUnauthorizedHandler, setSystemStartingHandler, setSystemFatalHandler, setWriterId, clearWriterId } from "../services/api-client";
 import { KnowledgeStoreWsClient } from "../services/ws-client";
 import { routeOwnsItsAuthenticationFlow } from "./pre-auth-routes";
@@ -38,19 +43,6 @@ const TREE_ROW_FLASH_DURATION_MS = 2800;
 const TREE_REFRESH_DEBOUNCE_MS = 100;
 const TREE_LEASE_GAP_MS = 7000;
 const TREE_HEARTBEAT_MS = 1500;
-
-interface TreeLoadWaiter {
-  ticket: number;
-  resolve: () => void;
-}
-
-interface TreeLoadSlot {
-  running: boolean;
-  askSeq: number;
-  completedThrough: number;
-  waiters: TreeLoadWaiter[];
-  hasAppliedOnce: boolean;
-}
 
 type TreeRowFlashKind = "human" | "agent";
 
@@ -278,44 +270,14 @@ export function AppLayout() {
 
   const previousTreePathsRef = useRef<string[] | null>(null);
   const pendingCatalogFlashWriterTypeRef = useRef<string | undefined | null>(null);
-  const treeLoadSlotRef = useRef<TreeLoadSlot>({
-    running: false,
-    askSeq: 0,
-    completedThrough: 0,
-    waiters: [],
-    hasAppliedOnce: false,
-  });
+  const [treeLoader] = useState(() => new SingleFlightCoalescingLoader());
   const treeStaleRef = useRef(false);
   const lastTickRef = useRef(Date.now());
   const refreshTimerRef = useRef<number | null>(null);
 
   const loadTree = useCallback((options?: { background?: boolean }) => {
-    const slot = treeLoadSlotRef.current;
-    const ticket = ++slot.askSeq;
-    const startBackground = options?.background === true;
-
-    const waitForTicket = () =>
-      new Promise<void>((resolve) => {
-        if (ticket <= slot.completedThrough) {
-          resolve();
-          return;
-        }
-        slot.waiters.push({ ticket, resolve });
-      });
-
-    const flushWaiters = () => {
-      const pending: TreeLoadWaiter[] = [];
-      for (const waiter of slot.waiters) {
-        if (waiter.ticket <= slot.completedThrough) {
-          waiter.resolve();
-        } else {
-          pending.push(waiter);
-        }
-      }
-      slot.waiters = pending;
-    };
-
-    const runFetch = (background: boolean) => {
+    const runFetch = (mode: CoalescedLoadMode): Promise<CoalescedLoadOutcome> => {
+      const background = mode === "background";
       if (background) {
         setSyncingTree(true);
       } else {
@@ -331,7 +293,7 @@ export function AppLayout() {
       });
       return apiClient
         .getWorkspaceTree()
-        .then((response) => {
+        .then((response): CoalescedLoadOutcome => {
           setEntries(response.tree);
           setTreeError(null);
           treeStaleRef.current = false;
@@ -342,7 +304,6 @@ export function AppLayout() {
           const added = previousPaths === null ? [] : nextPaths.filter((p) => !previousSet.has(p));
           const removed = previousPaths === null ? [] : previousPaths.filter((p) => !nextSet.has(p));
           previousTreePathsRef.current = nextPaths;
-          slot.hasAppliedOnce = true;
           if (background && pendingCatalogFlashWriterTypeRef.current !== null) {
             queueTreeRowFlashes(added, pendingCatalogFlashWriterTypeRef.current);
             pendingCatalogFlashWriterTypeRef.current = null;
@@ -354,9 +315,10 @@ export function AppLayout() {
             summary: `total=${nextPaths.length} +${added.length} -${removed.length} in ${durationMs}ms`,
             payload: { total: nextPaths.length, added, removed, durationMs },
           });
+          return "applied";
         })
-        .catch((err) => {
-          if (err instanceof SystemStartingError) return;
+        .catch((err): CoalescedLoadOutcome => {
+          if (err instanceof SystemStartingError) return "not-applied";
           treeStaleRef.current = true;
           if (!background) {
             setTreeError(err instanceof Error ? err.message : String(err));
@@ -367,6 +329,7 @@ export function AppLayout() {
             summary: `error: ${err instanceof Error ? err.message : String(err)}`,
             payload: { error: err instanceof Error ? err.message : String(err) },
           });
+          return "not-applied";
         })
         .finally(() => {
           if (background) {
@@ -377,37 +340,11 @@ export function AppLayout() {
         });
     };
 
-    const pump = async (firstBackground: boolean) => {
-      let useBackground = firstBackground;
-      try {
-        while (true) {
-          const startedFor = slot.askSeq;
-          if (slot.hasAppliedOnce) {
-            useBackground = true;
-          }
-          await runFetch(useBackground);
-          slot.completedThrough = startedFor;
-          flushWaiters();
-          if (slot.askSeq === startedFor) {
-            break;
-          }
-        }
-      } finally {
-        slot.running = false;
-        if (slot.askSeq > slot.completedThrough) {
-          slot.running = true;
-          void pump(slot.hasAppliedOnce);
-        }
-      }
-    };
-
-    if (!slot.running) {
-      slot.running = true;
-      void pump(startBackground);
-    }
-
-    return waitForTicket();
-  }, [queueTreeRowFlashes]);
+    return treeLoader.requestLoadStartedAfterNow(
+      options?.background === true ? "background" : "foreground",
+      runFetch,
+    );
+  }, [queueTreeRowFlashes, treeLoader]);
 
   const scheduleTreeRefresh = useCallback((reason: string) => {
     const coalesced = refreshTimerRef.current != null;

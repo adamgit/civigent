@@ -8,9 +8,11 @@ import {
   writeHomeRecentExpanded,
   type HomeRecentWindowId,
 } from "../../../pages/home/home-constants";
-import type { HomeRecentDocument } from "../../../pages/home/home-recent-documents";
+import type { HomeRecentDocument, HomeRecentDocumentsData } from "../../../pages/home/home-recent-documents";
 import { formatHomeCount, formatHomeShortAge } from "../../../pages/home/home-utils";
 import { DocPath } from "../../../types/shared.js";
+import type { Feed } from "../../../utils/feed-state";
+import { FeedView } from "../../feed/FeedView";
 import { SegmentedControl } from "./SegmentedControl";
 
 const COMPACT_LIMIT = 20;
@@ -19,22 +21,19 @@ const COMPACT_WINDOW_OPTIONS = HOME_RECENT_WINDOW_OPTIONS.filter(
 );
 
 interface HomeWideRecentDocumentsCompactProps {
-  documents: HomeRecentDocument[];
-  totalCount: number;
+  recent: Feed<HomeRecentDocumentsData>;
   windowId: HomeRecentWindowId;
   onWindowChange: (id: HomeRecentWindowId) => void;
   now?: Date;
 }
 
 export function HomeWideRecentDocumentsCompact({
-  documents,
-  totalCount,
+  recent,
   windowId,
   onWindowChange,
   now,
 }: HomeWideRecentDocumentsCompactProps) {
   const [expanded, setExpanded] = useState(readHomeRecentExpanded);
-  const slice = documents.slice(0, COMPACT_LIMIT);
 
   const toggle = () => {
     setExpanded((current) => {
@@ -66,9 +65,9 @@ export function HomeWideRecentDocumentsCompact({
         </button>
         {expanded ? (
           <>
-            {totalCount > 0 ? (
+            {recent.status === "loaded" && recent.data.totalCount > 0 ? (
               <span className="panel-header__subtitle">
-                {formatHomeCount(totalCount)} in {windowId}
+                {formatHomeCount(recent.data.totalCount)} in {windowId}
               </span>
             ) : null}
             <span className="panel-header__spacer" />
@@ -90,19 +89,23 @@ export function HomeWideRecentDocumentsCompact({
 
       {expanded ? (
         <div id="recent-documents-body">
-          {totalCount === 0 ? (
-            <p className="home-recent__empty">No recent document changes.</p>
-          ) : (
-            <div className="home-recent-compact__list">
-              {slice.map((document) => (
-                <RecentDocumentChip
-                  key={`${document.docPath}\0${document.writerKind}`}
-                  document={document}
-                  now={now}
-                />
-              ))}
-            </div>
-          )}
+          <FeedView feed={recent} subject="recent documents">
+            {({ documents, totalCount }) =>
+              totalCount === 0 ? (
+                <p className="home-recent__empty">No recent document changes.</p>
+              ) : (
+                <div className="home-recent-compact__list">
+                  {documents.slice(0, COMPACT_LIMIT).map((document) => (
+                    <RecentDocumentChip
+                      key={`${document.docPath}\0${document.writerKind}`}
+                      document={document}
+                      now={now}
+                    />
+                  ))}
+                </div>
+              )
+            }
+          </FeedView>
         </div>
       ) : null}
     </section>

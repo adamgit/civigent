@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
-import type { ActivityItem, AgentRead, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import type { AgentRead, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import type { AgentPulseData } from "../../hooks/useAgentActivityFeeds";
+import type { Feed } from "../../utils/feed-state";
+import { FeedView } from "../../components/feed/FeedView";
 import type { HomeActiveFolder } from "./home-folder-activity";
-import type { HomeRecentDocument } from "./home-recent-documents";
+import type { HomeRecentDocumentsData } from "./home-recent-documents";
 import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
 import { HomeMemoryWidget } from "../../components/home/HomeMemoryWidget";
 import { HomeSearchBar } from "../../components/home/HomeSearchBar";
@@ -10,7 +13,6 @@ import { HomeWideActiveFolders } from "../../components/home/wide/HomeWideActive
 import { HomeWideAgentPulse } from "../../components/home/wide/HomeWideAgentPulse";
 import { HomeWideRecentDocuments } from "../../components/home/wide/HomeWideRecentDocuments";
 import { SiteMasthead } from "../../components/home/wide/SiteMasthead";
-import type { HomeAgentTask, HomeMcpPulseAction } from "../../components/home/experiment/types";
 import "./home.css";
 
 interface HomeWideLayoutClassicProps {
@@ -21,24 +23,19 @@ interface HomeWideLayoutClassicProps {
   folderCount: number;
   agentCount: number;
   lastChangeAt: string | null;
-  folders: HomeActiveFolder[];
+  folders: Feed<HomeActiveFolder[]>;
   folderWindowId: HomeFolderWindowId;
   onFolderWindowChange: (id: HomeFolderWindowId) => void;
-  recentDocuments: HomeRecentDocument[];
-  recentDocumentTotal: number;
+  recentDocuments: Feed<HomeRecentDocumentsData>;
   recentWindowId: HomeRecentWindowId;
   onRecentWindowChange: (id: HomeRecentWindowId) => void;
   alerts: ReactNode;
   singleUser: boolean;
   authMode: LoginProvider | null;
-  mcpActions: HomeMcpPulseAction[];
+  agentPulse: Feed<AgentPulseData>;
   agentReads: AgentRead[];
-  pulseActivity: ActivityItem[];
-  agentTasks: HomeAgentTask[];
-  pulseError: string | null;
 }
 
-/** Previous wide home. Restore by importing this as HomeWideLayout from HomePage. */
 export function HomeWideLayoutClassic({
   hostLabel,
   tagline,
@@ -51,17 +48,13 @@ export function HomeWideLayoutClassic({
   folderWindowId,
   onFolderWindowChange,
   recentDocuments,
-  recentDocumentTotal,
   recentWindowId,
   onRecentWindowChange,
   alerts,
   singleUser,
   authMode,
-  mcpActions,
+  agentPulse,
   agentReads,
-  pulseActivity,
-  agentTasks,
-  pulseError,
 }: HomeWideLayoutClassicProps) {
   return (
     <div className="home-wide" data-home-layout="wide">
@@ -90,13 +83,7 @@ export function HomeWideLayoutClassic({
             </header>
 
             <div className="home-wide-flow">
-              <HomeWideAgentPulse
-                actions={mcpActions}
-                reads={agentReads}
-                activity={pulseActivity}
-                tasks={agentTasks}
-                pulseError={pulseError}
-              />
+              <HomeWideAgentPulse pulse={agentPulse} reads={agentReads} />
 
               <div className="home-human-band">
                 <HomeWideActiveFolders
@@ -105,12 +92,16 @@ export function HomeWideLayoutClassic({
                   windowId={folderWindowId}
                   onWindowChange={onFolderWindowChange}
                 />
-                <HomeWideRecentDocuments
-                  documents={recentDocuments}
-                  totalCount={recentDocumentTotal}
-                  windowId={recentWindowId}
-                  onWindowChange={onRecentWindowChange}
-                />
+                <FeedView feed={recentDocuments} subject="recent documents">
+                  {({ documents, totalCount }) => (
+                    <HomeWideRecentDocuments
+                      documents={documents}
+                      totalCount={totalCount}
+                      windowId={recentWindowId}
+                      onWindowChange={onRecentWindowChange}
+                    />
+                  )}
+                </FeedView>
               </div>
             </div>
           </div>

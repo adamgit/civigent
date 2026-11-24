@@ -24,6 +24,11 @@ export interface HomeRecentDocument {
   changes: HomeDocChangeGroup[];
 }
 
+export interface HomeRecentDocumentsData {
+  documents: HomeRecentDocument[];
+  totalCount: number;
+}
+
 function sectionLabel(headingPath: string[]): string | null {
   if (headingPath.length === 0) return null;
   const text = headingText(headingPath);

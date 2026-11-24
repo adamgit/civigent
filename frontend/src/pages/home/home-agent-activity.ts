@@ -8,6 +8,12 @@ import {
 import { HOME_AGENT_ROW_LIMIT } from "./home-constants.js";
 import { getDocDisplayName } from "../document-page-utils.js";
 import { DocPath } from "../../types/shared.js";
+import type { OptionalFeedShortfall } from "../../utils/feed-state.js";
+
+export interface HomeAgentRowsData {
+  rows: HomeAgentActivityRowModel[];
+  extrasShortfalls: OptionalFeedShortfall[];
+}
 
 export type HomeAgentRowTone = "running" | "finished" | "idle";
 

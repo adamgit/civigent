@@ -6,13 +6,18 @@ import { AgentPulseDetailCard } from "../components/home/wide/AgentPulseDetailCa
 import { SegmentedControl } from "../components/home/wide/SegmentedControl";
 import { emptyPulseCopy, useAgentPulseChart } from "../components/home/wide/useAgentPulseChart";
 import { PULSE_RANGE_OPTIONS } from "../components/home/experiment/build-pulse-hours";
-import { useAgentPulseFeeds } from "../hooks/useAgentPulseFeeds";
+import { useAgentActivityFeeds, type AgentPulseData } from "../hooks/useAgentActivityFeeds";
+import { loadedFeedDataOr } from "../utils/feed-state";
+import { FeedView } from "../components/feed/FeedView";
 import "./home/home.css";
 import "./agent-pulse-page.css";
 
+const NO_PULSE_DATA: AgentPulseData = { actions: [], activity: [], tasks: [], extrasShortfalls: [] };
+
 export function AgentPulsePage() {
-  const { mcpActions, agentReads, activity, agentTasks, pulseError, loading } = useAgentPulseFeeds();
-  const chart = useAgentPulseChart(mcpActions, agentReads, activity, agentTasks);
+  const { agentPulse, agentReads } = useAgentActivityFeeds();
+  const shown = loadedFeedDataOr(agentPulse, NO_PULSE_DATA);
+  const chart = useAgentPulseChart(shown.actions, agentReads, shown.activity, shown.tasks);
 
   return (
     <div className="flex flex-col">
@@ -42,7 +47,9 @@ export function AgentPulsePage() {
             </Link>
           </div>
 
-          <div className="agent-pulse-page__chart">
+          <div
+            className={`agent-pulse-page__chart${agentPulse.status === "loaded" ? "" : " agent-panel__chart--pending"}`}
+          >
             <AgentActivityBars
               bars={chart.bars}
               selectedIndex={chart.selectedIndex}
@@ -53,31 +60,41 @@ export function AgentPulsePage() {
             />
           </div>
 
-          {pulseError ? <p className="agent-panel__empty text-error">{pulseError}</p> : null}
-          {loading && chart.listTasks.length === 0 ? (
-            <p className="agent-panel__empty">Loading agent activity…</p>
-          ) : chart.listTasks.length === 0 ? (
-            <p className="agent-panel__empty">
-              {emptyPulseCopy(
-                chart.range,
-                chart.selectedIndex != null,
-                chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
-              )}
-            </p>
-          ) : (
-            <div className="agent-pulse-page__cards">
-              {chart.listTasks.map((task) => (
-                <AgentPulseDetailCard key={task.id} task={task} />
-              ))}
-            </div>
-          )}
+          <FeedView
+            feed={agentPulse}
+            subject="agent activity"
+            tone="agent"
+            extrasShortfalls={shown.extrasShortfalls}
+          >
+            {() =>
+              chart.listTasks.length === 0 ? (
+                <p className="agent-panel__empty">
+                  {emptyPulseCopy(
+                    chart.range,
+                    chart.selectedIndex != null,
+                    chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+                  )}
+                </p>
+              ) : (
+                <div className="agent-pulse-page__cards">
+                  {chart.listTasks.map((task) => (
+                    <AgentPulseDetailCard key={task.id} task={task} />
+                  ))}
+                </div>
+              )
+            }
+          </FeedView>
         </section>
       </div>
       <PageStatusBar
         items={[
           "Agent pulse",
           chart.range,
-          loading ? "Loading" : `${chart.listTasks.length} ${chart.listTasks.length === 1 ? "task" : "tasks"}`,
+          agentPulse.status === "loading"
+            ? "Loading"
+            : agentPulse.status === "failed"
+              ? "Failed to load"
+              : `${chart.listTasks.length} ${chart.listTasks.length === 1 ? "task" : "tasks"}`,
         ]}
       />
     </div>

@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
-import type { ActivityItem, AgentRead, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import type { AgentRead, HumanInvolvementPresetName, LoginProvider } from "../../types/shared.js";
+import type { AgentPulseData } from "../../hooks/useAgentActivityFeeds";
+import type { Feed } from "../../utils/feed-state";
 import type { HomeActiveFolder } from "./home-folder-activity";
-import type { HomeRecentDocument } from "./home-recent-documents";
+import type { HomeRecentDocumentsData } from "./home-recent-documents";
 import type { HomeFolderWindowId, HomeRecentWindowId } from "./home-constants";
 import { HomeWideActiveFolders } from "../../components/home/wide/HomeWideActiveFolders";
 import { HomeWideAgentPulse } from "../../components/home/wide/HomeWideAgentPulse";
 import { HomeWideMasthead } from "../../components/home/wide/HomeWideMasthead";
-import { HomeWidePreamble } from "../../components/home/wide/HomeWidePreamble";
 import { HomeWideRecentDocumentsCompact } from "../../components/home/wide/HomeWideRecentDocumentsCompact";
-import type { HomeAgentTask, HomeMcpPulseAction } from "../../components/home/experiment/types";
 import "./home.css";
 
 interface HomeWideLayoutProps {
@@ -19,21 +19,17 @@ interface HomeWideLayoutProps {
   folderCount: number;
   agentCount: number;
   lastChangeAt: string | null;
-  folders: HomeActiveFolder[];
+  folders: Feed<HomeActiveFolder[]>;
   folderWindowId: HomeFolderWindowId;
   onFolderWindowChange: (id: HomeFolderWindowId) => void;
-  recentDocuments: HomeRecentDocument[];
-  recentDocumentTotal: number;
+  recentDocuments: Feed<HomeRecentDocumentsData>;
   recentWindowId: HomeRecentWindowId;
   onRecentWindowChange: (id: HomeRecentWindowId) => void;
   alerts: ReactNode;
   singleUser: boolean;
   authMode: LoginProvider | null;
-  mcpActions: HomeMcpPulseAction[];
+  agentPulse: Feed<AgentPulseData>;
   agentReads: AgentRead[];
-  pulseActivity: ActivityItem[];
-  agentTasks: HomeAgentTask[];
-  pulseError: string | null;
 }
 
 export function HomeWideLayout({
@@ -46,16 +42,12 @@ export function HomeWideLayout({
   folderWindowId,
   onFolderWindowChange,
   recentDocuments,
-  recentDocumentTotal,
   recentWindowId,
   onRecentWindowChange,
   alerts,
   authMode,
-  mcpActions,
+  agentPulse,
   agentReads,
-  pulseActivity,
-  agentTasks,
-  pulseError,
 }: HomeWideLayoutProps) {
   return (
     <div className="home-wide" data-home-layout="wide" data-home-wide="redesign">
@@ -73,20 +65,12 @@ export function HomeWideLayout({
             />
 
             <div className="home-wide-main">
-              {/* <HomeWidePreamble /> */}
               <div className="home-wide-columns">
-                <HomeWideAgentPulse
-                  actions={mcpActions}
-                  reads={agentReads}
-                  activity={pulseActivity}
-                  tasks={agentTasks}
-                  pulseError={pulseError}
-                />
+                <HomeWideAgentPulse pulse={agentPulse} reads={agentReads} />
 
                 <div className="home-wide-rail">
                   <HomeWideRecentDocumentsCompact
-                    documents={recentDocuments}
-                    totalCount={recentDocumentTotal}
+                    recent={recentDocuments}
                     windowId={recentWindowId}
                     onWindowChange={onRecentWindowChange}
                   />

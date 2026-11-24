@@ -7,14 +7,18 @@ import {
 } from "../../../pages/home/home-constants";
 import type { HomeActiveFolder } from "../../../pages/home/home-folder-activity";
 import { formatHomeCount } from "../../../pages/home/home-utils";
+import { loadedFeedDataOr, type Feed } from "../../../utils/feed-state";
+import { FeedView } from "../../feed/FeedView";
 import { HomeWideFolderHoverPane } from "./HomeWideFolderHoverPane";
 import { HomeWideFolderRow } from "./HomeWideFolderRow";
 import { HomeWidePager } from "./HomeWidePager";
 import { PanelHeader } from "./PanelHeader";
 import { SegmentedControl } from "./SegmentedControl";
 
+const NO_FOLDERS: HomeActiveFolder[] = [];
+
 interface HomeWideActiveFoldersProps {
-  folders: HomeActiveFolder[];
+  folders: Feed<HomeActiveFolder[]>;
   totalFolderCount: number;
   windowId: HomeFolderWindowId;
   onWindowChange: (id: HomeFolderWindowId) => void;
@@ -26,12 +30,8 @@ function folderRowKey(folder: HomeActiveFolder): string {
   return `${folder.folderPath}\0${folder.writerKind}`;
 }
 
-/**
- * The row is the folder-details link. The file-name subtitle (icon + text)
- * and the full-height bars/age/i cluster toggle the pane.
- */
 export function HomeWideActiveFolders({
-  folders,
+  folders: foldersFeed,
   totalFolderCount,
   windowId,
   onWindowChange,
@@ -50,6 +50,7 @@ export function HomeWideActiveFolders({
     setOpenKey(null);
   }, [page, windowId]);
 
+  const folders = loadedFeedDataOr(foldersFeed, NO_FOLDERS);
   const pageCount = Math.max(1, Math.ceil(folders.length / HOME_WIDE_FOLDER_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const slice = folders.slice(
@@ -87,38 +88,42 @@ export function HomeWideActiveFolders({
         </Link>
       </PanelHeader>
 
-      <div>
-        {folders.length === 0 ? (
-          <p className="home-recent__empty" style={{ padding: "14px 20px" }}>
-            No folder activity in this window.
-          </p>
-        ) : (
-          slice.map((folder) => {
-            const key = folderRowKey(folder);
-            return (
-              <HomeWideFolderRow
-                key={key}
-                folder={folder}
-                now={now}
-                showParentPath={showParentPath}
-                open={openKey === key}
-                rowRef={(el) => {
-                  if (el) rowEls.current.set(key, el);
-                  else rowEls.current.delete(key);
-                }}
-                onTogglePane={() => setOpenKey((current) => (current === key ? null : key))}
-              />
-            );
-          })
+      <FeedView feed={foldersFeed} subject="folder activity">
+        {() => (
+          <>
+            {folders.length === 0 ? (
+              <p className="home-recent__empty" style={{ padding: "14px 20px" }}>
+                No folder activity in this window.
+              </p>
+            ) : (
+              slice.map((folder) => {
+                const key = folderRowKey(folder);
+                return (
+                  <HomeWideFolderRow
+                    key={key}
+                    folder={folder}
+                    now={now}
+                    showParentPath={showParentPath}
+                    open={openKey === key}
+                    rowRef={(el) => {
+                      if (el) rowEls.current.set(key, el);
+                      else rowEls.current.delete(key);
+                    }}
+                    onTogglePane={() => setOpenKey((current) => (current === key ? null : key))}
+                  />
+                );
+              })
+            )}
+            <HomeWidePager
+              page={safePage}
+              pageSize={HOME_WIDE_FOLDER_PAGE_SIZE}
+              total={folders.length}
+              setPage={setPage}
+              label="Active folders pages"
+            />
+          </>
         )}
-        <HomeWidePager
-          page={safePage}
-          pageSize={HOME_WIDE_FOLDER_PAGE_SIZE}
-          total={folders.length}
-          setPage={setPage}
-          label="Active folders pages"
-        />
-      </div>
+      </FeedView>
       {openFolder && openAnchor ? (
         <HomeWideFolderHoverPane folder={openFolder} anchor={openAnchor} />
       ) : null}

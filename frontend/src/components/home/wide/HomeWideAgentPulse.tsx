@@ -1,28 +1,24 @@
 import { Link } from "react-router-dom";
-import type { ActivityItem, AgentRead } from "../../../types/shared.js";
+import type { AgentRead } from "../../../types/shared.js";
+import type { AgentPulseData } from "../../../hooks/useAgentActivityFeeds";
+import { loadedFeedDataOr, type Feed } from "../../../utils/feed-state";
+import { FeedView } from "../../feed/FeedView";
 import { PULSE_RANGE_OPTIONS } from "../experiment/build-pulse-hours";
-import type { HomeAgentTask, HomeMcpPulseAction } from "../experiment/types";
 import { AgentActivityBars } from "./AgentActivityBars";
 import { AgentMosaic } from "./AgentMosaic";
 import { SegmentedControl } from "./SegmentedControl";
 import { emptyPulseCopy, useAgentPulseChart } from "./useAgentPulseChart";
 
+const NO_PULSE_DATA: AgentPulseData = { actions: [], activity: [], tasks: [], extrasShortfalls: [] };
+
 interface HomeWideAgentPulseProps {
-  actions: HomeMcpPulseAction[];
+  pulse: Feed<AgentPulseData>;
   reads: AgentRead[];
-  activity: ActivityItem[];
-  tasks: HomeAgentTask[];
-  pulseError: string | null;
 }
 
-export function HomeWideAgentPulse({
-  actions,
-  reads,
-  activity,
-  tasks,
-  pulseError,
-}: HomeWideAgentPulseProps) {
-  const chart = useAgentPulseChart(actions, reads, activity, tasks);
+export function HomeWideAgentPulse({ pulse, reads }: HomeWideAgentPulseProps) {
+  const shown = loadedFeedDataOr(pulse, NO_PULSE_DATA);
+  const chart = useAgentPulseChart(shown.actions, reads, shown.activity, shown.tasks);
 
   return (
     <section
@@ -56,7 +52,7 @@ export function HomeWideAgentPulse({
         </div>
       </div>
 
-      <div className="agent-panel__chart">
+      <div className={`agent-panel__chart${pulse.status === "loaded" ? "" : " agent-panel__chart--pending"}`}>
         <AgentActivityBars
           bars={chart.bars}
           selectedIndex={chart.selectedIndex}
@@ -67,15 +63,18 @@ export function HomeWideAgentPulse({
       </div>
 
       <div className="agent-panel__body sidebar-scroll">
-        {pulseError ? <p className="agent-panel__empty text-error">{pulseError}</p> : null}
-        <AgentMosaic
-          tasks={chart.listTasks}
-          emptyMessage={emptyPulseCopy(
-            chart.range,
-            chart.selectedIndex != null,
-            chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+        <FeedView feed={pulse} subject="agent activity" tone="agent" extrasShortfalls={shown.extrasShortfalls}>
+          {() => (
+            <AgentMosaic
+              tasks={chart.listTasks}
+              emptyMessage={emptyPulseCopy(
+                chart.range,
+                chart.selectedIndex != null,
+                chart.selectedIndex != null ? chart.bars[chart.selectedIndex] : undefined,
+              )}
+            />
           )}
-        />
+        </FeedView>
       </div>
     </section>
   );
